@@ -1,0 +1,18 @@
+google-genai>=2.10
+pydantic>=2.7
+pillow>=10.0
+opencv-contrib-python>=4.9
+numpy>=1.26
+flask>=3.0
+# optional but recommended: pixel-true text localization for Step 3
+# (install easyocr with --no-deps to keep opencv-contrib as the cv2 provider)
+torch>=2.6
+torchvision
+easyocr
+scipy
+scikit-image
+python-bidi
+pyyaml
+shapely
+pyclipper
+flask>=3.0

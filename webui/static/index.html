@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MapGen — Tactile Map Pipeline</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<aside id="sidebar">
+  <header>
+    <h1>MapGen</h1>
+    <p class="sub">thematic &rarr; tactile pipeline</p>
+  </header>
+  <div class="side-actions">
+    <label class="btn primary" for="upload-input">+ Add map</label>
+    <input id="upload-input" type="file" accept=".png,.jpg,.jpeg" hidden>
+    <button class="btn ghost" id="spec-btn" title="Step 0: output specification">&#9881; Output spec</button>
+  </div>
+  <nav id="map-list" aria-label="maps"></nav>
+</aside>
+
+<main id="main">
+  <div id="spec-panel" class="panel" hidden>
+    <div class="panel-head">
+      <h2>Step 0 — Output specification</h2>
+      <button class="btn ghost" id="spec-close">close</button>
+    </div>
+    <p class="hint">Medium, page size and the physical constants every later step obeys.
+       Edit and save; values are validated server-side. File: <code id="spec-path"></code></p>
+    <textarea id="spec-text" spellcheck="false" rows="22"></textarea>
+    <div class="row">
+      <button class="btn primary" id="spec-save">Save spec</button>
+      <span id="spec-msg" class="msg"></span>
+    </div>
+  </div>
+
+  <div id="map-panel" hidden>
+    <div class="panel-head">
+      <h2 id="map-title"></h2>
+      <div class="row model-run-actions">
+        <label class="model-picker" for="model-select">
+          <span>AI model</span>
+          <select id="model-select" aria-label="AI model used by pipeline steps">
+            <option value="gemini-3.5-flash">Gemini 3.5 Flash</option>
+            <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash-Lite</option>
+            <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+            <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash-Lite</option>
+            <option value="gemma-4-26b-a4b-it" selected>Gemma 4 26B A4B</option>
+            <option value="gemma-4-31b-it">Gemma 4 31B</option>
+          </select>
+        </label>
+        <button class="btn danger" id="delete-project"
+                title="Delete this map and all of its processed files">Delete project</button>
+        <button class="btn primary" id="run-all">Run remaining steps</button>
+      </div>
+    </div>
+    <div id="job-banner" hidden>
+      <span class="dot running"></span><span id="job-text"></span>
+      <pre id="job-log"></pre>
+    </div>
+    <section id="steps"></section>
+  </div>
+
+  <div id="empty" class="empty">
+    <p>Select a map on the left, or add one.</p>
+  </div>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>

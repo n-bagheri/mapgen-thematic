@@ -1,0 +1,531 @@
+"""Step 3 -- Overlay text detection.
+
+Gemini transcribes and classifies every label on the map area (tiled for large
+images, primed with the Step 1 vocabulary); classic CV then extracts the exact
+text strokes inside each detection to produce the oriented quad, the anchor
+point, and the pixel-tight removal mask that Step 4 consumes. Furniture
+regions from Step 2 (legend, title, scale bar...) are painted out before
+detection, so only true overlay text is reported.
+
+Artifacts per map, under runs/<name>/:
+    step3_raw.json      merged Gemini detections (cached; delete to re-call)
+    labels.json         text, kind, priority, quad, anchor (map-area coords)
+    text_mask.png       union of dilated text strokes, aligned to map_area.png
+    step3_debug.png     annotated overlay for human review
+"""
+
+from __future__ import annotations
+
+import difflib
+import json
+import os
+import re
+from enum import Enum
+from pathlib import Path
+
+import cv2
+import numpy as np
+from pydantic import BaseModel, Field
+
+from .isolate import imread, imwrite, prepare_text_input, to_lab
+from .semantics import DEFAULT_MODEL, MapSemantics, _ensure_api_key
+
+# --------------------------------------------------------------------------- schema
+
+class TextKind(str, Enum):
+    capital = "capital"            # capital city name
+    city = "city"                  # any other city/town name
+    river_label = "river_label"    # name written along a river or other line
+    region_label = "region_label"  # name of a thematic area or region
+    line_label = "line_label"      # road/border annotations
+    other = "other"
+
+
+class TextItem(BaseModel):
+    text: str = Field(description="The label exactly as written, keeping accents")
+    kind: TextKind
+    box_2d: list[int] = Field(description="[y_min, x_min, y_max, x_max] normalized to 0-1000 of THIS image")
+
+
+class TextDetections(BaseModel):
+    items: list[TextItem]
+
+
+# priority for Step 8 clutter resolution (1 = keep longest)
+KIND_PRIORITY = {
+    TextKind.capital: 1, TextKind.region_label: 2, TextKind.river_label: 3,
+    TextKind.line_label: 4, TextKind.city: 5, TextKind.other: 6,
+}
+
+TEXT_PROMPT = """\
+You are the overlay-text detection stage of a pipeline converting thematic
+maps into tactile maps. This image is a crop of the MAP AREA only (legend,
+title and other furniture have been blanked out).
+
+List EVERY piece of text overlaid on the map picture: city names, names
+written along rivers or lines, region/area names, small annotations. Rules:
+
+- One item per label phrase ("Le Mans" is one item, not two).
+- Transcribe exactly, keeping accents and capitalization.
+- kind: 'capital' only for the capital city{capital_hint}; 'city' for other
+  settlements (usually marked with a dot); 'river_label' for names along
+  rivers/streams; 'region_label' for names of areas or regions;
+  'line_label' for road or border annotations; 'other' otherwise.
+- box_2d must enclose the whole written label, including curved/tilted text.
+- CRITICAL: only report text that is actually LEGIBLE in THIS image. The
+  context below may mention legend text, scale bars, projection notes or
+  labels that are not in this crop -- NEVER report text you cannot see here.
+  If the image contains no overlay text, return an empty list.
+
+Known context from earlier analysis (for classification only, not a list of
+things to find):
+{context}
+"""
+
+
+# --------------------------------------------------------------------------- gemini pass
+
+MAX_TILE = 1400
+TILE_OVERLAP = 0.12
+
+
+def _context_from_sem(sem: MapSemantics) -> tuple[str, str]:
+    lines = [f"- subject: {sem.subject}"]
+    ot = sem.overlay_text
+    lines.append(f"- expected: city labels={ot.has_city_labels}, region labels={ot.has_region_labels}, "
+                 f"line labels={ot.has_line_labels}")
+    if ot.notes:
+        lines.append(f"- notes: {ot.notes}")
+    for ln in sem.lines:
+        lines.append(f"- line feature ({ln.kind.value}): {ln.description}")
+    capital_hint = f" (known capital: {ot.capital_city})" if ot.capital_city else ""
+    return "\n".join(lines), capital_hint
+
+
+def _gemini_text(tile_bgr: np.ndarray, prompt: str, model: str | None) -> TextDetections:
+    from google import genai
+    from google.genai import types
+
+    _ensure_api_key()
+    ok, buf = cv2.imencode(".png", tile_bgr)
+    if not ok:
+        raise ValueError("tile encode failed")
+    client = genai.Client()
+    response = client.models.generate_content(
+        model=model or os.environ.get("GEMINI_MODEL", DEFAULT_MODEL),
+        contents=[types.Part.from_bytes(data=buf.tobytes(), mime_type="image/png"), prompt],
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=TextDetections,
+            temperature=0.0,
+        ),
+    )
+    det = response.parsed
+    if not isinstance(det, TextDetections):
+        det = TextDetections.model_validate_json(response.text)
+    return det
+
+
+def _tiles(img: np.ndarray) -> list[tuple[int, int, np.ndarray]]:
+    h, w = img.shape[:2]
+    if max(h, w) <= MAX_TILE:
+        return [(0, 0, img)]
+    nx = int(np.ceil(w / (MAX_TILE * (1 - TILE_OVERLAP))))
+    ny = int(np.ceil(h / (MAX_TILE * (1 - TILE_OVERLAP))))
+    nx, ny = min(nx, 3), min(ny, 3)  # cap the call count; Gemini copes with big tiles
+    xs = np.linspace(0, w, nx + 1).astype(int)
+    ys = np.linspace(0, h, ny + 1).astype(int)
+    ov_x, ov_y = int(w / nx * TILE_OVERLAP), int(h / ny * TILE_OVERLAP)
+    out = []
+    for j in range(ny):
+        for i in range(nx):
+            x0, x1 = max(0, xs[i] - ov_x), min(w, xs[i + 1] + ov_x)
+            y0, y1 = max(0, ys[j] - ov_y), min(h, ys[j + 1] + ov_y)
+            out.append((x0, y0, img[y0:y1, x0:x1]))
+    return out
+
+
+def detect_text(map_bgr: np.ndarray, sem: MapSemantics, model: str | None) -> list[dict]:
+    """Run the (tiled) Gemini pass; returns items with pixel boxes in map-area coords."""
+    context, capital_hint = _context_from_sem(sem)
+    prompt = TEXT_PROMPT.format(context=context, capital_hint=capital_hint)
+    raw: list[dict] = []
+    for ox, oy, tile in _tiles(map_bgr):
+        th, tw = tile.shape[:2]
+        for it in _gemini_text(tile, prompt, model).items:
+            y0, x0, y1, x1 = it.box_2d
+            raw.append({
+                "text": it.text.strip(), "kind": it.kind.value,
+                "box": [int(ox) + int(x0 / 1000 * tw), int(oy) + int(y0 / 1000 * th),
+                        int(ox) + int(x1 / 1000 * tw), int(oy) + int(y1 / 1000 * th)],
+            })
+    # merge duplicates from tile overlap
+    raw.sort(key=lambda r: (r["box"][2] - r["box"][0]) * (r["box"][3] - r["box"][1]), reverse=True)
+    merged: list[dict] = []
+    for r in raw:
+        rx = (r["box"][0] + r["box"][2]) / 2
+        ry = (r["box"][1] + r["box"][3]) / 2
+        dup = False
+        for m in merged:
+            mx = (m["box"][0] + m["box"][2]) / 2
+            my = (m["box"][1] + m["box"][3]) / 2
+            near = max(m["box"][2] - m["box"][0], m["box"][3] - m["box"][1])
+            if (abs(rx - mx) < 0.7 * near and abs(ry - my) < 0.7 * near
+                    and difflib.SequenceMatcher(None, r["text"].lower(), m["text"].lower()).ratio() > 0.7):
+                dup = True
+                break
+        if not dup:
+            merged.append(r)
+    return merged
+
+
+def _vocabulary(sem: MapSemantics) -> set[str]:
+    """Proper names Step 1 mentioned; used to validate transcriptions."""
+    text = " . ".join(
+        [sem.overlay_text.notes or "", sem.overlay_text.capital_city or "", sem.subject]
+        + [ln.description for ln in sem.lines]
+    )
+    names = set(re.findall(r"[A-ZÀ-Þ][\w'À-ÿ-]+(?:\s+[A-ZÀ-Þ][\w'À-ÿ-]+)*", text))
+    return {n for n in names if len(n) > 2}
+
+
+# --------------------------------------------------------------------------- craft localization
+
+_READER = None
+
+
+def _craft_reader():
+    global _READER
+    if _READER is None:
+        import easyocr
+        _READER = easyocr.Reader(["en", "fr"], gpu=False, verbose=False)
+    return _READER
+
+
+def craft_detect(clean_bgr: np.ndarray) -> list[dict] | None:
+    """Pixel-accurate word boxes from the CRAFT scene-text detector (EasyOCR).
+    Returns None when easyocr/torch is not installed (Gemini boxes then apply).
+    mag_ratio=2 is essential: map labels are ~8-10 px tall and CRAFT misses
+    half of them at native scale (13 vs 21 detections on the France sample)."""
+    try:
+        reader = _craft_reader()
+    except ImportError:
+        return None
+    out = []
+    for quad, text, conf in reader.readtext(clean_bgr, paragraph=False, canvas_size=3000,
+                                            mag_ratio=2.0, text_threshold=0.6, low_text=0.35):
+        q = np.array(quad, np.float32)
+        x0, y0 = q.min(axis=0)
+        x1, y1 = q.max(axis=0)
+        out.append({"text": str(text).strip(), "conf": float(conf),
+                    "box": [int(x0), int(y0), int(x1), int(y1)]})
+    return out
+
+
+def fuse_detections(gemini_items: list[dict], craft_dets: list[dict] | None,
+                    diag: float, vocab: set[str]) -> list[dict]:
+    """CRAFT supplies geometry, Gemini supplies reading + classification.
+    One-to-one matching by text similarity and proximity; unmatched CRAFT
+    detections with confident text become 'other' labels; unmatched Gemini
+    items stay but are flagged as geometrically unverified."""
+    if craft_dets is None:
+        return [dict(it, localization="gemini") for it in gemini_items]
+    pairs = []
+    for gi, g in enumerate(gemini_items):
+        gc = ((g["box"][0] + g["box"][2]) / 2, (g["box"][1] + g["box"][3]) / 2)
+        for ci, c in enumerate(craft_dets):
+            cc = ((c["box"][0] + c["box"][2]) / 2, (c["box"][1] + c["box"][3]) / 2)
+            dist = ((gc[0] - cc[0]) ** 2 + (gc[1] - cc[1]) ** 2) ** 0.5
+            ratio = difflib.SequenceMatcher(None, g["text"].lower(), c["text"].lower()).ratio()
+            if ratio >= 0.5 or (dist < 0.05 * diag and ratio >= 0.25) or dist < 0.02 * diag:
+                pairs.append((ratio - dist / (0.2 * diag), gi, ci))
+    pairs.sort(key=lambda p: -p[0])
+    used_g: set[int] = set()
+    used_c: set[int] = set()
+    fused = []
+    for _, gi, ci in pairs:
+        if gi in used_g or ci in used_c:
+            continue
+        used_g.add(gi)
+        used_c.add(ci)
+        c = craft_dets[ci]
+        fused.append(dict(gemini_items[gi], box=list(c["box"]),
+                          localization="craft", craft_conf=c["conf"]))
+    for gi, g in enumerate(gemini_items):
+        if gi not in used_g:
+            fused.append(dict(g, localization="gemini-unverified"))
+    for ci, c in enumerate(craft_dets):
+        if ci in used_c or c["conf"] < 0.45:
+            continue
+        if len([ch for ch in c["text"] if ch.isalnum()]) < 3:
+            continue
+        m = difflib.get_close_matches(c["text"], vocab, n=1, cutoff=0.7)
+        fused.append({"text": m[0] if m else c["text"], "kind": "other",
+                      "box": list(c["box"]), "localization": "craft-only",
+                      "craft_conf": c["conf"]})
+    return fused
+
+
+# --------------------------------------------------------------------------- stroke extraction
+
+STROKE_DELTA = 15.0     # Lab distance from local background to count as text
+MAX_STROKE_WIDTH = 4.5  # px half-width; anything fatter is a map region, not a letter
+
+
+def extract_strokes(map_bgr: np.ndarray, box: list[int]) -> dict:
+    """Pixel-accurate text strokes inside a (padded) detection box."""
+    h, w = map_bgr.shape[:2]
+    bx0, by0, bx1, by1 = box
+    # generous pad: CRAFT boxes are tight, and the background ring must not
+    # touch the letters themselves or the k-means bg estimate absorbs them
+    pad = max(6, int(0.6 * (by1 - by0)))
+    x0, y0 = max(0, bx0 - pad), max(0, by0 - pad)
+    x1, y1 = min(w, bx1 + pad), min(h, by1 + pad)
+    sub = map_bgr[y0:y1, x0:x1]
+    sh, sw = sub.shape[:2]
+    if sh < 6 or sw < 6:
+        return {"found": False}
+    lab = to_lab(sub)
+
+    # local background = dominant colors of the box border ring (k-means, k<=3)
+    ring = np.concatenate([lab[:3].reshape(-1, 3), lab[-3:].reshape(-1, 3),
+                           lab[:, :3].reshape(-1, 3), lab[:, -3:].reshape(-1, 3)])
+    k = min(3, len(ring))
+    _, _, centers = cv2.kmeans(ring.astype(np.float32), k, None,
+                               (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0),
+                               3, cv2.KMEANS_PP_CENTERS)
+    dists = np.min(np.stack([np.linalg.norm(lab - c, axis=2) for c in centers]), axis=0)
+    strokes = (dists > STROKE_DELTA).astype(np.uint8)
+
+    # strokes must belong to THIS label: the wide window exists only for the
+    # background estimate; neighbouring labels and patch edges outside the
+    # core detection box (+15%) must not join the mask/quad
+    core = np.zeros((sh, sw), bool)
+    cp = max(2, int(0.15 * (by1 - by0)))
+    core[max(0, by0 - cp - y0):min(sh, by1 + cp - y0),
+         max(0, bx0 - cp - x0):min(sw, bx1 + cp - x0)] = True
+
+    n, cc, stats, _ = cv2.connectedComponentsWithStats(strokes, connectivity=8)
+    keep = np.zeros_like(strokes)
+    for i in range(1, n):
+        cx, cy, cw, ch, area = stats[i]
+        if area < 4:
+            continue
+        # a line feature passing through spans the whole window; letters don't
+        if (cw >= 0.96 * sw and cx <= 1 and cx + cw >= sw - 1) or \
+           (ch >= 0.96 * sh and cy <= 1 and cy + ch >= sh - 1):
+            continue
+        comp = (cc == i).astype(np.uint8)
+        if (comp.astype(bool) & core).sum() < 0.5 * area:
+            continue  # mostly outside the label's own box
+        if cv2.distanceTransform(comp, cv2.DIST_L2, 3).max() > MAX_STROKE_WIDTH:
+            continue  # too fat to be a letter stroke
+        keep |= comp
+    if not keep.any():
+        return {"found": False}
+
+    pts = cv2.findNonZero(keep)
+    quad = cv2.boxPoints(cv2.minAreaRect(pts))
+    centroid = pts.reshape(-1, 2).mean(axis=0)
+    mask = cv2.dilate(keep, np.ones((3, 3), np.uint8))
+    n_comp = cv2.connectedComponents(keep, connectivity=8)[0] - 1
+    return {
+        "found": True,
+        "mask": mask, "origin": (x0, y0),
+        "quad": [[int(px + x0), int(py + y0)] for px, py in quad],
+        "centroid": [float(centroid[0] + x0), float(centroid[1] + y0)],
+        "px": int(keep.sum()), "n_components": n_comp,
+        "window_area": sh * sw,
+    }
+
+
+def strokes_look_like_text(strokes: dict, text: str) -> bool:
+    """Reject stroke sets that are clearly not letters: a detection box offset
+    onto a map patch yields one big blob or edge fragments, not a word."""
+    if not strokes["found"]:
+        return False
+    coverage = strokes["px"] / max(1, strokes["window_area"])
+    if not 0.02 <= coverage <= 0.5:  # empty noise, or it swallowed a whole patch
+        return False
+    letters = len([c for c in text if c.isalnum()])
+    return strokes["n_components"] >= min(3, max(2, letters // 3))
+
+
+def find_point_symbol(map_bgr: np.ndarray, box: list[int], text_mask: np.ndarray) -> list[float] | None:
+    """City dot/star near the label -- the braille anchor should sit on it."""
+    h, w = map_bgr.shape[:2]
+    bx0, by0, bx1, by1 = box
+    grow = int(1.2 * (by1 - by0))
+    x0, y0 = max(0, bx0 - grow), max(0, by0 - grow)
+    x1, y1 = min(w, bx1 + grow), min(h, by1 + grow)
+    sub = to_lab(map_bgr[y0:y1, x0:x1])
+    dark = (sub[..., 0] < 55).astype(np.uint8)
+    dark &= (text_mask[y0:y1, x0:x1] == 0).astype(np.uint8)  # the letters themselves don't count
+    n, cc, stats, cents = cv2.connectedComponentsWithStats(dark, connectivity=8)
+    best, best_d = None, 1e9
+    cx0, cy0 = (bx0 + bx1) / 2, (by0 + by1) / 2
+    for i in range(1, n):
+        _, _, cw, ch, area = stats[i]
+        if not 6 <= area <= 400 or not 0.4 <= cw / max(ch, 1) <= 2.5:
+            continue
+        if area / (cw * ch) < 0.5:
+            continue
+        px, py = cents[i][0] + x0, cents[i][1] + y0
+        d = (px - cx0) ** 2 + (py - cy0) ** 2
+        if d < best_d:
+            best, best_d = [float(px), float(py)], d
+    return best
+
+
+# --------------------------------------------------------------------------- runner
+
+KIND_COLORS = {  # BGR, for the debug overlay
+    "capital": (0, 0, 255), "city": (0, 140, 255), "river_label": (255, 128, 0),
+    "region_label": (0, 180, 0), "line_label": (128, 0, 128), "other": (128, 128, 128),
+}
+
+
+def run_step3(image_path: Path, model: str | None = None, runs_dir: Path = Path("runs")) -> dict:
+    from .isolate import run_step2
+
+    out_dir = runs_dir / image_path.stem
+    if not (out_dir / "map_area.png").exists() or not (out_dir / "geometry.json").exists():
+        run_step2(image_path, model=model, runs_dir=runs_dir)
+    sem = MapSemantics.model_validate_json(
+        (out_dir / "step1_semantics.json").read_text(encoding="utf-8"))
+    geo = json.loads((out_dir / "geometry.json").read_text(encoding="utf-8"))
+
+    map_bgr = imread(out_dir / "map_area.png")
+    mh, mw = map_bgr.shape[:2]
+    cx0, cy0 = geo["map_crop"][0], geo["map_crop"][1]
+
+    # Step 2 saves the exact furniture-blanked input for review. Recreate it
+    # here only for runs made before that preview artifact existed.
+    text_input_path = out_dir / "map_text_input.png"
+    clean = (imread(text_input_path) if text_input_path.exists()
+             else prepare_text_input(
+                 map_bgr, geo["map_crop"], geo["furniture"],
+                 imread(out_dir / "map_mask.png")[..., 0],
+             ))
+    furniture_local = []
+    for f in geo["furniture"]:
+        fx0, fy0, fx1, fy1 = f["box"]
+        lx0, ly0 = max(0, fx0 - cx0), max(0, fy0 - cy0)
+        lx1, ly1 = min(mw, fx1 - cx0), min(mh, fy1 - cy0)
+        if lx1 > lx0 and ly1 > ly0:
+            furniture_local.append((lx0, ly0, lx1, ly1))
+
+    raw_path = out_dir / "step3_raw.json"
+    if raw_path.exists():
+        items = json.loads(raw_path.read_text(encoding="utf-8"))
+        raw_cached = True
+    else:
+        items = detect_text(clean, sem, model)
+        raw_path.write_text(json.dumps(items, indent=2, ensure_ascii=False), encoding="utf-8")
+        raw_cached = False
+
+    vocab = _vocabulary(sem)
+
+    # pixel-true localization: CRAFT boxes replace Gemini's coarse ones
+    craft_path = out_dir / "step3_craft.json"
+    if craft_path.exists():
+        craft_dets = json.loads(craft_path.read_text(encoding="utf-8"))
+    else:
+        craft_dets = craft_detect(clean)
+        if craft_dets is not None:
+            craft_path.write_text(json.dumps(craft_dets, indent=2, ensure_ascii=False),
+                                  encoding="utf-8")
+    items = fuse_detections(items, craft_dets, float(np.hypot(mw, mh)), vocab)
+    warnings: list[str] = []
+    text_mask = np.zeros((mh, mw), np.uint8)
+    labels: list[dict] = []
+    margin = max(6, int(0.005 * max(mw, mh)))
+    for it in items:
+        bx = [max(0, it["box"][0]), max(0, it["box"][1]), min(mw, it["box"][2]), min(mh, it["box"][3])]
+        if bx[2] - bx[0] < 6 or bx[3] - bx[1] < 6:
+            continue  # degenerate box -- hallucination fingerprint
+        ix, iy = (bx[0] + bx[2]) / 2, (bx[1] + bx[3]) / 2
+        if any(fx0 - margin <= ix <= fx1 + margin and fy0 - margin <= iy <= fy1 + margin
+               for fx0, fy0, fx1, fy1 in furniture_local):
+            continue  # furniture text that slipped through
+        if it.get("localization") == "gemini-unverified" and it["kind"] not in ("city", "capital"):
+            # no detector confirmation and no downstream consumer: extracting
+            # strokes here can only erase real map content -- do nothing
+            strokes = {"found": False}
+        else:
+            strokes = extract_strokes(clean, bx)
+        if strokes["found"] and not strokes_look_like_text(strokes, it["text"]):
+            warnings.append(f"strokes for '{it['text']}' do not look like text "
+                            f"(detection box likely offset) -- discarded")
+            strokes = {"found": False}
+        entry = {
+            "text": it["text"],
+            "kind": it["kind"],
+            "priority": KIND_PRIORITY[TextKind(it["kind"])],
+            "matches_step1": bool(difflib.get_close_matches(it["text"], vocab, n=1, cutoff=0.75)),
+            "localization": it.get("localization", "gemini"),
+            "box": bx,
+            "quad": None,
+            "anchor": [ix, iy],
+            "anchor_source": "box_center",
+            "mask_found": strokes["found"],
+        }
+        if strokes["found"]:
+            ox, oy = strokes["origin"]
+            m = strokes["mask"]
+            text_mask[oy:oy + m.shape[0], ox:ox + m.shape[1]] |= m * 255
+            entry["quad"] = strokes["quad"]
+            entry["anchor"] = strokes["centroid"]
+            entry["anchor_source"] = "stroke_centroid"
+        else:
+            warnings.append(f"no strokes extracted for '{it['text']}' -- Step 4 must fill its whole box")
+        if it["kind"] in ("city", "capital"):
+            dot = find_point_symbol(clean, bx, text_mask)
+            if dot:
+                entry["anchor"] = dot
+                entry["anchor_source"] = "point_symbol"
+        labels.append(entry)
+
+    unmatched = [lb["text"] for lb in labels if not lb["matches_step1"]]
+    if unmatched:
+        warnings.append("not in Step 1 vocabulary (verify on debug overlay): " + ", ".join(unmatched[:12]))
+
+    (out_dir / "labels.json").write_text(json.dumps({
+        "coordinate_space": "map_area.png pixels; add map_crop offset for original image",
+        "map_crop_offset": [cx0, cy0],
+        "labels": labels,
+        "warnings": warnings,
+    }, indent=2, ensure_ascii=False), encoding="utf-8")
+    imwrite(out_dir / "text_mask.png", text_mask)
+
+    # Render the checkpoint over the exact furniture-blanked image used for
+    # detection. Using map_area.png here made excluded legend/scale text appear
+    # in the preview even though neither Gemini nor CRAFT received those pixels.
+    dbg = clean.copy()
+    overlay = dbg.copy()
+    overlay[text_mask > 0] = (255, 0, 255)
+    dbg = cv2.addWeighted(overlay, 0.45, dbg, 0.55, 0)
+    for lb in labels:
+        color = KIND_COLORS[lb["kind"]]
+        if lb["quad"]:
+            cv2.polylines(dbg, [np.array(lb["quad"], np.int32)], True, color, 2)
+        else:
+            # unverified/unused boxes drawn thin: recorded but nothing acts on them
+            thin = 1 if lb["localization"] == "gemini-unverified" else 2
+            bx0, by0, bx1, by1 = lb["box"]
+            cv2.rectangle(dbg, (bx0, by0), (bx1, by1), color, thin)
+        ax, ay = int(lb["anchor"][0]), int(lb["anchor"][1])
+        cv2.circle(dbg, (ax, ay), 4, color, -1)
+    if max(dbg.shape[:2]) > 1600:
+        s = 1600 / max(dbg.shape[:2])
+        dbg = cv2.resize(dbg, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
+    imwrite(out_dir / "step3_debug.png", dbg)
+
+    kinds: dict[str, int] = {}
+    for lb in labels:
+        kinds[lb["kind"]] = kinds.get(lb["kind"], 0) + 1
+    return {
+        "out_dir": out_dir, "raw_cached": raw_cached, "total": len(labels),
+        "kinds": kinds, "masked": sum(1 for lb in labels if lb["mask_found"]),
+        "warnings": warnings,
+    }

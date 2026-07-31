@@ -1,0 +1,42 @@
+# API keys and secrets
+gemini_api.txt
+.env
+.env.*
+!.env.example
+credentials*.json
+*.pem
+
+# Dataset: retain only its documentation
+/dataset/*
+!/dataset/README.md
+
+# Input maps and generated results
+/maps/
+/runs/
+/output/
+/outputs/
+
+# Duplicate local backup
+/Thematic_Backup/
+
+# Python environments and caches
+/.venv_local/
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local editor and agent configuration
+/.codex/
+/.agents/
+.vscode/
+.idea/
+
+# Temporary operating-system and Office files
+.DS_Store
+Thumbs.db
+~$*
