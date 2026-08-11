@@ -165,7 +165,13 @@ def prepare_text_input(
     furniture: list,
     map_mask: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Blank Step 2 furniture on the map crop exactly as Step 3 sees it."""
+    """Blank Step 2 furniture on the map crop exactly as Step 3 sees it.
+
+    Keep a context halo around the geographic mask.  Labels for coastal cities
+    and small islands are commonly typeset partly outside the filled territory;
+    clipping to the exact map mask used to erase those characters before the
+    text detectors ran (for example, Ajaccio beside Corsica).
+    """
     clean = map_bgr.copy()
     mh, mw = clean.shape[:2]
     cx0, cy0 = int(map_crop[0]), int(map_crop[1])
@@ -179,10 +185,26 @@ def prepare_text_input(
     bg = cv2.cvtColor(
         bg_lab.reshape(1, 1, 3).astype(np.float32), cv2.COLOR_Lab2BGR,
     ).reshape(3) * 255
+    geography_protect = None
     if map_mask is not None:
         if map_mask.shape != (mh, mw):
             raise ValueError("map mask and map crop must have the same dimensions")
-        clean[map_mask == 0] = bg
+        # Scale with the image because label size does too.  Furniture is
+        # blanked below with its own padding, so expanding the geographic
+        # context cannot reintroduce legend/title text.
+        # Five percent covers roughly half of a long horizontal place name
+        # when its anchor lies on a coastline.  That is the common worst case
+        # for labels overhanging a small component.
+        context_px = max(16, int(round(0.05 * max(mw, mh))))
+        kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (2 * context_px + 1, 2 * context_px + 1),
+        )
+        geographic = (map_mask > 0).astype(np.uint8)
+        text_context = cv2.dilate(geographic, kernel)
+        # Never let an imprecise/padded furniture box cut into mapped
+        # territory. One extra pixel protects the anti-aliased coastline.
+        geography_protect = cv2.dilate(geographic, np.ones((3, 3), np.uint8)).astype(bool)
+        clean[text_context == 0] = bg
     furniture_pad = max(8, int(0.015 * max(mw, mh)))
     for item in furniture:
         box = item["box"] if isinstance(item, dict) else item[1]
@@ -192,7 +214,15 @@ def prepare_text_input(
         lx1 = min(mw, fx1 - cx0 + furniture_pad)
         ly1 = min(mh, fy1 - cy0 + furniture_pad)
         if lx1 > lx0 and ly1 > ly0:
-            clean[ly0:ly1, lx0:lx1] = bg
+            region = clean[ly0:ly1, lx0:lx1]
+            if geography_protect is None:
+                region[:] = bg
+            else:
+                # Furniture padding may overlap a coastline even when the
+                # actual legend/title does not (France below Perpignan is one
+                # example). Blank only non-geographic pixels in that overlap.
+                protected = geography_protect[ly0:ly1, lx0:lx1]
+                region[~protected] = bg
     return clean
 
 

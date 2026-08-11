@@ -1,0 +1,49 @@
+{
+  "branch": "alternate",
+  "role": "preaggregation_geographic_cleanup",
+  "touch_readiness_finalized_in_step": 7,
+  "scale_mm_per_px": 0.259,
+  "orientation": "portrait",
+  "map_size_mm": [
+    180.0,
+    190.1
+  ],
+  "page_mm": [
+    210.0,
+    297.0
+  ],
+  "min_texture_area_px": 3816,
+  "min_texture_area_side_mm": 16.0,
+  "whole_component_merges": 325,
+  "unresolved_small_components": 74,
+  "islands": {
+    "dropped": 0,
+    "exaggerated": 0
+  },
+  "method": "physical_minimum_plus_bounded_gaussian_smoothing",
+  "tactile_min_feature_mm": 16.0,
+  "preaggregation_min_feature_mm": 16.0,
+  "tactile_min_area_mm2": 256.0,
+  "boundary_smoothing_mm": 2.0,
+  "smoothing_sigma_px": 7.72,
+  "max_class_change_share": 0.25,
+  "candidate_pixels": 25893,
+  "unseeded_components_cleaned": 1,
+  "changed_pixels": 33977,
+  "changed_share": 0.144,
+  "classes_vanished": [
+    "unlabelled: olive",
+    "unlabelled: gray",
+    "unlabelled: dark gray",
+    "unlabelled: dark green",
+    "unlabelled: light green",
+    "unlabelled: dark red"
+  ],
+  "lines_kept": 0,
+  "params": {
+    "method_version": 7,
+    "simplification_level": 5,
+    "min_texture_area_side_mm": 16.0,
+    "protected_classes": []
+  }
+}

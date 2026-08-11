@@ -1,0 +1,50 @@
+{
+  "area_assignments": [
+    {
+      "label": "Forest",
+      "members": [
+        0
+      ],
+      "pattern": "solid_black",
+      "pattern_desc": "solid raised surface",
+      "rationale": "A solid raised surface is best suited to represent the dense and continuous coverage of forest land.",
+      "is_thematic": true
+    },
+    {
+      "label": "Grassland",
+      "members": [
+        1,
+        2
+      ],
+      "pattern": "lines_horizontal",
+      "pattern_desc": "horizontal lines (4 mm apart)",
+      "rationale": "Parallel line hatching is appropriate for the open and expansive nature of grasslands.",
+      "is_thematic": true
+    },
+    {
+      "label": "Field Crops",
+      "members": [
+        3,
+        4
+      ],
+      "pattern": "grid_cross",
+      "pattern_desc": "diagonal cross-hatch (5 mm)",
+      "rationale": "A grid pattern represents the highly structured and organized layout of large-scale field crops.",
+      "is_thematic": true
+    },
+    {
+      "label": "Specialty Crops",
+      "members": [
+        6,
+        7
+      ],
+      "pattern": "dots_dense",
+      "pattern_desc": "dense dots (3 mm grid)",
+      "rationale": "Granular dots are suitable for representing the more scattered or intensive planting patterns of specialty crops.",
+      "is_thematic": true
+    }
+  ],
+  "line_styles": {},
+  "render_px_per_mm": 5.0,
+  "notes": []
+}

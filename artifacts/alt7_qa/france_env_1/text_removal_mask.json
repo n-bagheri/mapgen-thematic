@@ -1,0 +1,7 @@
+{
+  "mode": "automatic-safe",
+  "precise_stroke_labels": 12,
+  "whole_box_labels": 9,
+  "kept_labels": 9,
+  "removed_pixels": 16520
+}

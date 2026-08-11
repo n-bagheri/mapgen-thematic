@@ -1,0 +1,292 @@
+{
+  "version": 1,
+  "classes_fingerprint": "513d13cd5fea7a6b48583809b7ffd5ddf41a78728ccbcc59b3d9ccc121848fb7",
+  "reviewed": false,
+  "status": "obsolete_not_used_by_bounded_alt_step5",
+  "data_ordering": "qualitative",
+  "pairs": [
+    {
+      "a_index": 0,
+      "a_label": "Forest",
+      "b_index": 1,
+      "b_label": "Grassland",
+      "allow_a_to_b": false,
+      "allow_b_to_a": false,
+      "aggregation_compatible": false,
+      "rationale": "No reviewed compatibility decision"
+    },
+    {
+      "a_index": 0,
+      "a_label": "Forest",
+      "b_index": 2,
+      "b_label": "Grassland and crops",
+      "allow_a_to_b": false,
+      "allow_b_to_a": false,
+      "aggregation_compatible": false,
+      "rationale": "No reviewed compatibility decision"
+    },
+    {
+      "a_index": 0,
+      "a_label": "Forest",
+      "b_index": 3,
+      "b_label": "Cropland (primarily wheat, sugar beets, corn)",
+      "allow_a_to_b": false,
+      "allow_b_to_a": false,
+      "aggregation_compatible": false,
+      "rationale": "No reviewed compatibility decision"
+    },
+    {
+      "a_index": 0,
+      "a_label": "Forest",
+      "b_index": 4,
+      "b_label": "Other crops (primarily cereals)",
+      "allow_a_to_b": false,
+      "allow_b_to_a": false,
+      "aggregation_compatible": false,
+      "rationale": "No reviewed compatibility decision"
+    },
+    {
+      "a_index": 0,
+      "a_label": "Forest",
+      "b_index": 5,
+      "b_label": "Olives (often with vines and wheat)",
+      "allow_a_to_b": false,
+      "allow_b_to_a": false,
+      "aggregation_compatible": false,
+      "rationale": "No reviewed compatibility decision"
+    },
+    {
+      "a_index": 0,
+      "a_label": "Forest",
+      "b_index": 6,
+      "b_label": "Market gardening (fruits, vegetables, flowers)",
+      "allow_a_to_b": false,
+      "allow_b_to_a": false,
+      "aggregation_compatible": false,
+      "rationale": "No reviewed compatibility decision"
+    },
+    {
+      "a_index": 0,
+      "a_label": "Forest",
+      "b_index": 7,
+      "b_label": "Vineyards",
+      "allow_a_to_b": false,
+      "allow_b_to_a": false,
+      "aggregation_compatible": false,
+      "rationale": "No reviewed compatibility decision"
+    },
+    {
+      "a_index": 1,
+      "a_label": "Grassland",
+      "b_index": 2,
+      "b_label": "Grassland and crops",
+      "allow_a_to_b": false,
+      "allow_b_to_a": false,
+      "aggregation_compatible": false,
+      "rationale": "No reviewed compatibility decision"
+    },
+    {
+      "a_index": 1,
+      "a_label": "Grassland",
+      "b_index": 3,
+      "b_label": "Cropland (primarily wheat, sugar beets, corn)",
+      "allow_a_to_b": false,
+      "allow_b_to_a": false,
+      "aggregation_compatible": false,
+      "rationale": "No reviewed compatibility decision"
+    },
+    {
+      "a_index": 1,
+      "a_label": "Grassland",
+      "b_index": 4,
+      "b_label": "Other crops (primarily cereals)",
+      "allow_a_to_b": false,
+      "allow_b_to_a": false,
+      "aggregation_compatible": false,
+      "rationale": "No reviewed compatibility decision"
+    },
+    {
+      "a_index": 1,
+      "a_label": "Grassland",
+      "b_index": 5,
+      "b_label": "Olives (often with vines and wheat)",
+      "allow_a_to_b": false,
+      "allow_b_to_a": false,
+      "aggregation_compatible": false,
+      "rationale": "No reviewed compatibility decision"
+    },
+    {
+      "a_index": 1,
+      "a_label": "Grassland",
+      "b_index": 6,
+      "b_label": "Market gardening (fruits, vegetables, flowers)",
+      "allow_a_to_b": false,
+      "allow_b_to_a": false,
+      "aggregation_compatible": false,
+      "rationale": "No reviewed compatibility decision"
+    },
+    {
+      "a_index": 1,
+      "a_label": "Grassland",
+      "b_index": 7,
+      "b_label": "Vineyards",
+      "allow_a_to_b": false,
+      "allow_b_to_a": false,
+      "aggregation_compatible": false,
+      "rationale": "No reviewed compatibility decision"
+    },
+    {
+      "a_index": 2,
+      "a_label": "Grassland and crops",
+      "b_index": 3,
+      "b_label": "Cropland (primarily wheat, sugar beets, corn)",
+      "allow_a_to_b": false,
+      "allow_b_to_a": false,
+      "aggregation_compatible": false,
+      "rationale": "No reviewed compatibility decision"
+    },
+    {
+      "a_index": 2,
+      "a_label": "Grassland and crops",
+      "b_index": 4,
+      "b_label": "Other crops (primarily cereals)",
+      "allow_a_to_b": false,
+      "allow_b_to_a": false,
+      "aggregation_compatible": false,
+      "rationale": "No reviewed compatibility decision"
+    },
+    {
+      "a_index": 2,
+      "a_label": "Grassland and crops",
+      "b_index": 5,
+      "b_label": "Olives (often with vines and wheat)",
+      "allow_a_to_b": false,
+      "allow_b_to_a": false,
+      "aggregation_compatible": false,
+      "rationale": "No reviewed compatibility decision"
+    },
+    {
+      "a_index": 2,
+      "a_label": "Grassland and crops",
+      "b_index": 6,
+      "b_label": "Market gardening (fruits, vegetables, flowers)",
+      "allow_a_to_b": false,
+      "allow_b_to_a": false,
+      "aggregation_compatible": false,
+      "rationale": "No reviewed compatibility decision"
+    },
+    {
+      "a_index": 2,
+      "a_label": "Grassland and crops",
+      "b_index": 7,
+      "b_label": "Vineyards",
+      "allow_a_to_b": false,
+      "allow_b_to_a": false,
+      "aggregation_compatible": false,
+      "rationale": "No reviewed compatibility decision"
+    },
+    {
+      "a_index": 3,
+      "a_label": "Cropland (primarily wheat, sugar beets, corn)",
+      "b_index": 4,
+      "b_label": "Other crops (primarily cereals)",
+      "allow_a_to_b": false,
+      "allow_b_to_a": false,
+      "aggregation_compatible": false,
+      "rationale": "No reviewed compatibility decision"
+    },
+    {
+      "a_index": 3,
+      "a_label": "Cropland (primarily wheat, sugar beets, corn)",
+      "b_index": 5,
+      "b_label": "Olives (often with vines and wheat)",
+      "allow_a_to_b": false,
+      "allow_b_to_a": false,
+      "aggregation_compatible": false,
+      "rationale": "No reviewed compatibility decision"
+    },
+    {
+      "a_index": 3,
+      "a_label": "Cropland (primarily wheat, sugar beets, corn)",
+      "b_index": 6,
+      "b_label": "Market gardening (fruits, vegetables, flowers)",
+      "allow_a_to_b": false,
+      "allow_b_to_a": false,
+      "aggregation_compatible": false,
+      "rationale": "No reviewed compatibility decision"
+    },
+    {
+      "a_index": 3,
+      "a_label": "Cropland (primarily wheat, sugar beets, corn)",
+      "b_index": 7,
+      "b_label": "Vineyards",
+      "allow_a_to_b": false,
+      "allow_b_to_a": false,
+      "aggregation_compatible": false,
+      "rationale": "No reviewed compatibility decision"
+    },
+    {
+      "a_index": 4,
+      "a_label": "Other crops (primarily cereals)",
+      "b_index": 5,
+      "b_label": "Olives (often with vines and wheat)",
+      "allow_a_to_b": false,
+      "allow_b_to_a": false,
+      "aggregation_compatible": false,
+      "rationale": "No reviewed compatibility decision"
+    },
+    {
+      "a_index": 4,
+      "a_label": "Other crops (primarily cereals)",
+      "b_index": 6,
+      "b_label": "Market gardening (fruits, vegetables, flowers)",
+      "allow_a_to_b": false,
+      "allow_b_to_a": false,
+      "aggregation_compatible": false,
+      "rationale": "No reviewed compatibility decision"
+    },
+    {
+      "a_index": 4,
+      "a_label": "Other crops (primarily cereals)",
+      "b_index": 7,
+      "b_label": "Vineyards",
+      "allow_a_to_b": false,
+      "allow_b_to_a": false,
+      "aggregation_compatible": false,
+      "rationale": "No reviewed compatibility decision"
+    },
+    {
+      "a_index": 5,
+      "a_label": "Olives (often with vines and wheat)",
+      "b_index": 6,
+      "b_label": "Market gardening (fruits, vegetables, flowers)",
+      "allow_a_to_b": false,
+      "allow_b_to_a": false,
+      "aggregation_compatible": false,
+      "rationale": "No reviewed compatibility decision"
+    },
+    {
+      "a_index": 5,
+      "a_label": "Olives (often with vines and wheat)",
+      "b_index": 7,
+      "b_label": "Vineyards",
+      "allow_a_to_b": false,
+      "allow_b_to_a": false,
+      "aggregation_compatible": false,
+      "rationale": "No reviewed compatibility decision"
+    },
+    {
+      "a_index": 6,
+      "a_label": "Market gardening (fruits, vegetables, flowers)",
+      "b_index": 7,
+      "b_label": "Vineyards",
+      "allow_a_to_b": false,
+      "allow_b_to_a": false,
+      "aggregation_compatible": false,
+      "rationale": "No reviewed compatibility decision"
+    }
+  ],
+  "notes": [
+    "semantic proposal unavailable ([WinError 10013] Une tentative d’accès à un socket de manière interdite par ses autorisations d’accès a été tentée); all thematic replacements forbidden"
+  ]
+}

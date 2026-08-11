@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Layer_2" data-name="Layer 2" xmlns="http://www.w3.org/2000/svg" width="136.06299" height="136.06299" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 136.06299 136.06299">
+  <defs>
+    <pattern id="Nouvelle_nuance_de_motif_9" data-name="Nouvelle nuance de motif 9" x="0" y="0" width="72" height="72" patternTransform="translate(9737.9941 -8098.43113) rotate(-45) scale(1.5732)" patternUnits="userSpaceOnUse" viewBox="0 0 72 72">
+      <g>
+        <rect width="72" height="72" fill="none" stroke-width="0"/>
+        <g>
+          <line x1="71.75" y1="66" x2="144.25" y2="66" fill="none" stroke="#000" stroke-width="4.8"/>
+          <line x1="71.75" y1="42" x2="144.25" y2="42" fill="none" stroke="#000" stroke-width="4.8"/>
+          <line x1="71.75" y1="18" x2="144.25" y2="18" fill="none" stroke="#000" stroke-width="4.8"/>
+          <line x1="71.75" y1="54" x2="144.25" y2="54" fill="none" stroke="#000" stroke-width="4.8"/>
+          <line x1="71.75" y1="30" x2="144.25" y2="30" fill="none" stroke="#000" stroke-width="4.8"/>
+          <line x1="71.75" y1="6" x2="144.25" y2="6" fill="none" stroke="#000" stroke-width="4.8"/>
+        </g>
+        <g>
+          <line x1="-.25" y1="66" x2="72.25" y2="66" fill="none" stroke="#000" stroke-width="4.8"/>
+          <line x1="-.25" y1="42" x2="72.25" y2="42" fill="none" stroke="#000" stroke-width="4.8"/>
+          <line x1="-.25" y1="18" x2="72.25" y2="18" fill="none" stroke="#000" stroke-width="4.8"/>
+          <line x1="-.25" y1="54" x2="72.25" y2="54" fill="none" stroke="#000" stroke-width="4.8"/>
+          <line x1="-.25" y1="30" x2="72.25" y2="30" fill="none" stroke="#000" stroke-width="4.8"/>
+          <line x1="-.25" y1="6" x2="72.25" y2="6" fill="none" stroke="#000" stroke-width="4.8"/>
+        </g>
+        <g>
+          <line x1="-72.25" y1="66" x2=".25" y2="66" fill="none" stroke="#000" stroke-width="4.8"/>
+          <line x1="-72.25" y1="42" x2=".25" y2="42" fill="none" stroke="#000" stroke-width="4.8"/>
+          <line x1="-72.25" y1="18" x2=".25" y2="18" fill="none" stroke="#000" stroke-width="4.8"/>
+          <line x1="-72.25" y1="54" x2=".25" y2="54" fill="none" stroke="#000" stroke-width="4.8"/>
+          <line x1="-72.25" y1="30" x2=".25" y2="30" fill="none" stroke="#000" stroke-width="4.8"/>
+          <line x1="-72.25" y1="6" x2=".25" y2="6" fill="none" stroke="#000" stroke-width="4.8"/>
+        </g>
+      </g>
+    </pattern>
+  </defs>
+  <g id="Calque_1" data-name="Calque 1">
+    <rect width="136.06299" height="136.06299" fill="url(#Nouvelle_nuance_de_motif_9)" stroke-width="0"/>
+  </g>
+</svg>

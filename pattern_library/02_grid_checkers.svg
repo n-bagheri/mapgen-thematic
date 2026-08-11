@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Layer_2" data-name="Layer 2" xmlns="http://www.w3.org/2000/svg" width="136.06299" height="136.06299" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 136.06299 136.06299">
+  <defs>
+    <pattern id="Nouvelle_nuance_de_motif_8" data-name="Nouvelle nuance de motif 8" x="0" y="0" width="30.3984" height="30.3984" patternTransform="translate(2272.0011 -18727.75438) rotate(-90) scale(1.27822)" patternUnits="userSpaceOnUse" viewBox="0 0 30.3984 30.3984">
+      <g>
+        <rect y="0" width="30.3984" height="30.3984" fill="none" stroke-width="0"/>
+        <rect x=".00001" y=".00001" width="15.1992" height="15.1992" stroke-width="0"/>
+        <rect x="15.19921" y="15.19921" width="15.1992" height="15.1992" stroke-width="0"/>
+      </g>
+    </pattern>
+  </defs>
+  <g id="Calque_1" data-name="Calque 1">
+    <rect width="136.06299" height="136.06299" fill="url(#Nouvelle_nuance_de_motif_8)" stroke-width="0"/>
+  </g>
+</svg>

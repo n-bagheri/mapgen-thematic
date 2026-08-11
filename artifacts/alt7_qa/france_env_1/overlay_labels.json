@@ -1,0 +1,1703 @@
+{
+  "coordinate_contract": {
+    "origin": "top-left of map; x right, y down",
+    "source_space": "map_area.png / label_map_gen.png pixels",
+    "source_size_px": [
+      695,
+      734
+    ],
+    "tactile_space": "step7_tactile.png pixels (map-only canvas)",
+    "tactile_size_px": [
+      900,
+      951
+    ],
+    "map_origin_tactile_px": [
+      0,
+      0
+    ],
+    "map_origin_mm": [
+      0,
+      0
+    ],
+    "source_to_tactile_scale": [
+      1.294964,
+      1.29564
+    ],
+    "source_mm_per_px": 0.259,
+    "note": "Add the future page-layout map origin to tactile positions after placing the map on a page."
+  },
+  "labels": [
+    {
+      "text": "PARIS",
+      "kind": "capital",
+      "priority": 1,
+      "recognition_status": "text-confirmed",
+      "text_position_source": "stroke_centroid",
+      "text_position_source_px": [
+        378.732,
+        161.513
+      ],
+      "text_position_tactile_px": [
+        490.445,
+        209.263
+      ],
+      "text_position_mm": [
+        98.092,
+        41.832
+      ],
+      "feature_position_source": "point_symbol",
+      "feature_position_source_px": [
+        348.5,
+        181.333
+      ],
+      "feature_position_tactile_px": [
+        451.295,
+        234.943
+      ],
+      "feature_position_mm": [
+        90.261,
+        46.965
+      ],
+      "box_source_px": [
+        359.0,
+        155.0,
+        397.0,
+        168.0
+      ],
+      "box_tactile_px": [
+        464.892,
+        200.824,
+        514.101,
+        217.668
+      ],
+      "quad_source_px": [
+        [
+          401,
+          178
+        ],
+        [
+          347,
+          162
+        ],
+        [
+          353,
+          142
+        ],
+        [
+          407,
+          158
+        ]
+      ],
+      "quad_tactile_px": [
+        [
+          519.281,
+          230.624
+        ],
+        [
+          449.353,
+          209.894
+        ],
+        [
+          457.122,
+          183.981
+        ],
+        [
+          527.05,
+          204.711
+        ]
+      ]
+    },
+    {
+      "text": "Nantes",
+      "kind": "city",
+      "priority": 5,
+      "recognition_status": "text-confirmed",
+      "text_position_source": "stroke_centroid",
+      "text_position_source_px": [
+        169.5,
+        251.976
+      ],
+      "text_position_tactile_px": [
+        219.496,
+        326.471
+      ],
+      "text_position_mm": [
+        43.901,
+        65.262
+      ],
+      "feature_position_source": null,
+      "feature_position_source_px": null,
+      "feature_position_tactile_px": null,
+      "feature_position_mm": null,
+      "box_source_px": [
+        152.0,
+        241.0,
+        194.0,
+        254.0
+      ],
+      "box_tactile_px": [
+        196.835,
+        312.249,
+        251.223,
+        329.093
+      ],
+      "quad_source_px": [
+        [
+          149,
+          260
+        ],
+        [
+          147,
+          246
+        ],
+        [
+          190,
+          242
+        ],
+        [
+          191,
+          255
+        ]
+      ],
+      "quad_tactile_px": [
+        [
+          192.95,
+          336.866
+        ],
+        [
+          190.36,
+          318.728
+        ],
+        [
+          246.043,
+          313.545
+        ],
+        [
+          247.338,
+          330.388
+        ]
+      ]
+    },
+    {
+      "text": "Ajaccio",
+      "kind": "city",
+      "priority": 5,
+      "recognition_status": "text-confirmed",
+      "text_position_source": "stroke_centroid",
+      "text_position_source_px": [
+        614.118,
+        694.326
+      ],
+      "text_position_tactile_px": [
+        795.261,
+        899.597
+      ],
+      "text_position_mm": [
+        159.057,
+        179.831
+      ],
+      "feature_position_source": "point_symbol",
+      "feature_position_source_px": [
+        635.118,
+        694.059
+      ],
+      "feature_position_tactile_px": [
+        822.455,
+        899.251
+      ],
+      "feature_position_mm": [
+        164.495,
+        179.761
+      ],
+      "box_source_px": [
+        596.0,
+        687.0,
+        642.0,
+        701.0
+      ],
+      "box_tactile_px": [
+        771.799,
+        890.105,
+        831.367,
+        908.244
+      ],
+      "quad_source_px": [
+        [
+          631,
+          699
+        ],
+        [
+          599,
+          699
+        ],
+        [
+          599,
+          690
+        ],
+        [
+          631,
+          690
+        ]
+      ],
+      "quad_tactile_px": [
+        [
+          817.122,
+          905.653
+        ],
+        [
+          775.683,
+          905.653
+        ],
+        [
+          775.683,
+          893.992
+        ],
+        [
+          817.122,
+          893.992
+        ]
+      ]
+    },
+    {
+      "text": "Rennes",
+      "kind": "city",
+      "priority": 5,
+      "recognition_status": "text-confirmed",
+      "text_position_source": "stroke_centroid",
+      "text_position_source_px": [
+        176.871,
+        191.691
+      ],
+      "text_position_tactile_px": [
+        229.041,
+        248.363
+      ],
+      "text_position_mm": [
+        45.81,
+        49.648
+      ],
+      "feature_position_source": null,
+      "feature_position_source_px": null,
+      "feature_position_tactile_px": null,
+      "feature_position_mm": null,
+      "box_source_px": [
+        159.0,
+        185.0,
+        202.0,
+        197.0
+      ],
+      "box_tactile_px": [
+        205.899,
+        239.693,
+        261.583,
+        255.241
+      ],
+      "quad_source_px": [
+        [
+          155,
+          198
+        ],
+        [
+          153,
+          187
+        ],
+        [
+          198,
+          183
+        ],
+        [
+          199,
+          193
+        ]
+      ],
+      "quad_tactile_px": [
+        [
+          200.719,
+          256.537
+        ],
+        [
+          198.129,
+          242.285
+        ],
+        [
+          256.403,
+          237.102
+        ],
+        [
+          257.698,
+          250.059
+        ]
+      ]
+    },
+    {
+      "text": "Orléans",
+      "kind": "city",
+      "priority": 5,
+      "recognition_status": "text-confirmed",
+      "text_position_source": "box_center",
+      "text_position_source_px": [
+        350.0,
+        231.5
+      ],
+      "text_position_tactile_px": [
+        453.237,
+        299.941
+      ],
+      "text_position_mm": [
+        90.65,
+        59.959
+      ],
+      "feature_position_source": "point_symbol",
+      "feature_position_source_px": [
+        348.611,
+        232.444
+      ],
+      "feature_position_tactile_px": [
+        451.439,
+        301.164
+      ],
+      "feature_position_mm": [
+        90.29,
+        60.203
+      ],
+      "box_source_px": [
+        327.0,
+        225.0,
+        373.0,
+        238.0
+      ],
+      "box_tactile_px": [
+        423.453,
+        291.519,
+        483.022,
+        308.362
+      ],
+      "quad_source_px": null,
+      "quad_tactile_px": null
+    },
+    {
+      "text": "Toulouse",
+      "kind": "city",
+      "priority": 5,
+      "recognition_status": "text-confirmed",
+      "text_position_source": "box_center",
+      "text_position_source_px": [
+        293.0,
+        542.5
+      ],
+      "text_position_tactile_px": [
+        379.424,
+        702.885
+      ],
+      "text_position_mm": [
+        75.887,
+        140.507
+      ],
+      "feature_position_source": "point_symbol",
+      "feature_position_source_px": [
+        295.174,
+        543.087
+      ],
+      "feature_position_tactile_px": [
+        382.24,
+        703.645
+      ],
+      "feature_position_mm": [
+        76.45,
+        140.66
+      ],
+      "box_source_px": [
+        266.0,
+        536.0,
+        320.0,
+        549.0
+      ],
+      "box_tactile_px": [
+        344.46,
+        694.463,
+        414.388,
+        711.307
+      ],
+      "quad_source_px": null,
+      "quad_tactile_px": null
+    },
+    {
+      "text": "Limoges",
+      "kind": "city",
+      "priority": 5,
+      "recognition_status": "text-confirmed",
+      "text_position_source": "stroke_centroid",
+      "text_position_source_px": [
+        299.192,
+        369.973
+      ],
+      "text_position_tactile_px": [
+        387.443,
+        479.352
+      ],
+      "text_position_mm": [
+        77.491,
+        95.823
+      ],
+      "feature_position_source": null,
+      "feature_position_source_px": null,
+      "feature_position_tactile_px": null,
+      "feature_position_mm": null,
+      "box_source_px": [
+        275.0,
+        361.0,
+        327.0,
+        378.0
+      ],
+      "box_tactile_px": [
+        356.115,
+        467.726,
+        423.453,
+        489.752
+      ],
+      "quad_source_px": [
+        [
+          273,
+          377
+        ],
+        [
+          272,
+          365
+        ],
+        [
+          323,
+          361
+        ],
+        [
+          324,
+          372
+        ]
+      ],
+      "quad_tactile_px": [
+        [
+          353.525,
+          488.456
+        ],
+        [
+          352.23,
+          472.909
+        ],
+        [
+          418.273,
+          467.726
+        ],
+        [
+          419.568,
+          481.978
+        ]
+      ]
+    },
+    {
+      "text": "Marseille",
+      "kind": "city",
+      "priority": 5,
+      "recognition_status": "text-confirmed",
+      "text_position_source": "box_center",
+      "text_position_source_px": [
+        496.0,
+        572.0
+      ],
+      "text_position_tactile_px": [
+        642.302,
+        741.106
+      ],
+      "text_position_mm": [
+        128.464,
+        148.148
+      ],
+      "feature_position_source": "point_symbol",
+      "feature_position_source_px": [
+        499.762,
+        572.143
+      ],
+      "feature_position_tactile_px": [
+        647.174,
+        741.291
+      ],
+      "feature_position_mm": [
+        129.438,
+        148.185
+      ],
+      "box_source_px": [
+        470.0,
+        564.0,
+        522.0,
+        580.0
+      ],
+      "box_tactile_px": [
+        608.633,
+        730.741,
+        675.971,
+        751.471
+      ],
+      "quad_source_px": null,
+      "quad_tactile_px": null
+    },
+    {
+      "text": "Bordeaux",
+      "kind": "city",
+      "priority": 5,
+      "recognition_status": "text-confirmed",
+      "text_position_source": "stroke_centroid",
+      "text_position_source_px": [
+        183.708,
+        429.277
+      ],
+      "text_position_tactile_px": [
+        237.895,
+        556.188
+      ],
+      "text_position_mm": [
+        47.58,
+        111.183
+      ],
+      "feature_position_source": "point_symbol",
+      "feature_position_source_px": [
+        245.889,
+        443.889
+      ],
+      "feature_position_tactile_px": [
+        318.417,
+        575.12
+      ],
+      "feature_position_mm": [
+        63.685,
+        114.967
+      ],
+      "box_source_px": [
+        174.0,
+        422.0,
+        232.0,
+        436.0
+      ],
+      "box_tactile_px": [
+        225.324,
+        546.76,
+        300.432,
+        564.899
+      ],
+      "quad_source_px": [
+        [
+          191,
+          432
+        ],
+        [
+          178,
+          432
+        ],
+        [
+          178,
+          426
+        ],
+        [
+          191,
+          426
+        ]
+      ],
+      "quad_tactile_px": [
+        [
+          247.338,
+          559.717
+        ],
+        [
+          230.504,
+          559.717
+        ],
+        [
+          230.504,
+          551.943
+        ],
+        [
+          247.338,
+          551.943
+        ]
+      ]
+    },
+    {
+      "text": "Nancy",
+      "kind": "city",
+      "priority": 5,
+      "recognition_status": "text-confirmed",
+      "text_position_source": "stroke_centroid",
+      "text_position_source_px": [
+        555.53,
+        194.55
+      ],
+      "text_position_tactile_px": [
+        719.392,
+        252.067
+      ],
+      "text_position_mm": [
+        143.882,
+        50.389
+      ],
+      "feature_position_source": "point_symbol",
+      "feature_position_source_px": [
+        537.95,
+        198.1
+      ],
+      "feature_position_tactile_px": [
+        696.626,
+        256.666
+      ],
+      "feature_position_mm": [
+        139.329,
+        51.308
+      ],
+      "box_source_px": [
+        538.0,
+        185.0,
+        577.0,
+        201.0
+      ],
+      "box_tactile_px": [
+        696.691,
+        239.693,
+        747.194,
+        260.424
+      ],
+      "quad_source_px": [
+        [
+          574,
+          209
+        ],
+        [
+          542,
+          209
+        ],
+        [
+          542,
+          189
+        ],
+        [
+          574,
+          189
+        ]
+      ],
+      "quad_tactile_px": [
+        [
+          743.309,
+          270.789
+        ],
+        [
+          701.871,
+          270.789
+        ],
+        [
+          701.871,
+          244.876
+        ],
+        [
+          743.309,
+          244.876
+        ]
+      ]
+    },
+    {
+      "text": "Reims",
+      "kind": "city",
+      "priority": 5,
+      "recognition_status": "text-confirmed",
+      "text_position_source": "stroke_centroid",
+      "text_position_source_px": [
+        456.369,
+        145.901
+      ],
+      "text_position_tactile_px": [
+        590.982,
+        189.036
+      ],
+      "text_position_mm": [
+        118.2,
+        37.788
+      ],
+      "feature_position_source": "point_symbol",
+      "feature_position_source_px": [
+        430.222,
+        163.889
+      ],
+      "feature_position_tactile_px": [
+        557.122,
+        212.341
+      ],
+      "feature_position_mm": [
+        111.428,
+        42.447
+      ],
+      "box_source_px": [
+        442.0,
+        140.0,
+        480.0,
+        152.0
+      ],
+      "box_tactile_px": [
+        572.374,
+        181.39,
+        621.583,
+        196.937
+      ],
+      "quad_source_px": [
+        [
+          437,
+          153
+        ],
+        [
+          436,
+          135
+        ],
+        [
+          476,
+          133
+        ],
+        [
+          477,
+          151
+        ]
+      ],
+      "quad_tactile_px": [
+        [
+          565.899,
+          198.233
+        ],
+        [
+          564.604,
+          174.911
+        ],
+        [
+          616.403,
+          172.32
+        ],
+        [
+          617.698,
+          195.642
+        ]
+      ]
+    },
+    {
+      "text": "Bourges",
+      "kind": "city",
+      "priority": 5,
+      "recognition_status": "text-confirmed",
+      "text_position_source": "stroke_centroid",
+      "text_position_source_px": [
+        317.292,
+        297.14
+      ],
+      "text_position_tactile_px": [
+        410.882,
+        384.986
+      ],
+      "text_position_mm": [
+        82.179,
+        76.959
+      ],
+      "feature_position_source": "point_symbol",
+      "feature_position_source_px": [
+        305.37,
+        280.772
+      ],
+      "feature_position_tactile_px": [
+        395.443,
+        363.779
+      ],
+      "feature_position_mm": [
+        79.091,
+        72.72
+      ],
+      "box_source_px": [
+        290.0,
+        290.0,
+        340.0,
+        305.0
+      ],
+      "box_tactile_px": [
+        375.54,
+        375.736,
+        440.288,
+        395.17
+      ],
+      "quad_source_px": [
+        [
+          294,
+          306
+        ],
+        [
+          293,
+          293
+        ],
+        [
+          342,
+          287
+        ],
+        [
+          343,
+          300
+        ]
+      ],
+      "quad_tactile_px": [
+        [
+          380.719,
+          396.466
+        ],
+        [
+          379.424,
+          379.623
+        ],
+        [
+          442.878,
+          371.849
+        ],
+        [
+          444.173,
+          388.692
+        ]
+      ]
+    },
+    {
+      "text": "Grenoble",
+      "kind": "city",
+      "priority": 5,
+      "recognition_status": "text-confirmed",
+      "text_position_source": "box_center",
+      "text_position_source_px": [
+        531.0,
+        443.0
+      ],
+      "text_position_tactile_px": [
+        687.626,
+        573.969
+      ],
+      "text_position_mm": [
+        137.529,
+        114.737
+      ],
+      "feature_position_source": "point_symbol",
+      "feature_position_source_px": [
+        499.125,
+        448.188
+      ],
+      "feature_position_tactile_px": [
+        646.349,
+        580.69
+      ],
+      "feature_position_mm": [
+        129.273,
+        116.081
+      ],
+      "box_source_px": [
+        508.0,
+        437.0,
+        554.0,
+        449.0
+      ],
+      "box_tactile_px": [
+        657.842,
+        566.195,
+        717.41,
+        581.743
+      ],
+      "quad_source_px": null,
+      "quad_tactile_px": null
+    },
+    {
+      "text": "Dijon",
+      "kind": "city",
+      "priority": 5,
+      "recognition_status": "text-confirmed",
+      "text_position_source": "stroke_centroid",
+      "text_position_source_px": [
+        448.062,
+        282.84
+      ],
+      "text_position_tactile_px": [
+        580.225,
+        366.459
+      ],
+      "text_position_mm": [
+        116.048,
+        73.256
+      ],
+      "feature_position_source": "point_symbol",
+      "feature_position_source_px": [
+        469.0,
+        288.947
+      ],
+      "feature_position_tactile_px": [
+        607.338,
+        374.372
+      ],
+      "feature_position_mm": [
+        121.471,
+        74.837
+      ],
+      "box_source_px": [
+        441.0,
+        281.0,
+        475.0,
+        295.0
+      ],
+      "box_tactile_px": [
+        571.079,
+        364.075,
+        615.108,
+        382.214
+      ],
+      "quad_source_px": [
+        [
+          452,
+          299
+        ],
+        [
+          430,
+          274
+        ],
+        [
+          443,
+          263
+        ],
+        [
+          465,
+          288
+        ]
+      ],
+      "quad_tactile_px": [
+        [
+          585.324,
+          387.396
+        ],
+        [
+          556.835,
+          355.005
+        ],
+        [
+          573.669,
+          340.753
+        ],
+        [
+          602.158,
+          373.144
+        ]
+      ]
+    },
+    {
+      "text": "Le Mans",
+      "kind": "city",
+      "priority": 5,
+      "recognition_status": "text-confirmed",
+      "text_position_source": "stroke_centroid",
+      "text_position_source_px": [
+        279.063,
+        211.199
+      ],
+      "text_position_tactile_px": [
+        361.376,
+        273.638
+      ],
+      "text_position_mm": [
+        72.277,
+        54.701
+      ],
+      "feature_position_source": "point_symbol",
+      "feature_position_source_px": [
+        247.471,
+        216.353
+      ],
+      "feature_position_tactile_px": [
+        320.466,
+        280.316
+      ],
+      "feature_position_mm": [
+        64.095,
+        56.035
+      ],
+      "box_source_px": [
+        249.0,
+        205.0,
+        298.0,
+        218.0
+      ],
+      "box_tactile_px": [
+        322.446,
+        265.606,
+        385.899,
+        282.45
+      ],
+      "quad_source_px": [
+        [
+          253,
+          227
+        ],
+        [
+          251,
+          207
+        ],
+        [
+          303,
+          202
+        ],
+        [
+          305,
+          222
+        ]
+      ],
+      "quad_tactile_px": [
+        [
+          327.626,
+          294.11
+        ],
+        [
+          325.036,
+          268.198
+        ],
+        [
+          392.374,
+          261.719
+        ],
+        [
+          394.964,
+          287.632
+        ]
+      ]
+    },
+    {
+      "text": "Lille",
+      "kind": "city",
+      "priority": 5,
+      "recognition_status": "text-confirmed",
+      "text_position_source": "box_center",
+      "text_position_source_px": [
+        386.0,
+        45.5
+      ],
+      "text_position_tactile_px": [
+        499.856,
+        58.952
+      ],
+      "text_position_mm": [
+        99.974,
+        11.784
+      ],
+      "feature_position_source": "point_symbol",
+      "feature_position_source_px": [
+        394.52,
+        46.56
+      ],
+      "feature_position_tactile_px": [
+        510.889,
+        60.325
+      ],
+      "feature_position_mm": [
+        102.181,
+        12.059
+      ],
+      "box_source_px": [
+        372.0,
+        39.0,
+        400.0,
+        52.0
+      ],
+      "box_tactile_px": [
+        481.727,
+        50.53,
+        517.986,
+        67.373
+      ],
+      "quad_source_px": null,
+      "quad_tactile_px": null
+    },
+    {
+      "text": "Brest",
+      "kind": "city",
+      "priority": 5,
+      "recognition_status": "text-confirmed",
+      "text_position_source": "stroke_centroid",
+      "text_position_source_px": [
+        33.533,
+        149.672
+      ],
+      "text_position_tactile_px": [
+        43.423,
+        193.921
+      ],
+      "text_position_mm": [
+        8.685,
+        38.765
+      ],
+      "feature_position_source": null,
+      "feature_position_source_px": null,
+      "feature_position_tactile_px": null,
+      "feature_position_mm": null,
+      "box_source_px": [
+        25.0,
+        144.0,
+        59.0,
+        157.0
+      ],
+      "box_tactile_px": [
+        32.374,
+        186.572,
+        76.403,
+        203.416
+      ],
+      "quad_source_px": [
+        [
+          53,
+          165
+        ],
+        [
+          16,
+          161
+        ],
+        [
+          19,
+          136
+        ],
+        [
+          56,
+          140
+        ]
+      ],
+      "quad_tactile_px": [
+        [
+          68.633,
+          213.781
+        ],
+        [
+          20.719,
+          208.598
+        ],
+        [
+          24.604,
+          176.207
+        ],
+        [
+          72.518,
+          181.39
+        ]
+      ]
+    },
+    {
+      "text": "Rouen",
+      "kind": "city",
+      "priority": 5,
+      "recognition_status": "text-confirmed",
+      "text_position_source": "box_center",
+      "text_position_source_px": [
+        321.5,
+        124.5
+      ],
+      "text_position_tactile_px": [
+        416.331,
+        161.307
+      ],
+      "text_position_mm": [
+        83.269,
+        32.245
+      ],
+      "feature_position_source": "point_symbol",
+      "feature_position_source_px": [
+        321.957,
+        125.261
+      ],
+      "feature_position_tactile_px": [
+        416.922,
+        162.293
+      ],
+      "feature_position_mm": [
+        83.387,
+        32.443
+      ],
+      "box_source_px": [
+        302.0,
+        116.0,
+        341.0,
+        133.0
+      ],
+      "box_tactile_px": [
+        391.079,
+        150.294,
+        441.583,
+        172.32
+      ],
+      "quad_source_px": null,
+      "quad_tactile_px": null
+    },
+    {
+      "text": "Perpignan",
+      "kind": "city",
+      "priority": 5,
+      "recognition_status": "partial-text-match",
+      "text_position_source": "box_center",
+      "text_position_source_px": [
+        299.0,
+        609.5
+      ],
+      "text_position_tactile_px": [
+        387.194,
+        789.693
+      ],
+      "text_position_mm": [
+        77.441,
+        157.861
+      ],
+      "feature_position_source": "point_symbol",
+      "feature_position_source_px": [
+        304.065,
+        610.097
+      ],
+      "feature_position_tactile_px": [
+        393.753,
+        790.466
+      ],
+      "feature_position_mm": [
+        78.753,
+        158.015
+      ],
+      "box_source_px": [
+        268.0,
+        601.0,
+        330.0,
+        618.0
+      ],
+      "box_tactile_px": [
+        347.05,
+        778.68,
+        427.338,
+        800.706
+      ],
+      "quad_source_px": null,
+      "quad_tactile_px": null
+    },
+    {
+      "text": "Garonne",
+      "kind": "river_label",
+      "priority": 3,
+      "recognition_status": "geometry-only",
+      "text_position_source": "box_center",
+      "text_position_source_px": [
+        218.0,
+        469.0
+      ],
+      "text_position_tactile_px": [
+        282.302,
+        607.655
+      ],
+      "text_position_mm": [
+        56.462,
+        121.471
+      ],
+      "feature_position_source": null,
+      "feature_position_source_px": null,
+      "feature_position_tactile_px": null,
+      "feature_position_mm": null,
+      "box_source_px": [
+        199.0,
+        450.0,
+        237.0,
+        488.0
+      ],
+      "box_tactile_px": [
+        257.698,
+        583.038,
+        306.906,
+        632.272
+      ],
+      "quad_source_px": null,
+      "quad_tactile_px": null
+    },
+    {
+      "text": "Moselle",
+      "kind": "river_label",
+      "priority": 3,
+      "recognition_status": "geometry-only",
+      "text_position_source": "box_center",
+      "text_position_source_px": [
+        552.0,
+        227.5
+      ],
+      "text_position_tactile_px": [
+        714.82,
+        294.758
+      ],
+      "text_position_mm": [
+        142.968,
+        58.922
+      ],
+      "feature_position_source": null,
+      "feature_position_source_px": null,
+      "feature_position_tactile_px": null,
+      "feature_position_mm": null,
+      "box_source_px": [
+        542.0,
+        211.0,
+        562.0,
+        244.0
+      ],
+      "box_tactile_px": [
+        701.871,
+        273.38,
+        727.77,
+        316.136
+      ],
+      "quad_source_px": null,
+      "quad_tactile_px": null
+    },
+    {
+      "text": "Seine",
+      "kind": "river_label",
+      "priority": 3,
+      "recognition_status": "gemini-only",
+      "text_position_source": "box_center",
+      "text_position_source_px": [
+        339.5,
+        157.5
+      ],
+      "text_position_tactile_px": [
+        439.64,
+        204.063
+      ],
+      "text_position_mm": [
+        87.931,
+        40.793
+      ],
+      "feature_position_source": null,
+      "feature_position_source_px": null,
+      "feature_position_tactile_px": null,
+      "feature_position_mm": null,
+      "box_source_px": [
+        323.0,
+        144.0,
+        356.0,
+        171.0
+      ],
+      "box_tactile_px": [
+        418.273,
+        186.572,
+        461.007,
+        221.554
+      ],
+      "quad_source_px": null,
+      "quad_tactile_px": null
+    },
+    {
+      "text": "Loire",
+      "kind": "river_label",
+      "priority": 3,
+      "recognition_status": "gemini-only",
+      "text_position_source": "box_center",
+      "text_position_source_px": [
+        393.5,
+        335.0
+      ],
+      "text_position_tactile_px": [
+        509.568,
+        434.04
+      ],
+      "text_position_mm": [
+        101.916,
+        86.765
+      ],
+      "feature_position_source": null,
+      "feature_position_source_px": null,
+      "feature_position_tactile_px": null,
+      "feature_position_mm": null,
+      "box_source_px": [
+        382.0,
+        316.0,
+        405.0,
+        354.0
+      ],
+      "box_tactile_px": [
+        494.676,
+        409.422,
+        524.46,
+        458.657
+      ],
+      "quad_source_px": null,
+      "quad_tactile_px": null
+    },
+    {
+      "text": "Meuse",
+      "kind": "river_label",
+      "priority": 3,
+      "recognition_status": "gemini-only",
+      "text_position_source": "box_center",
+      "text_position_source_px": [
+        497.5,
+        156.0
+      ],
+      "text_position_tactile_px": [
+        644.245,
+        202.12
+      ],
+      "text_position_mm": [
+        128.852,
+        40.404
+      ],
+      "feature_position_source": null,
+      "feature_position_source_px": null,
+      "feature_position_tactile_px": null,
+      "feature_position_mm": null,
+      "box_source_px": [
+        487.0,
+        136.0,
+        508.0,
+        176.0
+      ],
+      "box_tactile_px": [
+        630.647,
+        176.207,
+        657.842,
+        228.033
+      ],
+      "quad_source_px": null,
+      "quad_tactile_px": null
+    },
+    {
+      "text": "Saône",
+      "kind": "river_label",
+      "priority": 3,
+      "recognition_status": "gemini-only",
+      "text_position_source": "box_center",
+      "text_position_source_px": [
+        460.0,
+        335.0
+      ],
+      "text_position_tactile_px": [
+        595.683,
+        434.04
+      ],
+      "text_position_mm": [
+        119.14,
+        86.765
+      ],
+      "feature_position_source": null,
+      "feature_position_source_px": null,
+      "feature_position_tactile_px": null,
+      "feature_position_mm": null,
+      "box_source_px": [
+        449.0,
+        316.0,
+        471.0,
+        354.0
+      ],
+      "box_tactile_px": [
+        581.439,
+        409.422,
+        609.928,
+        458.657
+      ],
+      "quad_source_px": null,
+      "quad_tactile_px": null
+    },
+    {
+      "text": "Rhône",
+      "kind": "river_label",
+      "priority": 3,
+      "recognition_status": "gemini-only",
+      "text_position_source": "box_center",
+      "text_position_source_px": [
+        440.0,
+        486.0
+      ],
+      "text_position_tactile_px": [
+        569.784,
+        629.681
+      ],
+      "text_position_mm": [
+        113.96,
+        125.874
+      ],
+      "feature_position_source": null,
+      "feature_position_source_px": null,
+      "feature_position_tactile_px": null,
+      "feature_position_mm": null,
+      "box_source_px": [
+        431.0,
+        466.0,
+        449.0,
+        506.0
+      ],
+      "box_tactile_px": [
+        558.129,
+        603.768,
+        581.439,
+        655.594
+      ],
+      "quad_source_px": null,
+      "quad_tactile_px": null
+    },
+    {
+      "text": "Rhône",
+      "kind": "river_label",
+      "priority": 3,
+      "recognition_status": "gemini-only",
+      "text_position_source": "box_center",
+      "text_position_source_px": [
+        499.0,
+        400.5
+      ],
+      "text_position_tactile_px": [
+        646.187,
+        518.904
+      ],
+      "text_position_mm": [
+        129.241,
+        103.73
+      ],
+      "feature_position_source": null,
+      "feature_position_source_px": null,
+      "feature_position_tactile_px": null,
+      "feature_position_mm": null,
+      "box_source_px": [
+        487.0,
+        387.0,
+        511.0,
+        414.0
+      ],
+      "box_tactile_px": [
+        630.647,
+        501.413,
+        661.727,
+        536.395
+      ],
+      "quad_source_px": null,
+      "quad_tactile_px": null
+    },
+    {
+      "text": "Rhône",
+      "kind": "river_label",
+      "priority": 3,
+      "recognition_status": "gemini-only",
+      "text_position_source": "box_center",
+      "text_position_source_px": [
+        592.5,
+        251.5
+      ],
+      "text_position_tactile_px": [
+        767.266,
+        325.854
+      ],
+      "text_position_mm": [
+        153.458,
+        65.139
+      ],
+      "feature_position_source": null,
+      "feature_position_source_px": null,
+      "feature_position_tactile_px": null,
+      "feature_position_mm": null,
+      "box_source_px": [
+        582.0,
+        237.0,
+        603.0,
+        266.0
+      ],
+      "box_tactile_px": [
+        753.669,
+        307.067,
+        780.863,
+        344.64
+      ],
+      "quad_source_px": null,
+      "quad_tactile_px": null
+    },
+    {
+      "text": "Lyon",
+      "kind": "city",
+      "priority": 5,
+      "recognition_status": "gemini-only",
+      "text_position_source": "box_center",
+      "text_position_source_px": [
+        468.0,
+        392.0
+      ],
+      "text_position_tactile_px": [
+        606.043,
+        507.891
+      ],
+      "text_position_mm": [
+        121.212,
+        101.528
+      ],
+      "feature_position_source": "point_symbol",
+      "feature_position_source_px": [
+        469.0,
+        384.5
+      ],
+      "feature_position_tactile_px": [
+        607.338,
+        498.174
+      ],
+      "feature_position_mm": [
+        121.471,
+        99.585
+      ],
+      "box_source_px": [
+        455.0,
+        383.0,
+        481.0,
+        401.0
+      ],
+      "box_tactile_px": [
+        589.209,
+        496.23,
+        622.878,
+        519.552
+      ],
+      "quad_source_px": null,
+      "quad_tactile_px": null
+    },
+    {
+      "text": "Nice",
+      "kind": "city",
+      "priority": 5,
+      "recognition_status": "gemini-only",
+      "text_position_source": "box_center",
+      "text_position_source_px": [
+        552.5,
+        553.5
+      ],
+      "text_position_tactile_px": [
+        715.468,
+        717.137
+      ],
+      "text_position_mm": [
+        143.097,
+        143.357
+      ],
+      "feature_position_source": "point_symbol",
+      "feature_position_source_px": [
+        551.343,
+        548.6
+      ],
+      "feature_position_tactile_px": [
+        713.969,
+        710.788
+      ],
+      "feature_position_mm": [
+        142.798,
+        142.087
+      ],
+      "box_source_px": [
+        540.0,
+        546.0,
+        565.0,
+        561.0
+      ],
+      "box_tactile_px": [
+        699.281,
+        707.42,
+        731.655,
+        726.854
+      ],
+      "quad_source_px": null,
+      "quad_tactile_px": null
+    }
+  ],
+  "review_source": "labels.json"
+}

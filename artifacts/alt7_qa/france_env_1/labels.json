@@ -1,0 +1,1249 @@
+{
+  "coordinate_space": "map_area.png pixels; add map_crop offset for original image",
+  "map_crop_offset": [
+    7,
+    1
+  ],
+  "labels": [
+    {
+      "text": "PARIS",
+      "kind": "capital",
+      "priority": 1,
+      "matches_step1": true,
+      "localization": "craft",
+      "recognition_status": "text-confirmed",
+      "gemini_text": "PARIS",
+      "easyocr_text": "PARIS",
+      "easyocr_conf": 0.9457206412421109,
+      "text_similarity": 1.0,
+      "box": [
+        359,
+        155,
+        397,
+        168
+      ],
+      "quad": [
+        [
+          401,
+          178
+        ],
+        [
+          347,
+          162
+        ],
+        [
+          353,
+          142
+        ],
+        [
+          407,
+          158
+        ]
+      ],
+      "text_position": [
+        378.7321937321937,
+        161.51282051282053
+      ],
+      "text_position_source": "stroke_centroid",
+      "feature_position": [
+        348.5,
+        181.33333333333334
+      ],
+      "feature_position_source": "point_symbol",
+      "anchor": [
+        348.5,
+        181.33333333333334
+      ],
+      "anchor_source": "point_symbol",
+      "mask_found": true
+    },
+    {
+      "text": "Nantes",
+      "kind": "city",
+      "priority": 5,
+      "matches_step1": true,
+      "localization": "craft",
+      "recognition_status": "text-confirmed",
+      "gemini_text": "Nantes",
+      "easyocr_text": "Nantes",
+      "easyocr_conf": 0.9916914383787242,
+      "text_similarity": 1.0,
+      "box": [
+        152,
+        241,
+        194,
+        254
+      ],
+      "quad": [
+        [
+          149,
+          260
+        ],
+        [
+          147,
+          246
+        ],
+        [
+          190,
+          242
+        ],
+        [
+          191,
+          255
+        ]
+      ],
+      "text_position": [
+        169.5,
+        251.9764705882353
+      ],
+      "text_position_source": "stroke_centroid",
+      "feature_position": null,
+      "feature_position_source": null,
+      "anchor": [
+        169.5,
+        251.9764705882353
+      ],
+      "anchor_source": "stroke_centroid",
+      "mask_found": true
+    },
+    {
+      "text": "Ajaccio",
+      "kind": "city",
+      "priority": 5,
+      "matches_step1": false,
+      "localization": "craft",
+      "recognition_status": "text-confirmed",
+      "gemini_text": "Ajaccio",
+      "easyocr_text": "Ajaccio",
+      "easyocr_conf": 0.517968953709324,
+      "text_similarity": 1.0,
+      "box": [
+        596,
+        687,
+        642,
+        701
+      ],
+      "quad": [
+        [
+          631,
+          699
+        ],
+        [
+          599,
+          699
+        ],
+        [
+          599,
+          690
+        ],
+        [
+          631,
+          690
+        ]
+      ],
+      "text_position": [
+        614.1180555555555,
+        694.3263888888889
+      ],
+      "text_position_source": "stroke_centroid",
+      "feature_position": [
+        635.1176470588235,
+        694.0588235294117
+      ],
+      "feature_position_source": "point_symbol",
+      "anchor": [
+        635.1176470588235,
+        694.0588235294117
+      ],
+      "anchor_source": "point_symbol",
+      "mask_found": true
+    },
+    {
+      "text": "Rennes",
+      "kind": "city",
+      "priority": 5,
+      "matches_step1": true,
+      "localization": "craft",
+      "recognition_status": "text-confirmed",
+      "gemini_text": "Rennes",
+      "easyocr_text": "Rennes",
+      "easyocr_conf": 0.9169067086736906,
+      "text_similarity": 1.0,
+      "box": [
+        159,
+        185,
+        202,
+        197
+      ],
+      "quad": [
+        [
+          155,
+          198
+        ],
+        [
+          153,
+          187
+        ],
+        [
+          198,
+          183
+        ],
+        [
+          199,
+          193
+        ]
+      ],
+      "text_position": [
+        176.87078651685394,
+        191.69101123595505
+      ],
+      "text_position_source": "stroke_centroid",
+      "feature_position": null,
+      "feature_position_source": null,
+      "anchor": [
+        176.87078651685394,
+        191.69101123595505
+      ],
+      "anchor_source": "stroke_centroid",
+      "mask_found": true
+    },
+    {
+      "text": "Orléans",
+      "kind": "city",
+      "priority": 5,
+      "matches_step1": false,
+      "localization": "craft",
+      "recognition_status": "text-confirmed",
+      "gemini_text": "Orléans",
+      "easyocr_text": "Orléans",
+      "easyocr_conf": 0.934203888953709,
+      "text_similarity": 1.0,
+      "box": [
+        327,
+        225,
+        373,
+        238
+      ],
+      "quad": null,
+      "text_position": [
+        350.0,
+        231.5
+      ],
+      "text_position_source": "box_center",
+      "feature_position": [
+        348.6111111111111,
+        232.44444444444446
+      ],
+      "feature_position_source": "point_symbol",
+      "anchor": [
+        348.6111111111111,
+        232.44444444444446
+      ],
+      "anchor_source": "point_symbol",
+      "mask_found": false
+    },
+    {
+      "text": "Toulouse",
+      "kind": "city",
+      "priority": 5,
+      "matches_step1": true,
+      "localization": "craft",
+      "recognition_status": "text-confirmed",
+      "gemini_text": "Toulouse",
+      "easyocr_text": "Toulouse",
+      "easyocr_conf": 0.9739665884464581,
+      "text_similarity": 1.0,
+      "box": [
+        266,
+        536,
+        320,
+        549
+      ],
+      "quad": null,
+      "text_position": [
+        293.0,
+        542.5
+      ],
+      "text_position_source": "box_center",
+      "feature_position": [
+        295.17391304347825,
+        543.0869565217391
+      ],
+      "feature_position_source": "point_symbol",
+      "anchor": [
+        295.17391304347825,
+        543.0869565217391
+      ],
+      "anchor_source": "point_symbol",
+      "mask_found": false
+    },
+    {
+      "text": "Limoges",
+      "kind": "city",
+      "priority": 5,
+      "matches_step1": false,
+      "localization": "craft",
+      "recognition_status": "text-confirmed",
+      "gemini_text": "Limoges",
+      "easyocr_text": "Limoges",
+      "easyocr_conf": 0.995779031396733,
+      "text_similarity": 1.0,
+      "box": [
+        275,
+        361,
+        327,
+        378
+      ],
+      "quad": [
+        [
+          273,
+          377
+        ],
+        [
+          272,
+          365
+        ],
+        [
+          323,
+          361
+        ],
+        [
+          324,
+          372
+        ]
+      ],
+      "text_position": [
+        299.1919642857143,
+        369.9732142857143
+      ],
+      "text_position_source": "stroke_centroid",
+      "feature_position": null,
+      "feature_position_source": null,
+      "anchor": [
+        299.1919642857143,
+        369.9732142857143
+      ],
+      "anchor_source": "stroke_centroid",
+      "mask_found": true
+    },
+    {
+      "text": "Marseille",
+      "kind": "city",
+      "priority": 5,
+      "matches_step1": true,
+      "localization": "craft",
+      "recognition_status": "text-confirmed",
+      "gemini_text": "Marseille",
+      "easyocr_text": "Marseille",
+      "easyocr_conf": 0.9998224100102147,
+      "text_similarity": 1.0,
+      "box": [
+        470,
+        564,
+        522,
+        580
+      ],
+      "quad": null,
+      "text_position": [
+        496.0,
+        572.0
+      ],
+      "text_position_source": "box_center",
+      "feature_position": [
+        499.76190476190476,
+        572.1428571428571
+      ],
+      "feature_position_source": "point_symbol",
+      "anchor": [
+        499.76190476190476,
+        572.1428571428571
+      ],
+      "anchor_source": "point_symbol",
+      "mask_found": false
+    },
+    {
+      "text": "Bordeaux",
+      "kind": "city",
+      "priority": 5,
+      "matches_step1": true,
+      "localization": "craft",
+      "recognition_status": "text-confirmed",
+      "gemini_text": "Bordeaux",
+      "easyocr_text": "Bordeaux",
+      "easyocr_conf": 0.9961395472682932,
+      "text_similarity": 1.0,
+      "box": [
+        174,
+        422,
+        232,
+        436
+      ],
+      "quad": [
+        [
+          191,
+          432
+        ],
+        [
+          178,
+          432
+        ],
+        [
+          178,
+          426
+        ],
+        [
+          191,
+          426
+        ]
+      ],
+      "text_position": [
+        183.7076923076923,
+        429.2769230769231
+      ],
+      "text_position_source": "stroke_centroid",
+      "feature_position": [
+        245.88888888888889,
+        443.8888888888889
+      ],
+      "feature_position_source": "point_symbol",
+      "anchor": [
+        245.88888888888889,
+        443.8888888888889
+      ],
+      "anchor_source": "point_symbol",
+      "mask_found": true
+    },
+    {
+      "text": "Nancy",
+      "kind": "city",
+      "priority": 5,
+      "matches_step1": true,
+      "localization": "craft",
+      "recognition_status": "text-confirmed",
+      "gemini_text": "Nancy",
+      "easyocr_text": "Nancy",
+      "easyocr_conf": 0.9997541747321904,
+      "text_similarity": 1.0,
+      "box": [
+        538,
+        185,
+        577,
+        201
+      ],
+      "quad": [
+        [
+          574,
+          209
+        ],
+        [
+          542,
+          209
+        ],
+        [
+          542,
+          189
+        ],
+        [
+          574,
+          189
+        ]
+      ],
+      "text_position": [
+        555.5302013422819,
+        194.5503355704698
+      ],
+      "text_position_source": "stroke_centroid",
+      "feature_position": [
+        537.95,
+        198.1
+      ],
+      "feature_position_source": "point_symbol",
+      "anchor": [
+        537.95,
+        198.1
+      ],
+      "anchor_source": "point_symbol",
+      "mask_found": true
+    },
+    {
+      "text": "Reims",
+      "kind": "city",
+      "priority": 5,
+      "matches_step1": true,
+      "localization": "craft",
+      "recognition_status": "text-confirmed",
+      "gemini_text": "Reims",
+      "easyocr_text": "Reim s",
+      "easyocr_conf": 0.4185877262877266,
+      "text_similarity": 0.909,
+      "box": [
+        442,
+        140,
+        480,
+        152
+      ],
+      "quad": [
+        [
+          437,
+          153
+        ],
+        [
+          436,
+          135
+        ],
+        [
+          476,
+          133
+        ],
+        [
+          477,
+          151
+        ]
+      ],
+      "text_position": [
+        456.3694581280788,
+        145.9014778325123
+      ],
+      "text_position_source": "stroke_centroid",
+      "feature_position": [
+        430.22222222222223,
+        163.88888888888889
+      ],
+      "feature_position_source": "point_symbol",
+      "anchor": [
+        430.22222222222223,
+        163.88888888888889
+      ],
+      "anchor_source": "point_symbol",
+      "mask_found": true
+    },
+    {
+      "text": "Bourges",
+      "kind": "city",
+      "priority": 5,
+      "matches_step1": false,
+      "localization": "craft",
+      "recognition_status": "text-confirmed",
+      "gemini_text": "Bourges",
+      "easyocr_text": "Bourgos",
+      "easyocr_conf": 0.7710500093418426,
+      "text_similarity": 0.857,
+      "box": [
+        290,
+        290,
+        340,
+        305
+      ],
+      "quad": [
+        [
+          294,
+          306
+        ],
+        [
+          293,
+          293
+        ],
+        [
+          342,
+          287
+        ],
+        [
+          343,
+          300
+        ]
+      ],
+      "text_position": [
+        317.2921810699589,
+        297.13991769547323
+      ],
+      "text_position_source": "stroke_centroid",
+      "feature_position": [
+        305.3695652173913,
+        280.7717391304348
+      ],
+      "feature_position_source": "point_symbol",
+      "anchor": [
+        305.3695652173913,
+        280.7717391304348
+      ],
+      "anchor_source": "point_symbol",
+      "mask_found": true
+    },
+    {
+      "text": "Grenoble",
+      "kind": "city",
+      "priority": 5,
+      "matches_step1": false,
+      "localization": "craft",
+      "recognition_status": "text-confirmed",
+      "gemini_text": "Grenoble",
+      "easyocr_text": "renoble",
+      "easyocr_conf": 0.9992234374786261,
+      "text_similarity": 0.933,
+      "box": [
+        508,
+        437,
+        554,
+        449
+      ],
+      "quad": null,
+      "text_position": [
+        531.0,
+        443.0
+      ],
+      "text_position_source": "box_center",
+      "feature_position": [
+        499.125,
+        448.1875
+      ],
+      "feature_position_source": "point_symbol",
+      "anchor": [
+        499.125,
+        448.1875
+      ],
+      "anchor_source": "point_symbol",
+      "mask_found": false
+    },
+    {
+      "text": "Dijon",
+      "kind": "city",
+      "priority": 5,
+      "matches_step1": true,
+      "localization": "craft",
+      "recognition_status": "text-confirmed",
+      "gemini_text": "Dijon",
+      "easyocr_text": "DfJon",
+      "easyocr_conf": 0.3958698888214975,
+      "text_similarity": 0.8,
+      "box": [
+        441,
+        281,
+        475,
+        295
+      ],
+      "quad": [
+        [
+          452,
+          299
+        ],
+        [
+          430,
+          274
+        ],
+        [
+          443,
+          263
+        ],
+        [
+          465,
+          288
+        ]
+      ],
+      "text_position": [
+        448.0625,
+        282.84027777777777
+      ],
+      "text_position_source": "stroke_centroid",
+      "feature_position": [
+        469.0,
+        288.9473684210526
+      ],
+      "feature_position_source": "point_symbol",
+      "anchor": [
+        469.0,
+        288.9473684210526
+      ],
+      "anchor_source": "point_symbol",
+      "mask_found": true
+    },
+    {
+      "text": "Le Mans",
+      "kind": "city",
+      "priority": 5,
+      "matches_step1": false,
+      "localization": "craft",
+      "recognition_status": "text-confirmed",
+      "gemini_text": "Le Mans",
+      "easyocr_text": "Lc Mans",
+      "easyocr_conf": 0.7247253071280754,
+      "text_similarity": 0.857,
+      "box": [
+        249,
+        205,
+        298,
+        218
+      ],
+      "quad": [
+        [
+          253,
+          227
+        ],
+        [
+          251,
+          207
+        ],
+        [
+          303,
+          202
+        ],
+        [
+          305,
+          222
+        ]
+      ],
+      "text_position": [
+        279.0627306273063,
+        211.19926199261994
+      ],
+      "text_position_source": "stroke_centroid",
+      "feature_position": [
+        247.47058823529412,
+        216.35294117647058
+      ],
+      "feature_position_source": "point_symbol",
+      "anchor": [
+        247.47058823529412,
+        216.35294117647058
+      ],
+      "anchor_source": "point_symbol",
+      "mask_found": true
+    },
+    {
+      "text": "Lille",
+      "kind": "city",
+      "priority": 5,
+      "matches_step1": true,
+      "localization": "craft",
+      "recognition_status": "text-confirmed",
+      "gemini_text": "Lille",
+      "easyocr_text": "LIllc",
+      "easyocr_conf": 0.39428063259157425,
+      "text_similarity": 0.8,
+      "box": [
+        372,
+        39,
+        400,
+        52
+      ],
+      "quad": null,
+      "text_position": [
+        386.0,
+        45.5
+      ],
+      "text_position_source": "box_center",
+      "feature_position": [
+        394.52,
+        46.56
+      ],
+      "feature_position_source": "point_symbol",
+      "anchor": [
+        394.52,
+        46.56
+      ],
+      "anchor_source": "point_symbol",
+      "mask_found": false
+    },
+    {
+      "text": "Brest",
+      "kind": "city",
+      "priority": 5,
+      "matches_step1": true,
+      "localization": "craft",
+      "recognition_status": "text-confirmed",
+      "gemini_text": "Brest",
+      "easyocr_text": "{Brost",
+      "easyocr_conf": 0.87592304435782,
+      "text_similarity": 0.727,
+      "box": [
+        25,
+        144,
+        59,
+        157
+      ],
+      "quad": [
+        [
+          53,
+          165
+        ],
+        [
+          16,
+          161
+        ],
+        [
+          19,
+          136
+        ],
+        [
+          56,
+          140
+        ]
+      ],
+      "text_position": [
+        33.53250773993808,
+        149.67182662538698
+      ],
+      "text_position_source": "stroke_centroid",
+      "feature_position": null,
+      "feature_position_source": null,
+      "anchor": [
+        33.53250773993808,
+        149.67182662538698
+      ],
+      "anchor_source": "stroke_centroid",
+      "mask_found": true
+    },
+    {
+      "text": "Rouen",
+      "kind": "city",
+      "priority": 5,
+      "matches_step1": true,
+      "localization": "craft",
+      "recognition_status": "text-confirmed",
+      "gemini_text": "Rouen",
+      "easyocr_text": "'Rouon",
+      "easyocr_conf": 0.9121510362138181,
+      "text_similarity": 0.727,
+      "box": [
+        302,
+        116,
+        341,
+        133
+      ],
+      "quad": null,
+      "text_position": [
+        321.5,
+        124.5
+      ],
+      "text_position_source": "box_center",
+      "feature_position": [
+        321.95652173913044,
+        125.26086956521739
+      ],
+      "feature_position_source": "point_symbol",
+      "anchor": [
+        321.95652173913044,
+        125.26086956521739
+      ],
+      "anchor_source": "point_symbol",
+      "mask_found": false
+    },
+    {
+      "text": "Perpignan",
+      "kind": "city",
+      "priority": 5,
+      "matches_step1": false,
+      "localization": "craft",
+      "recognition_status": "partial-text-match",
+      "gemini_text": "Perpignan",
+      "easyocr_text": "Porplenan",
+      "easyocr_conf": 0.8963653609584706,
+      "text_similarity": 0.667,
+      "box": [
+        268,
+        601,
+        330,
+        618
+      ],
+      "quad": null,
+      "text_position": [
+        299.0,
+        609.5
+      ],
+      "text_position_source": "box_center",
+      "feature_position": [
+        304.06451612903226,
+        610.0967741935484
+      ],
+      "feature_position_source": "point_symbol",
+      "anchor": [
+        304.06451612903226,
+        610.0967741935484
+      ],
+      "anchor_source": "point_symbol",
+      "mask_found": false
+    },
+    {
+      "text": "Garonne",
+      "kind": "river_label",
+      "priority": 3,
+      "matches_step1": true,
+      "localization": "craft",
+      "recognition_status": "geometry-only",
+      "gemini_text": "Garonne",
+      "easyocr_text": "R",
+      "easyocr_conf": 0.025407942331018285,
+      "text_similarity": 0.25,
+      "box": [
+        199,
+        450,
+        237,
+        488
+      ],
+      "quad": null,
+      "text_position": [
+        218.0,
+        469.0
+      ],
+      "text_position_source": "box_center",
+      "feature_position": null,
+      "feature_position_source": null,
+      "anchor": [
+        218.0,
+        469.0
+      ],
+      "anchor_source": "box_center",
+      "mask_found": false
+    },
+    {
+      "text": "Moselle",
+      "kind": "river_label",
+      "priority": 3,
+      "matches_step1": true,
+      "localization": "craft",
+      "recognition_status": "geometry-only",
+      "gemini_text": "Moselle",
+      "easyocr_text": "É",
+      "easyocr_conf": 0.08745603591336337,
+      "text_similarity": 0.0,
+      "box": [
+        542,
+        211,
+        562,
+        244
+      ],
+      "quad": null,
+      "text_position": [
+        552.0,
+        227.5
+      ],
+      "text_position_source": "box_center",
+      "feature_position": null,
+      "feature_position_source": null,
+      "anchor": [
+        552.0,
+        227.5
+      ],
+      "anchor_source": "box_center",
+      "mask_found": false
+    },
+    {
+      "text": "Seine",
+      "kind": "river_label",
+      "priority": 3,
+      "matches_step1": true,
+      "localization": "gemini-unverified",
+      "recognition_status": "gemini-only",
+      "gemini_text": "Seine",
+      "easyocr_text": null,
+      "easyocr_conf": null,
+      "text_similarity": null,
+      "box": [
+        323,
+        144,
+        356,
+        171
+      ],
+      "quad": null,
+      "text_position": [
+        339.5,
+        157.5
+      ],
+      "text_position_source": "box_center",
+      "feature_position": null,
+      "feature_position_source": null,
+      "anchor": [
+        339.5,
+        157.5
+      ],
+      "anchor_source": "box_center",
+      "mask_found": false
+    },
+    {
+      "text": "Loire",
+      "kind": "river_label",
+      "priority": 3,
+      "matches_step1": true,
+      "localization": "gemini-unverified",
+      "recognition_status": "gemini-only",
+      "gemini_text": "Loire",
+      "easyocr_text": null,
+      "easyocr_conf": null,
+      "text_similarity": null,
+      "box": [
+        382,
+        316,
+        405,
+        354
+      ],
+      "quad": null,
+      "text_position": [
+        393.5,
+        335.0
+      ],
+      "text_position_source": "box_center",
+      "feature_position": null,
+      "feature_position_source": null,
+      "anchor": [
+        393.5,
+        335.0
+      ],
+      "anchor_source": "box_center",
+      "mask_found": false
+    },
+    {
+      "text": "Meuse",
+      "kind": "river_label",
+      "priority": 3,
+      "matches_step1": true,
+      "localization": "gemini-unverified",
+      "recognition_status": "gemini-only",
+      "gemini_text": "Meuse",
+      "easyocr_text": null,
+      "easyocr_conf": null,
+      "text_similarity": null,
+      "box": [
+        487,
+        136,
+        508,
+        176
+      ],
+      "quad": null,
+      "text_position": [
+        497.5,
+        156.0
+      ],
+      "text_position_source": "box_center",
+      "feature_position": null,
+      "feature_position_source": null,
+      "anchor": [
+        497.5,
+        156.0
+      ],
+      "anchor_source": "box_center",
+      "mask_found": false
+    },
+    {
+      "text": "Saône",
+      "kind": "river_label",
+      "priority": 3,
+      "matches_step1": false,
+      "localization": "gemini-unverified",
+      "recognition_status": "gemini-only",
+      "gemini_text": "Saône",
+      "easyocr_text": null,
+      "easyocr_conf": null,
+      "text_similarity": null,
+      "box": [
+        449,
+        316,
+        471,
+        354
+      ],
+      "quad": null,
+      "text_position": [
+        460.0,
+        335.0
+      ],
+      "text_position_source": "box_center",
+      "feature_position": null,
+      "feature_position_source": null,
+      "anchor": [
+        460.0,
+        335.0
+      ],
+      "anchor_source": "box_center",
+      "mask_found": false
+    },
+    {
+      "text": "Rhône",
+      "kind": "river_label",
+      "priority": 3,
+      "matches_step1": true,
+      "localization": "gemini-unverified",
+      "recognition_status": "gemini-only",
+      "gemini_text": "Rhône",
+      "easyocr_text": null,
+      "easyocr_conf": null,
+      "text_similarity": null,
+      "box": [
+        431,
+        466,
+        449,
+        506
+      ],
+      "quad": null,
+      "text_position": [
+        440.0,
+        486.0
+      ],
+      "text_position_source": "box_center",
+      "feature_position": null,
+      "feature_position_source": null,
+      "anchor": [
+        440.0,
+        486.0
+      ],
+      "anchor_source": "box_center",
+      "mask_found": false
+    },
+    {
+      "text": "Rhône",
+      "kind": "river_label",
+      "priority": 3,
+      "matches_step1": true,
+      "localization": "gemini-unverified",
+      "recognition_status": "gemini-only",
+      "gemini_text": "Rhône",
+      "easyocr_text": null,
+      "easyocr_conf": null,
+      "text_similarity": null,
+      "box": [
+        487,
+        387,
+        511,
+        414
+      ],
+      "quad": null,
+      "text_position": [
+        499.0,
+        400.5
+      ],
+      "text_position_source": "box_center",
+      "feature_position": null,
+      "feature_position_source": null,
+      "anchor": [
+        499.0,
+        400.5
+      ],
+      "anchor_source": "box_center",
+      "mask_found": false
+    },
+    {
+      "text": "Rhône",
+      "kind": "river_label",
+      "priority": 3,
+      "matches_step1": true,
+      "localization": "gemini-unverified",
+      "recognition_status": "gemini-only",
+      "gemini_text": "Rhône",
+      "easyocr_text": null,
+      "easyocr_conf": null,
+      "text_similarity": null,
+      "box": [
+        582,
+        237,
+        603,
+        266
+      ],
+      "quad": null,
+      "text_position": [
+        592.5,
+        251.5
+      ],
+      "text_position_source": "box_center",
+      "feature_position": null,
+      "feature_position_source": null,
+      "anchor": [
+        592.5,
+        251.5
+      ],
+      "anchor_source": "box_center",
+      "mask_found": false
+    },
+    {
+      "text": "Lyon",
+      "kind": "city",
+      "priority": 5,
+      "matches_step1": true,
+      "localization": "gemini-unverified",
+      "recognition_status": "gemini-only",
+      "gemini_text": "Lyon",
+      "easyocr_text": null,
+      "easyocr_conf": null,
+      "text_similarity": null,
+      "box": [
+        455,
+        383,
+        481,
+        401
+      ],
+      "quad": null,
+      "text_position": [
+        468.0,
+        392.0
+      ],
+      "text_position_source": "box_center",
+      "feature_position": [
+        469.0,
+        384.5
+      ],
+      "feature_position_source": "point_symbol",
+      "anchor": [
+        469.0,
+        384.5
+      ],
+      "anchor_source": "point_symbol",
+      "mask_found": false
+    },
+    {
+      "text": "Nice",
+      "kind": "city",
+      "priority": 5,
+      "matches_step1": true,
+      "localization": "gemini-unverified",
+      "recognition_status": "gemini-only",
+      "gemini_text": "Nice",
+      "easyocr_text": null,
+      "easyocr_conf": null,
+      "text_similarity": null,
+      "box": [
+        540,
+        546,
+        565,
+        561
+      ],
+      "quad": null,
+      "text_position": [
+        552.5,
+        553.5
+      ],
+      "text_position_source": "box_center",
+      "feature_position": [
+        551.3428571428572,
+        548.6
+      ],
+      "feature_position_source": "point_symbol",
+      "anchor": [
+        551.3428571428572,
+        548.6
+      ],
+      "anchor_source": "point_symbol",
+      "mask_found": false
+    }
+  ],
+  "warnings": [
+    "no strokes extracted for 'Orléans' -- Step 4 will fill its city box",
+    "no strokes extracted for 'Toulouse' -- Step 4 will fill its city box",
+    "no strokes extracted for 'Marseille' -- Step 4 will fill its city box",
+    "strokes for 'Grenoble' do not look like text (detection box likely offset) -- discarded",
+    "no strokes extracted for 'Grenoble' -- Step 4 will fill its city box",
+    "strokes for 'Lille' do not look like text (detection box likely offset) -- discarded",
+    "no strokes extracted for 'Lille' -- Step 4 will fill its city box",
+    "no strokes extracted for 'Rouen' -- Step 4 will fill its city box",
+    "strokes for 'Perpignan' do not look like text (detection box likely offset) -- discarded",
+    "no strokes extracted for 'Perpignan' -- Step 4 will fill its city box",
+    "strokes for 'Garonne' do not look like text (detection box likely offset) -- discarded",
+    "no strokes extracted for 'Garonne' -- no precise removal mask; Step 4 will not fill this long-label box",
+    "no strokes extracted for 'Moselle' -- no precise removal mask; Step 4 will not fill this long-label box",
+    "no strokes extracted for 'Seine' -- no precise removal mask; Step 4 will not fill this long-label box",
+    "no strokes extracted for 'Loire' -- no precise removal mask; Step 4 will not fill this long-label box",
+    "no strokes extracted for 'Meuse' -- no precise removal mask; Step 4 will not fill this long-label box",
+    "no strokes extracted for 'Saône' -- no precise removal mask; Step 4 will not fill this long-label box",
+    "no strokes extracted for 'Rhône' -- no precise removal mask; Step 4 will not fill this long-label box",
+    "no strokes extracted for 'Rhône' -- no precise removal mask; Step 4 will not fill this long-label box",
+    "no strokes extracted for 'Rhône' -- no precise removal mask; Step 4 will not fill this long-label box",
+    "no strokes extracted for 'Lyon' -- Step 4 will fill its city box",
+    "no strokes extracted for 'Nice' -- Step 4 will fill its city box",
+    "not in Step 1 vocabulary (verify on debug overlay): Ajaccio, Orléans, Limoges, Bourges, Grenoble, Le Mans, Perpignan, Saône"
+  ]
+}

@@ -1,0 +1,302 @@
+[
+  {
+    "text": "Garonne",
+    "kind": "river_label",
+    "box": [
+      196,
+      452,
+      246,
+      496
+    ]
+  },
+  {
+    "text": "Moselle",
+    "kind": "river_label",
+    "box": [
+      521,
+      211,
+      558,
+      259
+    ]
+  },
+  {
+    "text": "Perpignan",
+    "kind": "city",
+    "box": [
+      271,
+      605,
+      332,
+      620
+    ]
+  },
+  {
+    "text": "Seine",
+    "kind": "river_label",
+    "box": [
+      323,
+      144,
+      356,
+      171
+    ]
+  },
+  {
+    "text": "Loire",
+    "kind": "river_label",
+    "box": [
+      382,
+      316,
+      405,
+      354
+    ]
+  },
+  {
+    "text": "Meuse",
+    "kind": "river_label",
+    "box": [
+      487,
+      136,
+      508,
+      176
+    ]
+  },
+  {
+    "text": "Saône",
+    "kind": "river_label",
+    "box": [
+      449,
+      316,
+      471,
+      354
+    ]
+  },
+  {
+    "text": "Bordeaux",
+    "kind": "city",
+    "box": [
+      165,
+      427,
+      219,
+      442
+    ]
+  },
+  {
+    "text": "Toulouse",
+    "kind": "city",
+    "box": [
+      262,
+      535,
+      310,
+      551
+    ]
+  },
+  {
+    "text": "Marseille",
+    "kind": "city",
+    "box": [
+      462,
+      569,
+      512,
+      584
+    ]
+  },
+  {
+    "text": "Limoges",
+    "kind": "city",
+    "box": [
+      268,
+      367,
+      318,
+      382
+    ]
+  },
+  {
+    "text": "Rhône",
+    "kind": "river_label",
+    "box": [
+      431,
+      466,
+      449,
+      506
+    ]
+  },
+  {
+    "text": "Bourges",
+    "kind": "city",
+    "box": [
+      292,
+      291,
+      337,
+      306
+    ]
+  },
+  {
+    "text": "Reims",
+    "kind": "city",
+    "box": [
+      442,
+      140,
+      474,
+      161
+    ]
+  },
+  {
+    "text": "Grenoble",
+    "kind": "city",
+    "box": [
+      489,
+      440,
+      533,
+      455
+    ]
+  },
+  {
+    "text": "Rhône",
+    "kind": "river_label",
+    "box": [
+      487,
+      387,
+      511,
+      414
+    ]
+  },
+  {
+    "text": "Le Mans",
+    "kind": "city",
+    "box": [
+      240,
+      209,
+      281,
+      224
+    ]
+  },
+  {
+    "text": "Orléans",
+    "kind": "city",
+    "box": [
+      323,
+      226,
+      364,
+      241
+    ]
+  },
+  {
+    "text": "Rhône",
+    "kind": "river_label",
+    "box": [
+      582,
+      237,
+      603,
+      266
+    ]
+  },
+  {
+    "text": "Rennes",
+    "kind": "city",
+    "box": [
+      155,
+      185,
+      195,
+      200
+    ]
+  },
+  {
+    "text": "Nantes",
+    "kind": "city",
+    "box": [
+      150,
+      238,
+      189,
+      253
+    ]
+  },
+  {
+    "text": "Ajaccio",
+    "kind": "city",
+    "box": [
+      594,
+      687,
+      633,
+      702
+    ]
+  },
+  {
+    "text": "Rouen",
+    "kind": "city",
+    "box": [
+      301,
+      118,
+      338,
+      133
+    ]
+  },
+  {
+    "text": "Brest",
+    "kind": "city",
+    "box": [
+      23,
+      143,
+      60,
+      158
+    ]
+  },
+  {
+    "text": "PARIS",
+    "kind": "capital",
+    "box": [
+      359,
+      156,
+      394,
+      171
+    ]
+  },
+  {
+    "text": "Nancy",
+    "kind": "city",
+    "box": [
+      525,
+      189,
+      558,
+      204
+    ]
+  },
+  {
+    "text": "Lille",
+    "kind": "city",
+    "box": [
+      370,
+      37,
+      396,
+      55
+    ]
+  },
+  {
+    "text": "Lyon",
+    "kind": "city",
+    "box": [
+      455,
+      383,
+      481,
+      401
+    ]
+  },
+  {
+    "text": "Dijon",
+    "kind": "city",
+    "box": [
+      445,
+      281,
+      473,
+      297
+    ]
+  },
+  {
+    "text": "Nice",
+    "kind": "city",
+    "box": [
+      540,
+      546,
+      565,
+      561
+    ]
+  }
+]

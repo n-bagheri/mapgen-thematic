@@ -222,6 +222,129 @@ def cmd_step7(args: argparse.Namespace) -> int:
     return 1 if failures else 0
 
 
+def cmd_step8(args: argparse.Namespace) -> int:
+    from .boundaries import run_step8
+
+    OutputSpec.load_or_create()
+    failures = 0
+    for image in args.images:
+        image = Path(image)
+        if not image.exists():
+            print(f"missing: {image}", file=sys.stderr)
+            failures += 1
+            continue
+        print(f"adding selected boundaries for {image.name} ...")
+        try:
+            result = run_step8(image, model=args.model)
+        except Exception as exc:  # noqa: BLE001 - CLI boundary
+            print(f"  FAILED: {exc}", file=sys.stderr)
+            failures += 1
+            continue
+        print(f"  {result['selected_adjacencies']} selected adjacency type(s); "
+              f"priority patterns={len(result['active_patterns'])}")
+        print(f"  -> {result['out_dir']}\\step8_boundaries.png")
+    return 1 if failures else 0
+
+
+def cmd_step8a(args: argparse.Namespace) -> int:
+    from .cleanup import run_step8a
+
+    OutputSpec.load_or_create()
+    failures = 0
+    for image in args.images:
+        image = Path(image)
+        if not image.exists():
+            print(f"missing: {image}", file=sys.stderr)
+            failures += 1
+            continue
+        print(f"applying Step 8A component-layer cleanup for {image.name} ...")
+        try:
+            result = run_step8a(image, model=args.model)
+        except Exception as exc:  # noqa: BLE001 - CLI boundary
+            print(f"  FAILED: {exc}", file=sys.stderr)
+            failures += 1
+            continue
+        print(f"  {result['owner_groups']} boundary-owner group(s); "
+              f"{result['repainted_components']} top component layer(s); "
+              f"{result['restored_pixels']} pixels restored")
+        print(f"  -> {result['out_dir']}\\step8a_cleanup.png")
+    return 1 if failures else 0
+
+
+def cmd_alt_step5(args: argparse.Namespace) -> int:
+    from .alt_mapgen import run_alt_step5
+
+    OutputSpec.load_or_create()
+    failures = 0
+    for image in args.images:
+        image = Path(image)
+        if not image.exists():
+            print(f"missing: {image}", file=sys.stderr)
+            failures += 1
+            continue
+        print(f"Alt MapGen aggregation from untouched Step 4 data for {image.name} ...")
+        try:
+            result = run_alt_step5(image, model=args.model)
+        except Exception as exc:  # noqa: BLE001 - CLI boundary
+            print(f"  FAILED: {exc}", file=sys.stderr)
+            failures += 1
+            continue
+        aggregation = result["aggregation"]
+        print(f"  {len(aggregation['groups'])} proposed thematic group(s); "
+              f"review={aggregation['review_status']}; geographic pixels changed=0")
+        print(f"  -> {result['out_dir']}\\alt_aggregation.json")
+    return 1 if failures else 0
+
+
+def cmd_alt_step6(args: argparse.Namespace) -> int:
+    from .alt_mapgen import run_alt_step6_presets
+
+    OutputSpec.load_or_create()
+    failures = 0
+    for image in args.images:
+        image = Path(image)
+        if not image.exists():
+            print(f"missing: {image}", file=sys.stderr)
+            failures += 1
+            continue
+        print(f"Alt MapGen grouping of canonical Step 5 geometry for {image.name} ...")
+        try:
+            result = run_alt_step6_presets(image, model=args.model)
+        except Exception as exc:  # noqa: BLE001 - CLI boundary
+            print(f"  FAILED: {exc}", file=sys.stderr)
+            failures += 1
+            continue
+        summary = result["summary"]
+        print(f"  changed {summary['changed_share'] * 100:.2f}% of pixels; "
+              f"dissolved={summary['dissolved_components']}; "
+              f"smoothing={summary['smoothing_mm']} mm")
+        print(f"  -> {result['out_dir']}\\alt_label_map_gen.png")
+    return 1 if failures else 0
+
+
+def cmd_alt_step7(args: argparse.Namespace) -> int:
+    from .alt_symbols import run_alt_step7
+
+    OutputSpec.load_or_create()
+    failures = 0
+    for image in args.images:
+        image = Path(image)
+        if not image.exists():
+            print(f"missing: {image}", file=sys.stderr)
+            failures += 1
+            continue
+        print(f"alternate tactile render of {image.name} ...")
+        try:
+            result = run_alt_step7(image, model=args.model)
+        except Exception as exc:  # noqa: BLE001 - CLI boundary
+            print(f"  FAILED: {exc}", file=sys.stderr)
+            failures += 1
+            continue
+        print(f"  tactile render {result['canvas_px'][0]}x{result['canvas_px'][1]} px")
+        print(f"  -> {result['out_dir']}\\alt_step7_tactile.png")
+    return 1 if failures else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="mapgen")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -265,6 +388,34 @@ def main(argv: list[str] | None = None) -> int:
     p7.add_argument("images", nargs="+", help="map image file(s)")
     p7.add_argument("--model", default=None, help="override model id for texture proposals")
     p7.set_defaults(func=cmd_step7)
+
+    p8 = sub.add_parser("step8", help="select and render compound area boundaries")
+    p8.add_argument("images", nargs="+", help="map image file(s)")
+    p8.add_argument("--model", default=None,
+                    help="model id if Step 7 must first be generated")
+    p8.set_defaults(func=cmd_step8)
+
+    p8a = sub.add_parser("step8a", help="SVG-style component layer cleanup")
+    p8a.add_argument("images", nargs="+", help="map image file(s)")
+    p8a.add_argument("--model", default=None,
+                     help="model id if Step 8 must first be generated")
+    p8a.set_defaults(func=cmd_step8a)
+
+    pa5 = sub.add_parser("alt-step5", help="Alt MapGen aggregation from untouched Step 4 data")
+    pa5.add_argument("images", nargs="+", help="map image file(s)")
+    pa5.add_argument("--model", default=None,
+                     help="model id if an earlier canonical step is required")
+    pa5.set_defaults(func=cmd_alt_step5)
+
+    pa6 = sub.add_parser("alt-step6", help="Alt MapGen simplification after approved aggregation")
+    pa6.add_argument("images", nargs="+", help="map image file(s)")
+    pa6.add_argument("--model", default=None, help="model id if Alt Step 5 must run first")
+    pa6.set_defaults(func=cmd_alt_step6)
+
+    pa7 = sub.add_parser("alt-step7", help="alternate tactile render from Alt Steps 5 and 6")
+    pa7.add_argument("images", nargs="+", help="map image file(s)")
+    pa7.add_argument("--model", default=None, help="model id for texture proposals")
+    pa7.set_defaults(func=cmd_alt_step7)
 
     args = parser.parse_args(argv)
     return args.func(args)

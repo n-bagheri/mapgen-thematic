@@ -3,16 +3,20 @@
 Pure CV, no API calls. Every content pixel of map_area.png is assigned to a
 class: legend swatch colors from Step 2 seed the assignment in Lab space;
 pixels no seed explains are clustered into new non-thematic candidate classes
-(sea not in the legend, border ink, ...). Thin elongated components are pulled
-out as line features and skeletonized to polylines; text (Step 3 mask), line
-pixels, speckle, and furniture gaps are then filled by nearest-region growing,
-so the final area map is continuous under everything that was removed.
+(sea not in the legend, border ink, ...). Coastlines are vectorized from the
+geographic mask and dark river ridges are selected near reviewed river labels;
+text, line pixels, speckle, and furniture gaps are then filled by nearest-region
+growing so the final area map is continuous under everything removed.
 
 Artifacts per map, under runs/<name>/:
     label_map.png        uint8 class index + 1 per pixel (0 = outside map)
     classes_final.json   index -> class metadata incl. area share and origin
     regions.geojson      area polygons (map_area pixel coords, y down)
     lines.geojson        line centerline polylines with kind
+    coastline_cleanup_mask.png printed dark outline pixels excluded from areas
+    river_cleanup_mask.png exact pixel-supported river ink excluded from areas
+    step4_lines_preview.png extracted line centerlines on a separate canvas
+    step4_text_removed_input.png pixels excluded before colour assignment
     step4_debug.png      original | reconstructed class map side by side
 """
 
@@ -33,6 +37,15 @@ SPECKLE_PX = 30         # smaller area components are noise -> refill
 LINE_HALF_WIDTH = 4.0   # max distance-transform half-width for a line feature
 MIN_LINE_LEN = 25       # px of estimated centerline
 WATER_EDGE_DELTA = 18.0
+RIVER_RIDGE_QUANTILE = 0.94
+RIVER_MIN_COMPONENT_PX = 12
+RIVER_LABEL_SEARCH_PAD = 18
+RIVER_MIN_AXIS_ALIGNMENT = 0.45
+RIVER_SECONDARY_SCORE_RATIO = 0.62
+COAST_INNER_BAND_RATIO = 0.006
+COAST_INNER_BAND_MIN = 3
+COAST_INNER_BAND_MAX = 10
+RIVER_INK_FRINGE_RADIUS = 2
 
 
 # --------------------------------------------------------------------------- assignment
@@ -203,6 +216,22 @@ def _trace_polylines(skel: np.ndarray) -> list[list[list[int]]]:
     return out
 
 
+def _thin_component(component: np.ndarray) -> np.ndarray:
+    """Skeletonize a cropped component with the zero border thinning needs."""
+    padded = cv2.copyMakeBorder(
+        (component > 0).astype(np.uint8) * 255, 1, 1, 1, 1,
+        cv2.BORDER_CONSTANT, value=0)
+    return cv2.ximgproc.thinning(padded)[1:-1, 1:-1]
+
+
+def _component_half_width(component: np.ndarray) -> float:
+    """Maximum interior radius, including a guaranteed exterior zero rim."""
+    padded = cv2.copyMakeBorder(
+        (component > 0).astype(np.uint8), 1, 1, 1, 1,
+        cv2.BORDER_CONSTANT, value=0)
+    return float(cv2.distanceTransform(padded, cv2.DIST_L2, 3).max())
+
+
 def interior_line_kind(sem: MapSemantics) -> str:
     kinds = [ln.kind.value for ln in sem.lines if ln.kind.value not in ("coastline", "graticule")]
     for preferred in ("river", "road", "border"):
@@ -213,6 +242,20 @@ def interior_line_kind(sem: MapSemantics) -> str:
 
 HALO_TOL = 12.0
 INK_DARKER_BY = 12.0
+
+# BGR colours used only by the Step 4 line-layer preview.  The GeoJSON remains
+# the authoritative output; this palette simply makes its feature kinds easy
+# to distinguish without painting the lines back onto the segmented map.
+LINE_PREVIEW_COLORS = {
+    "river": (204, 105, 34),
+    "road": (32, 145, 245),
+    "border": (55, 55, 55),
+    "border_or_coast": (55, 55, 55),
+    "coastline": (92, 112, 48),
+    "frame": (135, 135, 135),
+    "line": (168, 87, 126),
+}
+LINE_PREVIEW_FALLBACK = (168, 87, 126)
 
 
 def extract_lines(label_map: np.ndarray, lab_img: np.ndarray, mask: np.ndarray,
@@ -235,7 +278,7 @@ def extract_lines(label_map: np.ndarray, lab_img: np.ndarray, mask: np.ndarray,
             if area < 20:
                 continue
             comp = (cc[y:y + ch, x:x + cw] == i).astype(np.uint8)
-            halfw = float(cv2.distanceTransform(comp, cv2.DIST_L2, 3).max())
+            halfw = _component_half_width(comp)
             length_est = area / max(1.0, 2 * halfw)
             if halfw > LINE_HALF_WIDTH or length_est < max(MIN_LINE_LEN, 10 * halfw):
                 continue
@@ -270,7 +313,7 @@ def extract_lines(label_map: np.ndarray, lab_img: np.ndarray, mask: np.ndarray,
                 kind = "border_or_coast"
             else:
                 kind = inner_kind
-            skel = cv2.ximgproc.thinning(comp * 255)
+            skel = _thin_component(comp)
             for pl in _trace_polylines(skel):
                 records.append({
                     "kind": kind, "source_class": seeds[idx]["label"],
@@ -278,6 +321,405 @@ def extract_lines(label_map: np.ndarray, lab_img: np.ndarray, mask: np.ndarray,
                 })
             line_mask[y:y + ch, x:x + cw] |= comp
     return line_mask, halo_mask, records
+
+
+def render_lines_preview(line_records: list[dict], mask: np.ndarray) -> np.ndarray:
+    """Render extracted centerlines in their exact ``map_area.png`` positions.
+
+    A very light outline supplies spatial context only.  It is deliberately
+    much lighter than every extracted feature so it cannot be confused with a
+    detected line.  This preview is diagnostic and is never consumed by a
+    later pipeline step.
+    """
+    h, w = mask.shape[:2]
+    preview = np.full((h, w, 3), 255, np.uint8)
+    contours, _ = cv2.findContours(
+        (mask > 0).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cv2.drawContours(preview, contours, -1, (225, 229, 235), 1, cv2.LINE_AA)
+
+    for record in line_records:
+        points = np.asarray(record.get("points", []), dtype=np.int32).reshape(-1, 2)
+        if len(points) < 2:
+            continue
+        color = LINE_PREVIEW_COLORS.get(record.get("kind"), LINE_PREVIEW_FALLBACK)
+        cv2.polylines(preview, [points.reshape(-1, 1, 2)], False, color, 2, cv2.LINE_AA)
+    return preview
+
+
+def _boundary_line_kind(sem: MapSemantics) -> str | None:
+    kinds = {line.kind.value for line in sem.lines}
+    has_coast = "coastline" in kinds
+    has_border = "border" in kinds
+    if has_coast and has_border:
+        return "border_or_coast"
+    if has_coast:
+        return "coastline"
+    if has_border:
+        return "border"
+    return None
+
+
+def _polyline_length(points: np.ndarray) -> float:
+    if len(points) < 2:
+        return 0.0
+    return float(np.linalg.norm(np.diff(points.astype(np.float32), axis=0), axis=1).sum())
+
+
+def extract_coastline_cleanup_mask(image: np.ndarray, mask: np.ndarray) \
+        -> tuple[np.ndarray, dict]:
+    """Dark printed outline pixels just inside the geographic silhouette.
+
+    Geometry, not colour alone, supplies the safeguard: candidates must live
+    in a narrow inward band and be connected to the actual outside edge. A
+    legitimate dark thematic patch may enter the mask, but its pixels farther
+    inward remain classified and therefore refill the cleaned rim as dark.
+    """
+    h, w = mask.shape[:2]
+    diagonal = float(np.hypot(h, w))
+    band_width = int(np.clip(round(COAST_INNER_BAND_RATIO * diagonal),
+                             COAST_INNER_BAND_MIN, COAST_INNER_BAND_MAX))
+    inside = mask > 0
+    if not inside.any():
+        return np.zeros((h, w), np.uint8), {
+            "method": "adaptive-inner-dark-edge-band",
+            "band_width_px": band_width,
+            "pixels": 0,
+        }
+
+    distance = cv2.distanceTransform(inside.astype(np.uint8), cv2.DIST_L2, 5)
+    inner_band = inside & (distance <= band_width)
+    outside = (~inside).astype(np.uint8)
+    touches_edge = inside & (cv2.dilate(outside, np.ones((3, 3), np.uint8)) > 0)
+
+    smooth = cv2.medianBlur(image, 3)
+    gray = cv2.cvtColor(smooth, cv2.COLOR_BGR2GRAY)
+    spread = smooth.max(axis=2).astype(np.int16) - smooth.min(axis=2).astype(np.int16)
+    # Very dark pixels can be mildly chromatic because of print/scan mixing;
+    # lighter anti-aliasing is accepted only when nearly neutral.
+    dark_core = inner_band & ((gray <= 100) | ((gray <= 150) & (spread <= 50)))
+    dark_core = cv2.morphologyEx(
+        dark_core.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+
+    kept = np.zeros((h, w), np.uint8)
+    count, components, stats, _ = cv2.connectedComponentsWithStats(dark_core, connectivity=8)
+    for component_id in range(1, count):
+        component = components == component_id
+        if int(stats[component_id, cv2.CC_STAT_AREA]) >= 2 and np.any(component & touches_edge):
+            kept[component] = 1
+
+    # Include the gray antialiased rim immediately beside confirmed black ink,
+    # without absorbing saturated coastal thematic colours.
+    fringe_zone = cv2.dilate(kept, np.ones((3, 3), np.uint8)) > 0
+    fringe = inner_band & fringe_zone & (gray <= 180) & (spread <= 70)
+    cleanup = ((kept > 0) | fringe).astype(np.uint8) * 255
+    return cleanup, {
+        "method": "adaptive-inner-dark-edge-band",
+        "band_width_px": band_width,
+        "pixels": int(np.count_nonzero(cleanup)),
+    }
+
+
+def extract_river_cleanup_mask(image: np.ndarray, mask: np.ndarray,
+                               supported_centerlines: np.ndarray) \
+        -> tuple[np.ndarray, dict]:
+    """Expand pixel-supported automatic rivers onto connected dark fringe ink.
+
+    The one-pixel centerline is trusted because it came from an image ridge.
+    Its two-pixel neighbourhood is accepted only where source pixels remain
+    dark/neutral. Modelled graph bridges and reviewed/manual paths are absent
+    from ``supported_centerlines`` and therefore cannot erase area colours.
+    """
+    h, w = mask.shape[:2]
+    base = (supported_centerlines > 0) & (mask > 0)
+    if not base.any():
+        return np.zeros((h, w), np.uint8), {
+            "method": "pixel-supported-dark-fringe",
+            "fringe_radius_px": RIVER_INK_FRINGE_RADIUS,
+            "centerline_pixels": 0,
+            "fringe_pixels": 0,
+            "pixels": 0,
+        }
+    smooth = cv2.medianBlur(image, 3)
+    gray = cv2.cvtColor(smooth, cv2.COLOR_BGR2GRAY)
+    spread = smooth.max(axis=2).astype(np.int16) - smooth.min(axis=2).astype(np.int16)
+    ink_like = (((gray <= 100) & (spread <= 90)) |
+                ((gray <= 175) & (spread <= 65)))
+    size = 2 * RIVER_INK_FRINGE_RADIUS + 1
+    expanded = cv2.dilate(
+        base.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size))) > 0
+    fringe = expanded & ~base & ink_like & (mask > 0)
+    cleanup = (base | fringe).astype(np.uint8) * 255
+    return cleanup, {
+        "method": "pixel-supported-dark-fringe",
+        "fringe_radius_px": RIVER_INK_FRINGE_RADIUS,
+        "centerline_pixels": int(np.count_nonzero(base)),
+        "fringe_pixels": int(np.count_nonzero(fringe)),
+        "pixels": int(np.count_nonzero(cleanup)),
+    }
+
+
+def _river_label_box(label: dict, width: int, height: int) -> tuple[int, int, int, int] | None:
+    box = label.get("box")
+    if not isinstance(box, (list, tuple)) or len(box) != 4:
+        return None
+    x0, y0, x1, y1 = (int(round(float(value))) for value in box)
+    x0, x1 = sorted((max(0, min(width, x0)), max(0, min(width, x1))))
+    y0, y1 = sorted((max(0, min(height, y0)), max(0, min(height, y1))))
+    return (x0, y0, x1, y1) if x1 > x0 and y1 > y0 else None
+
+
+def _component_axis(points_xy: np.ndarray) -> np.ndarray | None:
+    """Principal direction of one skeleton component, or None if degenerate."""
+    if len(points_xy) < 3:
+        return None
+    covariance = np.cov(points_xy.astype(np.float32).T)
+    if covariance.shape != (2, 2) or not np.isfinite(covariance).all():
+        return None
+    values, vectors = np.linalg.eigh(covariance)
+    return vectors[:, int(np.argmax(values))]
+
+
+def _label_seeded_river_skeletons(image: np.ndarray, mask: np.ndarray,
+                                  raw_text_mask: np.ndarray, labels: list[dict]) \
+        -> tuple[np.ndarray, dict[int, list[dict]], list[dict]]:
+    """Find dark, thin ridges only where reviewed river labels provide evidence.
+
+    The ridge detector supplies pixel geometry; label boxes merely select nearby
+    candidates and never draw a line.  This deliberately returns fragments when
+    printed lettering interrupts a river instead of guessing a connection.
+    """
+    from skimage.filters import frangi
+    from skimage.graph import route_through_array
+    from skimage.morphology import skeletonize
+
+    h, w = mask.shape[:2]
+    river_labels = [label for label in labels if label.get("kind") == "river_label"]
+    valid_labels = [(label, _river_label_box(label, w, h)) for label in river_labels]
+    valid_labels = [(label, box) for label, box in valid_labels if box is not None]
+    if not valid_labels:
+        return np.zeros((h, w), np.uint8), {}, []
+
+    gray = cv2.cvtColor(cv2.medianBlur(image, 3), cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
+    response = frangi(gray, sigmas=(0.8, 1.2, 1.8, 2.4), black_ridges=True)
+
+    # Keep coast/border ink and every text glyph out of the candidate raster.
+    valid = cv2.erode((mask > 0).astype(np.uint8), np.ones((9, 9), np.uint8)) > 0
+    valid &= ~(cv2.dilate((raw_text_mask > 0).astype(np.uint8),
+                         np.ones((3, 3), np.uint8)) > 0)
+    for label in labels:
+        box = _river_label_box(label, w, h)
+        if box is None:
+            continue
+        x0, y0, x1, y1 = box
+        valid[max(0, y0 - 2):min(h, y1 + 2), max(0, x0 - 2):min(w, x1 + 2)] = False
+
+    values = response[valid]
+    if not len(values) or float(values.max()) <= 0:
+        return np.zeros((h, w), np.uint8), {}, [label for label, _ in valid_labels]
+    threshold = max(0.01, float(np.quantile(values, RIVER_RIDGE_QUANTILE)))
+    skeleton = skeletonize((response >= threshold) & valid).astype(np.uint8)
+    count, components, stats, _ = cv2.connectedComponentsWithStats(skeleton, connectivity=8)
+
+    component_points: dict[int, np.ndarray] = {}
+    component_axes: dict[int, np.ndarray | None] = {}
+    for component_id in range(1, count):
+        if int(stats[component_id, cv2.CC_STAT_AREA]) < RIVER_MIN_COMPONENT_PX:
+            continue
+        ys, xs = np.nonzero(components == component_id)
+        points = np.column_stack((xs, ys)).astype(np.float32)
+        component_points[component_id] = points
+        component_axes[component_id] = _component_axis(points)
+
+    selected: dict[int, list[dict]] = {}
+    bridge_paths: list[tuple[np.ndarray, dict]] = []
+    unmatched: list[dict] = []
+    for label, (x0, y0, x1, y1) in valid_labels:
+        pad = max(RIVER_LABEL_SEARCH_PAD, int(round(0.45 * max(x1 - x0, y1 - y0))))
+        xa, ya = max(0, x0 - pad), max(0, y0 - pad)
+        xb, yb = min(w, x1 + pad), min(h, y1 + pad)
+        ids, hits = np.unique(components[ya:yb, xa:xb], return_counts=True)
+
+        box_w, box_h = x1 - x0, y1 - y0
+        desired = (np.array([1.0, 0.0], np.float32) if box_w > 1.3 * box_h else
+                   np.array([0.0, 1.0], np.float32) if box_h > 1.3 * box_w else None)
+        candidates: list[tuple[float, int]] = []
+        for component_id, local_hits in zip(ids.tolist(), hits.tolist()):
+            if component_id == 0 or component_id not in component_points or local_hits < 2:
+                continue
+            axis = component_axes[component_id]
+            alignment = (abs(float(axis @ desired))
+                         if desired is not None and axis is not None else 0.7)
+            if desired is not None and alignment < RIVER_MIN_AXIS_ALIGNMENT:
+                continue
+            length = int(stats[component_id, cv2.CC_STAT_AREA])
+            score = 2.0 * local_hits + 0.08 * min(length, 200) + 20.0 * alignment
+            candidates.append((score, component_id))
+
+        if not candidates:
+            unmatched.append(label)
+            continue
+        candidates.sort(reverse=True)
+        best_score, best_id = candidates[0]
+        chosen_ids = [best_id]
+
+        # Text often cuts one physical river into two ridge components. Choose
+        # a second, well-scored component only when it lies on the opposite
+        # side of the label along the apparent line direction.
+        center = np.array([(x0 + x1) / 2, (y0 + y1) / 2], np.float32)
+        axis = desired if desired is not None else component_axes.get(best_id)
+        if axis is not None:
+            best_projection = float((component_points[best_id].mean(axis=0) - center) @ axis)
+            for score, component_id in candidates[1:]:
+                projection = float((component_points[component_id].mean(axis=0) - center) @ axis)
+                if score >= RIVER_SECONDARY_SCORE_RATIO * best_score and \
+                        best_projection * projection < 0:
+                    chosen_ids.append(component_id)
+                    break
+
+        evidence = {
+            "text": label.get("final_text") or label.get("text") or "river",
+            "box": [x0, y0, x1, y1],
+        }
+        for component_id in chosen_ids:
+            selected.setdefault(component_id, []).append(evidence)
+
+        if len(chosen_ids) == 2:
+            first = component_points[chosen_ids[0]]
+            second = component_points[chosen_ids[1]]
+            # Endpoints nearest the covered label are the bridge terminals.
+            a = first[int(np.argmin(np.sum((first - center) ** 2, axis=1)))]
+            b = second[int(np.argmin(np.sum((second - center) ** 2, axis=1)))]
+            distance = float(np.linalg.norm(b - a))
+            max_bridge = 2.2 * (max(x1 - x0, y1 - y0) + pad)
+            if 3 < distance <= max_bridge:
+                bx0, by0 = np.floor(np.minimum(a, b) - 8).astype(int)
+                bx1, by1 = np.ceil(np.maximum(a, b) + 9).astype(int)
+                bx0, by0 = max(0, bx0), max(0, by0)
+                bx1, by1 = min(w, bx1), min(h, by1)
+                if bx1 > bx0 and by1 > by0:
+                    ridge_scale = max(0.01, float(np.quantile(response[valid], 0.99)))
+                    likelihood = np.clip(response[by0:by1, bx0:bx1] / ridge_scale, 0, 1)
+                    cost = 1.0 + 7.0 * (1.0 - likelihood)
+                    cost[~(mask[by0:by1, bx0:bx1] > 0)] = 1_000.0
+                    start = (int(round(a[1])) - by0, int(round(a[0])) - bx0)
+                    end = (int(round(b[1])) - by0, int(round(b[0])) - bx0)
+                    try:
+                        route, _ = route_through_array(
+                            cost, start, end, fully_connected=True, geometric=True)
+                    except ValueError:
+                        route = []
+                    if route:
+                        bridge_paths.append((np.asarray(
+                            [[px + bx0, py + by0] for py, px in route], np.int32), evidence))
+
+    selected_components = np.where(np.isin(components, list(selected)), components, 0)
+    # Give each bridge a fresh component id so downstream tracing keeps its
+    # provenance and can expose it as a separately reviewable segment.
+    next_component_id = int(selected_components.max()) + 1
+    for bridge, evidence in bridge_paths:
+        bridge_canvas = np.zeros((h, w), np.uint8)
+        cv2.polylines(bridge_canvas, [bridge.reshape(-1, 1, 2)], False, 1, 1, cv2.LINE_8)
+        selected_components[bridge_canvas > 0] = next_component_id
+        selected[next_component_id] = [{**evidence, "graph_bridge": True}]
+        next_component_id += 1
+    return selected_components.astype(np.int32), selected, unmatched
+
+
+def extract_cartographic_lines(image: np.ndarray, mask: np.ndarray, raw_text_mask: np.ndarray,
+                                sem: MapSemantics, labels: list[dict]) \
+        -> tuple[np.ndarray, list[dict], dict]:
+    """Extract actual linework independently from thematic colour regions.
+
+    External coast/border geometry comes from the geographic mask. Interior
+    rivers come from an image ridge detector, but are accepted only near a
+    reviewed river-label occurrence. This prevents narrow thematic patches
+    from being promoted to rivers across the map.
+    """
+    h, w = mask.shape[:2]
+    diag = float(np.hypot(h, w))
+    line_mask = np.zeros((h, w), np.uint8)
+    records: list[dict] = []
+    diagnostic = {
+        "method": "mask-boundary-and-label-seeded-ridge-graph",
+        "boundary_features": 0,
+        "river_label_seeds": 0,
+        "river_components": 0,
+        "river_features": 0,
+        "pixel_supported_river_features": 0,
+        "graph_bridge_features": 0,
+        "unmatched_river_labels": [],
+        "omitted_unconfirmed_interior": False,
+    }
+
+    # A coastline/border is a property of the geographic silhouette, not a
+    # dark thematic class. RETR_EXTERNAL keeps islands as separate outlines.
+    boundary_kind = _boundary_line_kind(sem)
+    if boundary_kind:
+        contours, _ = cv2.findContours(
+            (mask > 0).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        for contour in contours:
+            if cv2.arcLength(contour, True) < max(24.0, 0.025 * diag):
+                continue
+            approx = cv2.approxPolyDP(contour, 1.0, True).reshape(-1, 2)
+            if len(approx) < 3:
+                continue
+            points = approx.tolist()
+            points.append(points[0])
+            records.append({
+                "kind": boundary_kind,
+                "source_class": "geographic mask boundary",
+                "source": "map_mask",
+                "confidence": "high",
+                "label_evidence": None,
+                "points": points,
+            })
+            diagnostic["boundary_features"] += 1
+
+    semantic_kinds = {line.kind.value for line in sem.lines}
+    river_labels = [label for label in labels if label.get("kind") == "river_label"]
+    diagnostic["river_label_seeds"] = len(river_labels)
+    if "river" not in semantic_kinds or not river_labels:
+        diagnostic["omitted_unconfirmed_interior"] = "river" in semantic_kinds
+        return line_mask, records, diagnostic
+
+    selected_components, selected, unmatched = _label_seeded_river_skeletons(
+        image, mask, raw_text_mask, labels)
+    diagnostic["river_components"] = len(selected)
+    diagnostic["unmatched_river_labels"] = [
+        {"text": label.get("final_text") or label.get("text"), "box": label.get("box")}
+        for label in unmatched
+    ]
+    diagnostic["omitted_unconfirmed_interior"] = bool(unmatched)
+    for component_id, evidence in selected.items():
+        component = (selected_components == component_id).astype(np.uint8)
+        if not component.any():
+            continue
+        label_names = list(dict.fromkeys(item["text"] for item in evidence))
+        is_graph_bridge = any(item.get("graph_bridge") for item in evidence)
+        for points in _trace_polylines(component):
+            points_array = np.asarray(points, np.int32)
+            if _polyline_length(points_array) < max(10.0, 0.008 * diag):
+                continue
+            records.append({
+                "kind": "river",
+                "source_class": ("label-guided shortest path across a text gap"
+                                 if is_graph_bridge else "label-seeded dark ridge skeleton"),
+                "source": "image_processing",
+                "confidence": "label-guided" if is_graph_bridge else "pixel-derived",
+                "label_evidence": label_names,
+                "points": points,
+            })
+            diagnostic["river_features"] += 1
+            if is_graph_bridge:
+                diagnostic["graph_bridge_features"] += 1
+            else:
+                # Only source-image-supported centerlines may influence area
+                # segmentation. Graph bridges remain vector geometry only.
+                cv2.polylines(line_mask, [points_array.reshape(-1, 1, 2)],
+                              False, 255, 1, cv2.LINE_8)
+                diagnostic["pixel_supported_river_features"] += 1
+
+    return line_mask, records, diagnostic
 
 
 # --------------------------------------------------------------------------- fill + vectorize
@@ -345,12 +787,16 @@ def run_step4(image_path: Path, model: str | None = None, runs_dir: Path = Path(
     sem = MapSemantics.model_validate_json((out_dir / "step1_semantics.json").read_text(encoding="utf-8"))
     geo = json.loads((out_dir / "geometry.json").read_text(encoding="utf-8"))
     classes_json = json.loads((out_dir / "classes.json").read_text(encoding="utf-8"))
-    labels_json = json.loads((out_dir / "labels.json").read_text(encoding="utf-8"))
-
     img = imread(out_dir / "map_area.png")
     h, w = img.shape[:2]
     mask = imread(out_dir / "map_mask.png")[..., 0]
-    text_mask = imread(out_dir / "text_mask.png")[..., 0]
+    from .labelreview import write_text_removal_mask
+    removal_mask, removal_metadata = write_text_removal_mask(out_dir)
+    raw_text_mask = imread(out_dir / "text_mask.png")[..., 0]
+    labels_path = out_dir / ("approved_labels.json" if (out_dir / "approved_labels.json").exists()
+                             else "labels.json")
+    labels_payload = json.loads(labels_path.read_text(encoding="utf-8"))
+    line_labels = labels_payload.get("labels", [])
 
     # content mask: close interior holes (pale classes the bg threshold ate),
     # but keep furniture areas out and refill them from their surroundings
@@ -367,39 +813,63 @@ def run_step4(image_path: Path, model: str | None = None, runs_dir: Path = Path(
         if lx1 > lx0 and ly1 > ly0:
             furniture_hole[ly0:ly1, lx0:lx1] = mask[ly0:ly1, lx0:lx1]
 
-    # labels whose strokes were not isolated -- or only partially (a few
-    # letters), which would leave legible ghosts -- erase their whole box.
-    # ONLY for compact city/capital labels: their boxes are small and reliable.
-    # Sprawling river/region labels with bad boxes must NOT be box-filled (an
-    # offset box would erase real map content); their leftover ink is absorbed
-    # by the mean-shift prefilter and the sliver dissolution below.
-    for lb in labels_json["labels"]:
-        if lb["kind"] not in ("city", "capital"):
-            continue
-        bx0, by0, bx1, by1 = lb["box"]
-        bx0, by0 = max(0, bx0), max(0, by0)
-        box_area = max(1, (bx1 - bx0) * (by1 - by0))
-        coverage = np.count_nonzero(text_mask[by0:by1, bx0:bx1]) / box_area
-        if not lb["mask_found"] or coverage < 0.04:
-            text_mask[by0:by1, bx0:bx1] = 255
-
     # flatten scan noise before any color work: median kills salt-and-pepper,
     # mean-shift posterizes JPEG gradients and anti-aliasing into flat regions
     smoothed = cv2.pyrMeanShiftFiltering(cv2.medianBlur(img, 3), sp=6, sr=14)
     lab_img = to_lab(smoothed)
-    # widen the text mask: letter anti-aliasing fringes extend past the strokes
-    # and would survive as legible ghost outlines in blend-color classes
-    text_mask = cv2.dilate(text_mask, np.ones((5, 5), np.uint8))
-    removed = (text_mask > 0) | (furniture_hole > 0)
+    if _boundary_line_kind(sem):
+        coastline_cleanup, coastline_diagnostic = extract_coastline_cleanup_mask(img, mask)
+    else:
+        coastline_cleanup = np.zeros((h, w), np.uint8)
+        coastline_diagnostic = {
+            "method": "not-applicable-no-external-boundary",
+            "band_width_px": 0,
+            "pixels": 0,
+        }
+    imwrite(out_dir / "coastline_cleanup_mask.png", coastline_cleanup)
+    removed = ((removal_mask > 0) | (furniture_hole > 0) |
+               (coastline_cleanup > 0))
     valid = (mask > 0) & ~removed
+    excluded_preview = img.copy()
+    excluded_preview[mask == 0] = 255
+    excluded_preview[removed] = 255
+    imwrite(out_dir / "step4_text_removed_input.png", excluded_preview)
 
     seeds = build_seeds(classes_json)
-    notes: list[str] = []
+    notes: list[str] = [
+        f"text removal {removal_metadata['mode']}: "
+        f"{removal_metadata['precise_stroke_labels']} precise, "
+        f"{removal_metadata['whole_box_labels']} whole-box, "
+        f"{removal_metadata['kept_labels']} kept",
+        f"coastline ink cleanup: {coastline_diagnostic['pixels']} pixels in a "
+        f"{coastline_diagnostic['band_width_px']} px inward band",
+    ]
     label_map = assign_pixels(lab_img, seeds, valid)
     notes += cluster_unassigned(lab_img, label_map, valid, seeds)
 
-    line_mask, halo_mask, line_records = extract_lines(label_map, lab_img, mask, seeds, sem)
-    label_map[(line_mask > 0) | (halo_mask > 0)] = -1
+    # Colour-component analysis is retained only for anti-aliasing halos. Its
+    # former line records were false positives whenever a thematic region was
+    # narrow and elongated. Actual linework is now extracted independently
+    # from the original image and geographic mask.
+    _, halo_mask, _ = extract_lines(label_map, lab_img, mask, seeds, sem)
+    line_mask, line_records, line_diagnostic = extract_cartographic_lines(
+        img, mask, raw_text_mask, sem, line_labels)
+    river_cleanup, river_cleanup_diagnostic = extract_river_cleanup_mask(
+        img, mask, line_mask)
+    imwrite(out_dir / "river_cleanup_mask.png", river_cleanup)
+    line_diagnostic["coastline_cleanup"] = coastline_diagnostic
+    line_diagnostic["river_cleanup"] = river_cleanup_diagnostic
+    label_map[(river_cleanup > 0) | (halo_mask > 0)] = -1
+    notes.append(
+        f"line extraction: {line_diagnostic['boundary_features']} mask-derived boundary, "
+        f"{line_diagnostic['river_features']} label-seeded pixel river features"
+    )
+    notes.append(
+        f"river ink cleanup: {river_cleanup_diagnostic['centerline_pixels']} supported "
+        f"centerline pixels + {river_cleanup_diagnostic['fringe_pixels']} dark fringe pixels"
+    )
+    if line_diagnostic["omitted_unconfirmed_interior"]:
+        notes.append("some interior river labels had no reliable nearby pixel ridge")
 
     # unseeded classes must earn their existence as coherent regions; their
     # scattered slivers are blend noise and dissolve into the classes around them
@@ -461,15 +931,40 @@ def run_step4(image_path: Path, model: str | None = None, runs_dir: Path = Path(
         "coordinate_space": "map_area.png pixels, y down",
         "features": feats,
     }), encoding="utf-8")
-    (out_dir / "lines.geojson").write_text(json.dumps({
+    automatic_lines = {
         "type": "FeatureCollection",
         "coordinate_space": "map_area.png pixels, y down",
+        "extraction": line_diagnostic,
         "features": [{
             "type": "Feature",
-            "properties": {"kind": r["kind"], "source_class": r["source_class"]},
+            "properties": {
+                "kind": r["kind"],
+                "source_class": r["source_class"],
+                "source": r.get("source"),
+                "confidence": r.get("confidence"),
+                "label_evidence": r.get("label_evidence"),
+            },
             "geometry": {"type": "LineString", "coordinates": r["points"]},
         } for r in line_records],
-    }), encoding="utf-8")
+    }
+    (out_dir / "lines_auto.geojson").write_text(
+        json.dumps(automatic_lines, indent=2, ensure_ascii=False), encoding="utf-8")
+    from .linereview import materialize_review
+    review_path = out_dir / "line_review.json"
+    saved_review = (json.loads(review_path.read_text(encoding="utf-8"))
+                    if review_path.exists() else None)
+    active_lines = materialize_review(automatic_lines, saved_review)
+    (out_dir / "lines.geojson").write_text(
+        json.dumps(active_lines, indent=2, ensure_ascii=False), encoding="utf-8")
+    (out_dir / "approved_lines.geojson").write_text(
+        json.dumps(active_lines, indent=2, ensure_ascii=False), encoding="utf-8")
+    (out_dir / "line_extraction.json").write_text(
+        json.dumps(line_diagnostic, indent=2, ensure_ascii=False), encoding="utf-8")
+    active_line_records = [{
+        **feature.get("properties", {}),
+        "points": feature.get("geometry", {}).get("coordinates", []),
+    } for feature in active_lines.get("features", [])]
+    imwrite(out_dir / "step4_lines_preview.png", render_lines_preview(active_line_records, mask))
 
     # ---- debug: original | reconstruction ----
     # extracted ink lines are intentionally NOT drawn: they are not part of the
@@ -477,6 +972,9 @@ def run_step4(image_path: Path, model: str | None = None, runs_dir: Path = Path(
     recon = np.full((h, w, 3), 255, np.uint8)
     for i, s in enumerate(seeds):
         recon[label_map == i] = np.uint8(s["rgb"][::-1])
+    # Human-readable rendering of the exact indexed raster consumed by Step 5.
+    # This contains no source-image backdrop or debug annotations.
+    imwrite(out_dir / "label_map_preview.png", recon)
     dbg = np.hstack([img, recon])
     if dbg.shape[1] > 2000:
         s = 2000 / dbg.shape[1]
@@ -484,10 +982,10 @@ def run_step4(image_path: Path, model: str | None = None, runs_dir: Path = Path(
     imwrite(out_dir / "step4_debug.png", dbg)
 
     kinds: dict[str, int] = {}
-    for r in line_records:
+    for r in active_line_records:
         kinds[r["kind"]] = kinds.get(r["kind"], 0) + 1
     return {
         "out_dir": out_dir, "classes": classes_final, "notes": notes,
-        "polygons": len(feats), "polylines": len(line_records), "line_kinds": kinds,
+        "polygons": len(feats), "polylines": len(active_line_records), "line_kinds": kinds,
         "filled_px": n_filled, "speckles": speckle,
     }

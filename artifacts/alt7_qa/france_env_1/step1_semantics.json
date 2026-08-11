@@ -1,0 +1,121 @@
+{
+  "map_type": "area_class_chorochromatic",
+  "in_scope": true,
+  "data_ordering": "qualitative",
+  "map_language": "English",
+  "subject": "Dominant land use in France",
+  "description": "A thematic map of France showing various land use types. The largest areas are covered by 'Grassland' (light green) and 'Other crops (primarily cereals)' (pale yellow). 'Grassland and crops' (teal/light blue-green) is also widespread, particularly in the west and center. 'Cropland (primarily wheat, sugar beets, corn)' (orange) is prominent in the north and parts of the southwest. 'Vineyards' (purple) are scattered, notably along river valleys and in the southwest. 'Forest' (dark green) is found in patches, especially in the south and east. 'Market gardening' (red) appears in specific pockets, such as near Lyon and in the south. 'Olives (often with vines and wheat)' (black) is a very small, localized class in the southeast. Major rivers like the Seine, Loire, Garonne, and Rhône are indicated with lines and labels. Several cities are marked with dots and names, including Paris, Lyon, Marseille, Bordeaux, and Lille.",
+  "title": "DOMINANT LAND USE",
+  "legend_present": true,
+  "legend_title": null,
+  "legend_entries": [
+    {
+      "label": "Forest",
+      "color_hint": "dark green",
+      "is_thematic": true
+    },
+    {
+      "label": "Grassland",
+      "color_hint": "light green",
+      "is_thematic": true
+    },
+    {
+      "label": "Grassland and crops",
+      "color_hint": "teal",
+      "is_thematic": true
+    },
+    {
+      "label": "Cropland (primarily wheat, sugar beets, corn)",
+      "color_hint": "orange",
+      "is_thematic": true
+    },
+    {
+      "label": "Other crops (primarily cereals)",
+      "color_hint": "pale yellow",
+      "is_thematic": true
+    },
+    {
+      "label": "Olives (often with vines and wheat)",
+      "color_hint": "black",
+      "is_thematic": true
+    },
+    {
+      "label": "Market gardening (fruits, vegetables, flowers)",
+      "color_hint": "red",
+      "is_thematic": true
+    },
+    {
+      "label": "Vineyards",
+      "color_hint": "purple",
+      "is_thematic": true
+    }
+  ],
+  "water_present": false,
+  "thematic_classes": [
+    {
+      "label": "Grassland",
+      "priority": 1,
+      "approx_area_share_percent": 25.0
+    },
+    {
+      "label": "Other crops (primarily cereals)",
+      "priority": 2,
+      "approx_area_share_percent": 25.0
+    },
+    {
+      "label": "Grassland and crops",
+      "priority": 3,
+      "approx_area_share_percent": 20.0
+    },
+    {
+      "label": "Cropland (primarily wheat, sugar beets, corn)",
+      "priority": 4,
+      "approx_area_share_percent": 10.0
+    },
+    {
+      "label": "Forest",
+      "priority": 5,
+      "approx_area_share_percent": 8.0
+    },
+    {
+      "label": "Vineyards",
+      "priority": 6,
+      "approx_area_share_percent": 5.0
+    },
+    {
+      "label": "Market gardening (fruits, vegetables, flowers)",
+      "priority": 7,
+      "approx_area_share_percent": 4.0
+    },
+    {
+      "label": "Olives (often with vines and wheat)",
+      "priority": 8,
+      "approx_area_share_percent": 1.0
+    }
+  ],
+  "non_thematic": [
+    {
+      "name": "background",
+      "color_hint": "white",
+      "priority": 1,
+      "reason": "The surrounding area is white and represents non-mapped territory."
+    }
+  ],
+  "lines": [
+    {
+      "kind": "river",
+      "description": "Major rivers including the Seine, Loire, Garonne, Rhône, Meuse, Moselle, and others are drawn as thin black lines."
+    },
+    {
+      "kind": "coastline",
+      "description": "The coastline of France is outlined with a thin black line."
+    }
+  ],
+  "overlay_text": {
+    "has_city_labels": true,
+    "capital_city": "Paris",
+    "has_region_labels": false,
+    "has_line_labels": true,
+    "notes": "Text includes city names (e.g., Brest, Rennes, Nantes, Bordeaux, Toulouse, Marseille, Nice, Lyon, Dijon, Nancy, Lille, Paris, Rouen, Reims) and river names (e.g., Seine, Loire, Garonne, Rhône, Meuse, Moselle)."
+  }
+}

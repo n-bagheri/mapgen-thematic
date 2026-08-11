@@ -1,0 +1,8 @@
+{
+  "simplification_level": 4,
+  "min_texture_area_side_mm": 17.6,
+  "smooth_mm": 0.8,
+  "preserve_share": 0.018,
+  "keep_line_kinds": [],
+  "protected_classes": []
+}

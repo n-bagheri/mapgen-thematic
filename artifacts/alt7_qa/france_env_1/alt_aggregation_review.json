@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "proposal_fingerprint": "16f2be06f757e1d0c07c399ae57220419e4d711f43e07a2ab0419dccbf3bd159",
+  "status": "approved",
+  "approved": true,
+  "groups": [
+    {
+      "label": "Grasslands",
+      "members": [
+        1,
+        2
+      ],
+      "member_labels": [
+        "Grassland",
+        "Grassland and crops"
+      ],
+      "rationale": "temporary visual QA only",
+      "approved": true
+    },
+    {
+      "label": "Field Crops",
+      "members": [
+        3,
+        4
+      ],
+      "member_labels": [
+        "Cropland (primarily wheat, sugar beets, corn)",
+        "Other crops (primarily cereals)"
+      ],
+      "rationale": "temporary visual QA only",
+      "approved": true
+    },
+    {
+      "label": "Forest",
+      "members": [
+        0
+      ],
+      "member_labels": [
+        "Forest"
+      ],
+      "rationale": "temporary visual QA only",
+      "approved": true
+    },
+    {
+      "label": "Specialty Crops",
+      "members": [
+        5,
+        6,
+        7
+      ],
+      "member_labels": [
+        "Olives (often with vines and wheat)",
+        "Market gardening (fruits, vegetables, flowers)",
+        "Vineyards"
+      ],
+      "rationale": "temporary visual QA only",
+      "approved": true
+    }
+  ],
+  "rejected_groups": []
+}

@@ -1,0 +1,85 @@
+{
+  "branch": "alternate",
+  "aggregation_review_status": "approved",
+  "texture_count": 4,
+  "texture_ceiling": 5,
+  "texture_ceiling_is_target": false,
+  "map_size_mm": [
+    180.0,
+    190.1
+  ],
+  "source_mm_per_px": 0.259,
+  "area_assignments": [
+    {
+      "group_id": 0,
+      "label": "Grasslands",
+      "members": [
+        1,
+        2
+      ],
+      "pattern": "lines_horizontal",
+      "pattern_desc": "horizontal lines (4 mm apart)",
+      "rationale": "stable semantic texture assignment",
+      "is_thematic": true,
+      "minimum_width_mm": 13.0,
+      "minimum_area_mm2": 169.0,
+      "remaining_subminimum_regions": 3
+    },
+    {
+      "group_id": 1,
+      "label": "Field Crops",
+      "members": [
+        3,
+        4
+      ],
+      "pattern": "grid_cross",
+      "pattern_desc": "diagonal cross-hatch (5 mm)",
+      "rationale": "stable semantic texture assignment",
+      "is_thematic": true,
+      "minimum_width_mm": 15.0,
+      "minimum_area_mm2": 225.0,
+      "remaining_subminimum_regions": 1
+    },
+    {
+      "group_id": 2,
+      "label": "Forest",
+      "members": [
+        0
+      ],
+      "pattern": "solid_black",
+      "pattern_desc": "solid raised surface",
+      "rationale": "stable semantic texture assignment",
+      "is_thematic": true,
+      "minimum_width_mm": 10.0,
+      "minimum_area_mm2": 100.0,
+      "remaining_subminimum_regions": 2
+    },
+    {
+      "group_id": 3,
+      "label": "Specialty Crops",
+      "members": [
+        5,
+        6,
+        7
+      ],
+      "pattern": "dots_dense",
+      "pattern_desc": "dense dots (3 mm grid)",
+      "rationale": "stable semantic texture assignment",
+      "is_thematic": true,
+      "minimum_width_mm": 13.0,
+      "minimum_area_mm2": 169.0,
+      "remaining_subminimum_regions": 2
+    }
+  ],
+  "line_styles": {},
+  "render_px_per_mm": 5.0,
+  "generalization_summary": {
+    "whole_regions_merged": 53,
+    "remaining_below_pattern_minimum": 8,
+    "changed_share": 0.2273,
+    "boundary_smoothing_mm": 3.2
+  },
+  "notes": [
+    "8 final regions remain below their pattern-specific touch threshold because removing them would erase a category or exceed the selected distortion limit."
+  ]
+}

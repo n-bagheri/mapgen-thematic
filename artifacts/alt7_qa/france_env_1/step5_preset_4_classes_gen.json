@@ -1,0 +1,214 @@
+{
+  "classes": [
+    {
+      "index": 0,
+      "label": "Forest",
+      "rgb": [
+        30,
+        149,
+        73
+      ],
+      "is_thematic": true,
+      "priority": 5,
+      "source": "legend",
+      "area_px": 23456,
+      "area_share": 0.0995,
+      "area_share_before": 0.0939
+    },
+    {
+      "index": 1,
+      "label": "Grassland",
+      "rgb": [
+        182,
+        214,
+        65
+      ],
+      "is_thematic": true,
+      "priority": 1,
+      "source": "legend",
+      "area_px": 102263,
+      "area_share": 0.4339,
+      "area_share_before": 0.2951
+    },
+    {
+      "index": 2,
+      "label": "Grassland and crops",
+      "rgb": [
+        166,
+        215,
+        182
+      ],
+      "is_thematic": true,
+      "priority": 3,
+      "source": "legend",
+      "area_px": 31121,
+      "area_share": 0.132,
+      "area_share_before": 0.1539
+    },
+    {
+      "index": 3,
+      "label": "Cropland (primarily wheat, sugar beets, corn)",
+      "rgb": [
+        241,
+        163,
+        31
+      ],
+      "is_thematic": true,
+      "priority": 4,
+      "source": "legend",
+      "area_px": 19268,
+      "area_share": 0.0818,
+      "area_share_before": 0.0835
+    },
+    {
+      "index": 4,
+      "label": "Other crops (primarily cereals)",
+      "rgb": [
+        237,
+        236,
+        181
+      ],
+      "is_thematic": true,
+      "priority": 2,
+      "source": "legend",
+      "area_px": 45335,
+      "area_share": 0.1924,
+      "area_share_before": 0.2688
+    },
+    {
+      "index": 5,
+      "label": "Olives (often with vines and wheat)",
+      "rgb": [
+        30,
+        25,
+        24
+      ],
+      "is_thematic": true,
+      "priority": 8,
+      "source": "legend",
+      "area_px": 0,
+      "area_share": 0.0,
+      "area_share_before": 0.004
+    },
+    {
+      "index": 6,
+      "label": "Market gardening (fruits, vegetables, flowers)",
+      "rgb": [
+        245,
+        75,
+        77
+      ],
+      "is_thematic": true,
+      "priority": 7,
+      "source": "legend",
+      "area_px": 4607,
+      "area_share": 0.0195,
+      "area_share_before": 0.0409
+    },
+    {
+      "index": 7,
+      "label": "Vineyards",
+      "rgb": [
+        188,
+        152,
+        174
+      ],
+      "is_thematic": true,
+      "priority": 6,
+      "source": "legend",
+      "area_px": 9629,
+      "area_share": 0.0409,
+      "area_share_before": 0.0567
+    },
+    {
+      "index": 8,
+      "label": "unlabelled: olive",
+      "rgb": [
+        197,
+        163,
+        54
+      ],
+      "is_thematic": false,
+      "priority": null,
+      "source": "unseeded",
+      "area_px": 0,
+      "area_share": 0.0,
+      "area_share_before": 0.0
+    },
+    {
+      "index": 9,
+      "label": "unlabelled: gray",
+      "rgb": [
+        184,
+        174,
+        151
+      ],
+      "is_thematic": false,
+      "priority": null,
+      "source": "unseeded",
+      "area_px": 0,
+      "area_share": 0.0,
+      "area_share_before": 0.0
+    },
+    {
+      "index": 10,
+      "label": "unlabelled: dark gray",
+      "rgb": [
+        110,
+        95,
+        94
+      ],
+      "is_thematic": false,
+      "priority": null,
+      "source": "unseeded",
+      "area_px": 0,
+      "area_share": 0.0,
+      "area_share_before": 0.0
+    },
+    {
+      "index": 11,
+      "label": "unlabelled: dark green",
+      "rgb": [
+        85,
+        119,
+        61
+      ],
+      "is_thematic": false,
+      "priority": null,
+      "source": "unseeded",
+      "area_px": 0,
+      "area_share": 0.0,
+      "area_share_before": 0.0
+    },
+    {
+      "index": 12,
+      "label": "unlabelled: light green",
+      "rgb": [
+        165,
+        188,
+        97
+      ],
+      "is_thematic": false,
+      "priority": null,
+      "source": "unseeded",
+      "area_px": 0,
+      "area_share": 0.0,
+      "area_share_before": 0.0
+    },
+    {
+      "index": 13,
+      "label": "unlabelled: dark red",
+      "rgb": [
+        183,
+        82,
+        68
+      ],
+      "is_thematic": false,
+      "priority": null,
+      "source": "unseeded",
+      "area_px": 0,
+      "area_share": 0.0,
+      "area_share_before": 0.0031
+    }
+  ]
+}

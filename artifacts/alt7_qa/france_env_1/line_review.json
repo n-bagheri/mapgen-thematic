@@ -1,0 +1,315 @@
+{
+  "version": 2,
+  "auto_lines_fingerprint": "32370ced435b2935ae13d6164ce9336339374bad401e5ed1ddfe7c6dcb1a8a56",
+  "saved_at": "2026-08-03T14:26:43.214559+00:00",
+  "include_rivers": true,
+  "include_auto_ids": [
+    "river-13-3f527ed4b2",
+    "river-14-f8c4602d8b",
+    "river-15-3849aaa760",
+    "river-18-f911160546",
+    "river-19-2b99523d3b",
+    "river-20-58b83ea4ce",
+    "river-22-29d37426f2",
+    "river-23-10f0a39c99",
+    "river-24-529fd5c9f7",
+    "river-25-4462d52ac9",
+    "river-27-717c25a3de",
+    "river-29-7256a9b297"
+  ],
+  "manual_rivers": [
+    {
+      "id": "manual-msd6fsm8",
+      "label": "",
+      "edit_kind": "drawn",
+      "points": [
+        [
+          266.84,
+          114.02
+        ],
+        [
+          302.54,
+          120.52
+        ],
+        [
+          322.02,
+          148.65
+        ],
+        [
+          359.0,
+          187.0
+        ]
+      ],
+      "connections": {
+        "end": {
+          "target_id": "river-15-3849aaa760",
+          "segment_index": 0,
+          "t": 0.0,
+          "point": [
+            359.0,
+            187.0
+          ],
+          "distance_px": 0.0
+        }
+      }
+    },
+    {
+      "id": "manual-msd6g3ii",
+      "label": "",
+      "edit_kind": "drawn",
+      "points": [
+        [
+          397.0,
+          205.0
+        ],
+        [
+          422.64,
+          202.75
+        ],
+        [
+          444.28,
+          233.04
+        ],
+        [
+          460.51,
+          277.4
+        ]
+      ],
+      "connections": {
+        "start": {
+          "target_id": "river-15-3849aaa760",
+          "segment_index": 1,
+          "t": 1.0,
+          "point": [
+            397.0,
+            205.0
+          ],
+          "distance_px": 0.0
+        }
+      }
+    },
+    {
+      "id": "manual-msd6gvsu",
+      "label": "",
+      "edit_kind": "drawn",
+      "points": [
+        [
+          486.0,
+          303.0
+        ],
+        [
+          468.08,
+          325.01
+        ],
+        [
+          456.0,
+          402.0
+        ]
+      ],
+      "connections": {
+        "start": {
+          "target_id": "river-13-3f527ed4b2",
+          "segment_index": 0,
+          "t": 1.0,
+          "point": [
+            486.0,
+            303.0
+          ],
+          "distance_px": 0.0
+        },
+        "end": {
+          "target_id": "river-24-529fd5c9f7",
+          "segment_index": 0,
+          "t": 0.0,
+          "point": [
+            456.0,
+            402.0
+          ],
+          "distance_px": 0.0
+        }
+      }
+    },
+    {
+      "id": "manual-msd6harz",
+      "label": "",
+      "edit_kind": "drawn",
+      "points": [
+        [
+          171.63,
+          428.87
+        ],
+        [
+          196.51,
+          460.25
+        ],
+        [
+          219.23,
+          486.22
+        ],
+        [
+          241.96,
+          501.37
+        ],
+        [
+          258.18,
+          520.84
+        ],
+        [
+          261.43,
+          539.23
+        ],
+        [
+          248.45,
+          555.46
+        ],
+        [
+          225.73,
+          563.04
+        ],
+        [
+          213.82,
+          565.2
+        ],
+        [
+          220.32,
+          585.76
+        ]
+      ],
+      "connections": {}
+    },
+    {
+      "id": "manual-msd6hl0z",
+      "label": "",
+      "edit_kind": "drawn",
+      "points": [
+        [
+          129.43,
+          253.6
+        ],
+        [
+          195.43,
+          253.6
+        ],
+        [
+          233.3,
+          266.58
+        ],
+        [
+          270.09,
+          265.5
+        ],
+        [
+          328.0,
+          240.0
+        ]
+      ],
+      "connections": {
+        "end": {
+          "target_id": "river-20-58b83ea4ce",
+          "segment_index": 0,
+          "t": 0.0,
+          "point": [
+            328.0,
+            240.0
+          ],
+          "distance_px": 0.0
+        }
+      }
+    },
+    {
+      "id": "manual-msd6i39z",
+      "label": "",
+      "edit_kind": "drawn",
+      "points": [
+        [
+          488.0,
+          133.0
+        ],
+        [
+          505.95,
+          182.19
+        ],
+        [
+          509.2,
+          211.4
+        ],
+        [
+          500.54,
+          246.02
+        ]
+      ],
+      "connections": {
+        "start": {
+          "target_id": "river-22-29d37426f2",
+          "segment_index": 0,
+          "t": 0.0,
+          "point": [
+            488.0,
+            133.0
+          ],
+          "distance_px": 0.0
+        }
+      }
+    },
+    {
+      "id": "manual-msd6ibna",
+      "label": "",
+      "edit_kind": "drawn",
+      "points": [
+        [
+          552.48,
+          144.32
+        ],
+        [
+          535.17,
+          186.52
+        ],
+        [
+          535.17,
+          202.75
+        ],
+        [
+          548.15,
+          230.88
+        ],
+        [
+          561.13,
+          264.42
+        ]
+      ],
+      "connections": {}
+    },
+    {
+      "id": "manual-msd6m1tq",
+      "label": "",
+      "edit_kind": "drawn",
+      "points": [
+        [
+          597.13,
+          284.12
+        ],
+        [
+          591.36,
+          241.78
+        ],
+        [
+          604.83,
+          222.54
+        ],
+        [
+          612.53,
+          205.21
+        ],
+        [
+          620.23,
+          197.52
+        ],
+        [
+          629.85,
+          193.67
+        ]
+      ],
+      "connections": {}
+    }
+  ]
+}

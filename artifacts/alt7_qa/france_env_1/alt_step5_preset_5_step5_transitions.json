@@ -1,0 +1,645 @@
+{
+  "changed_pixels": 33977,
+  "changed_share": 0.144,
+  "matrix": [
+    {
+      "from_index": -1,
+      "from_label": "outside",
+      "to_index": -1,
+      "to_label": "outside",
+      "pixels": 274194
+    },
+    {
+      "from_index": -1,
+      "from_label": "outside",
+      "to_index": 0,
+      "to_label": "Forest",
+      "pixels": 267
+    },
+    {
+      "from_index": -1,
+      "from_label": "outside",
+      "to_index": 1,
+      "to_label": "Grassland",
+      "pixels": 333
+    },
+    {
+      "from_index": -1,
+      "from_label": "outside",
+      "to_index": 2,
+      "to_label": "Grassland and crops",
+      "pixels": 220
+    },
+    {
+      "from_index": -1,
+      "from_label": "outside",
+      "to_index": 3,
+      "to_label": "Cropland (primarily wheat, sugar beets, corn)",
+      "pixels": 43
+    },
+    {
+      "from_index": -1,
+      "from_label": "outside",
+      "to_index": 4,
+      "to_label": "Other crops (primarily cereals)",
+      "pixels": 147
+    },
+    {
+      "from_index": -1,
+      "from_label": "outside",
+      "to_index": 7,
+      "to_label": "Vineyards",
+      "pixels": 130
+    },
+    {
+      "from_index": 0,
+      "from_label": "Forest",
+      "to_index": -1,
+      "to_label": "outside",
+      "pixels": 645
+    },
+    {
+      "from_index": 0,
+      "from_label": "Forest",
+      "to_index": 0,
+      "to_label": "Forest",
+      "pixels": 20257
+    },
+    {
+      "from_index": 0,
+      "from_label": "Forest",
+      "to_index": 1,
+      "to_label": "Grassland",
+      "pixels": 435
+    },
+    {
+      "from_index": 0,
+      "from_label": "Forest",
+      "to_index": 4,
+      "to_label": "Other crops (primarily cereals)",
+      "pixels": 426
+    },
+    {
+      "from_index": 0,
+      "from_label": "Forest",
+      "to_index": 6,
+      "to_label": "Market gardening (fruits, vegetables, flowers)",
+      "pixels": 6
+    },
+    {
+      "from_index": 0,
+      "from_label": "Forest",
+      "to_index": 7,
+      "to_label": "Vineyards",
+      "pixels": 270
+    },
+    {
+      "from_index": 1,
+      "from_label": "Grassland",
+      "to_index": -1,
+      "to_label": "outside",
+      "pixels": 928
+    },
+    {
+      "from_index": 1,
+      "from_label": "Grassland",
+      "to_index": 0,
+      "to_label": "Forest",
+      "pixels": 293
+    },
+    {
+      "from_index": 1,
+      "from_label": "Grassland",
+      "to_index": 1,
+      "to_label": "Grassland",
+      "pixels": 58494
+    },
+    {
+      "from_index": 1,
+      "from_label": "Grassland",
+      "to_index": 2,
+      "to_label": "Grassland and crops",
+      "pixels": 7614
+    },
+    {
+      "from_index": 1,
+      "from_label": "Grassland",
+      "to_index": 3,
+      "to_label": "Cropland (primarily wheat, sugar beets, corn)",
+      "pixels": 464
+    },
+    {
+      "from_index": 1,
+      "from_label": "Grassland",
+      "to_index": 4,
+      "to_label": "Other crops (primarily cereals)",
+      "pixels": 1034
+    },
+    {
+      "from_index": 1,
+      "from_label": "Grassland",
+      "to_index": 5,
+      "to_label": "Olives (often with vines and wheat)",
+      "pixels": 10
+    },
+    {
+      "from_index": 1,
+      "from_label": "Grassland",
+      "to_index": 6,
+      "to_label": "Market gardening (fruits, vegetables, flowers)",
+      "pixels": 192
+    },
+    {
+      "from_index": 1,
+      "from_label": "Grassland",
+      "to_index": 7,
+      "to_label": "Vineyards",
+      "pixels": 270
+    },
+    {
+      "from_index": 2,
+      "from_label": "Grassland and crops",
+      "to_index": -1,
+      "to_label": "outside",
+      "pixels": 674
+    },
+    {
+      "from_index": 2,
+      "from_label": "Grassland and crops",
+      "to_index": 0,
+      "to_label": "Forest",
+      "pixels": 258
+    },
+    {
+      "from_index": 2,
+      "from_label": "Grassland and crops",
+      "to_index": 1,
+      "to_label": "Grassland",
+      "pixels": 3836
+    },
+    {
+      "from_index": 2,
+      "from_label": "Grassland and crops",
+      "to_index": 2,
+      "to_label": "Grassland and crops",
+      "pixels": 30368
+    },
+    {
+      "from_index": 2,
+      "from_label": "Grassland and crops",
+      "to_index": 3,
+      "to_label": "Cropland (primarily wheat, sugar beets, corn)",
+      "pixels": 49
+    },
+    {
+      "from_index": 2,
+      "from_label": "Grassland and crops",
+      "to_index": 4,
+      "to_label": "Other crops (primarily cereals)",
+      "pixels": 826
+    },
+    {
+      "from_index": 2,
+      "from_label": "Grassland and crops",
+      "to_index": 5,
+      "to_label": "Olives (often with vines and wheat)",
+      "pixels": 3
+    },
+    {
+      "from_index": 2,
+      "from_label": "Grassland and crops",
+      "to_index": 6,
+      "to_label": "Market gardening (fruits, vegetables, flowers)",
+      "pixels": 72
+    },
+    {
+      "from_index": 2,
+      "from_label": "Grassland and crops",
+      "to_index": 7,
+      "to_label": "Vineyards",
+      "pixels": 50
+    },
+    {
+      "from_index": 3,
+      "from_label": "Cropland (primarily wheat, sugar beets, corn)",
+      "to_index": -1,
+      "to_label": "outside",
+      "pixels": 185
+    },
+    {
+      "from_index": 3,
+      "from_label": "Cropland (primarily wheat, sugar beets, corn)",
+      "to_index": 1,
+      "to_label": "Grassland",
+      "pixels": 39
+    },
+    {
+      "from_index": 3,
+      "from_label": "Cropland (primarily wheat, sugar beets, corn)",
+      "to_index": 2,
+      "to_label": "Grassland and crops",
+      "pixels": 2
+    },
+    {
+      "from_index": 3,
+      "from_label": "Cropland (primarily wheat, sugar beets, corn)",
+      "to_index": 3,
+      "to_label": "Cropland (primarily wheat, sugar beets, corn)",
+      "pixels": 15591
+    },
+    {
+      "from_index": 3,
+      "from_label": "Cropland (primarily wheat, sugar beets, corn)",
+      "to_index": 4,
+      "to_label": "Other crops (primarily cereals)",
+      "pixels": 3753
+    },
+    {
+      "from_index": 3,
+      "from_label": "Cropland (primarily wheat, sugar beets, corn)",
+      "to_index": 6,
+      "to_label": "Market gardening (fruits, vegetables, flowers)",
+      "pixels": 33
+    },
+    {
+      "from_index": 4,
+      "from_label": "Other crops (primarily cereals)",
+      "to_index": -1,
+      "to_label": "outside",
+      "pixels": 448
+    },
+    {
+      "from_index": 4,
+      "from_label": "Other crops (primarily cereals)",
+      "to_index": 0,
+      "to_label": "Forest",
+      "pixels": 479
+    },
+    {
+      "from_index": 4,
+      "from_label": "Other crops (primarily cereals)",
+      "to_index": 1,
+      "to_label": "Grassland",
+      "pixels": 1211
+    },
+    {
+      "from_index": 4,
+      "from_label": "Other crops (primarily cereals)",
+      "to_index": 2,
+      "to_label": "Grassland and crops",
+      "pixels": 723
+    },
+    {
+      "from_index": 4,
+      "from_label": "Other crops (primarily cereals)",
+      "to_index": 3,
+      "to_label": "Cropland (primarily wheat, sugar beets, corn)",
+      "pixels": 905
+    },
+    {
+      "from_index": 4,
+      "from_label": "Other crops (primarily cereals)",
+      "to_index": 4,
+      "to_label": "Other crops (primarily cereals)",
+      "pixels": 58251
+    },
+    {
+      "from_index": 4,
+      "from_label": "Other crops (primarily cereals)",
+      "to_index": 5,
+      "to_label": "Olives (often with vines and wheat)",
+      "pixels": 142
+    },
+    {
+      "from_index": 4,
+      "from_label": "Other crops (primarily cereals)",
+      "to_index": 6,
+      "to_label": "Market gardening (fruits, vegetables, flowers)",
+      "pixels": 422
+    },
+    {
+      "from_index": 4,
+      "from_label": "Other crops (primarily cereals)",
+      "to_index": 7,
+      "to_label": "Vineyards",
+      "pixels": 540
+    },
+    {
+      "from_index": 5,
+      "from_label": "Olives (often with vines and wheat)",
+      "to_index": -1,
+      "to_label": "outside",
+      "pixels": 37
+    },
+    {
+      "from_index": 5,
+      "from_label": "Olives (often with vines and wheat)",
+      "to_index": 0,
+      "to_label": "Forest",
+      "pixels": 13
+    },
+    {
+      "from_index": 5,
+      "from_label": "Olives (often with vines and wheat)",
+      "to_index": 4,
+      "to_label": "Other crops (primarily cereals)",
+      "pixels": 13
+    },
+    {
+      "from_index": 5,
+      "from_label": "Olives (often with vines and wheat)",
+      "to_index": 5,
+      "to_label": "Olives (often with vines and wheat)",
+      "pixels": 728
+    },
+    {
+      "from_index": 5,
+      "from_label": "Olives (often with vines and wheat)",
+      "to_index": 7,
+      "to_label": "Vineyards",
+      "pixels": 147
+    },
+    {
+      "from_index": 6,
+      "from_label": "Market gardening (fruits, vegetables, flowers)",
+      "to_index": -1,
+      "to_label": "outside",
+      "pixels": 310
+    },
+    {
+      "from_index": 6,
+      "from_label": "Market gardening (fruits, vegetables, flowers)",
+      "to_index": 0,
+      "to_label": "Forest",
+      "pixels": 7
+    },
+    {
+      "from_index": 6,
+      "from_label": "Market gardening (fruits, vegetables, flowers)",
+      "to_index": 1,
+      "to_label": "Grassland",
+      "pixels": 248
+    },
+    {
+      "from_index": 6,
+      "from_label": "Market gardening (fruits, vegetables, flowers)",
+      "to_index": 2,
+      "to_label": "Grassland and crops",
+      "pixels": 70
+    },
+    {
+      "from_index": 6,
+      "from_label": "Market gardening (fruits, vegetables, flowers)",
+      "to_index": 3,
+      "to_label": "Cropland (primarily wheat, sugar beets, corn)",
+      "pixels": 60
+    },
+    {
+      "from_index": 6,
+      "from_label": "Market gardening (fruits, vegetables, flowers)",
+      "to_index": 4,
+      "to_label": "Other crops (primarily cereals)",
+      "pixels": 211
+    },
+    {
+      "from_index": 6,
+      "from_label": "Market gardening (fruits, vegetables, flowers)",
+      "to_index": 6,
+      "to_label": "Market gardening (fruits, vegetables, flowers)",
+      "pixels": 7484
+    },
+    {
+      "from_index": 6,
+      "from_label": "Market gardening (fruits, vegetables, flowers)",
+      "to_index": 7,
+      "to_label": "Vineyards",
+      "pixels": 1219
+    },
+    {
+      "from_index": 7,
+      "from_label": "Vineyards",
+      "to_index": -1,
+      "to_label": "outside",
+      "pixels": 76
+    },
+    {
+      "from_index": 7,
+      "from_label": "Vineyards",
+      "to_index": 0,
+      "to_label": "Forest",
+      "pixels": 76
+    },
+    {
+      "from_index": 7,
+      "from_label": "Vineyards",
+      "to_index": 1,
+      "to_label": "Grassland",
+      "pixels": 74
+    },
+    {
+      "from_index": 7,
+      "from_label": "Vineyards",
+      "to_index": 2,
+      "to_label": "Grassland and crops",
+      "pixels": 72
+    },
+    {
+      "from_index": 7,
+      "from_label": "Vineyards",
+      "to_index": 4,
+      "to_label": "Other crops (primarily cereals)",
+      "pixels": 806
+    },
+    {
+      "from_index": 7,
+      "from_label": "Vineyards",
+      "to_index": 5,
+      "to_label": "Olives (often with vines and wheat)",
+      "pixels": 22
+    },
+    {
+      "from_index": 7,
+      "from_label": "Vineyards",
+      "to_index": 6,
+      "to_label": "Market gardening (fruits, vegetables, flowers)",
+      "pixels": 1400
+    },
+    {
+      "from_index": 7,
+      "from_label": "Vineyards",
+      "to_index": 7,
+      "to_label": "Vineyards",
+      "pixels": 10786
+    },
+    {
+      "from_index": 13,
+      "from_label": "unlabelled: dark red",
+      "to_index": -1,
+      "to_label": "outside",
+      "pixels": 47
+    },
+    {
+      "from_index": 13,
+      "from_label": "unlabelled: dark red",
+      "to_index": 7,
+      "to_label": "Vineyards",
+      "pixels": 692
+    }
+  ],
+  "per_class": [
+    {
+      "index": 0,
+      "label": "Forest",
+      "before_px": 22039,
+      "after_px": 21650,
+      "retained_px": 20257,
+      "gained_px": 1393,
+      "lost_px": 1782,
+      "contamination_share": 0.0643,
+      "retention_share": 0.9191
+    },
+    {
+      "index": 1,
+      "label": "Grassland",
+      "before_px": 69299,
+      "after_px": 64670,
+      "retained_px": 58494,
+      "gained_px": 6176,
+      "lost_px": 10805,
+      "contamination_share": 0.0955,
+      "retention_share": 0.8441
+    },
+    {
+      "index": 2,
+      "label": "Grassland and crops",
+      "before_px": 36136,
+      "after_px": 39069,
+      "retained_px": 30368,
+      "gained_px": 8701,
+      "lost_px": 5768,
+      "contamination_share": 0.2227,
+      "retention_share": 0.8404
+    },
+    {
+      "index": 3,
+      "label": "Cropland (primarily wheat, sugar beets, corn)",
+      "before_px": 19603,
+      "after_px": 17112,
+      "retained_px": 15591,
+      "gained_px": 1521,
+      "lost_px": 4012,
+      "contamination_share": 0.0889,
+      "retention_share": 0.7953
+    },
+    {
+      "index": 4,
+      "label": "Other crops (primarily cereals)",
+      "before_px": 63121,
+      "after_px": 65467,
+      "retained_px": 58251,
+      "gained_px": 7216,
+      "lost_px": 4870,
+      "contamination_share": 0.1102,
+      "retention_share": 0.9228
+    },
+    {
+      "index": 5,
+      "label": "Olives (often with vines and wheat)",
+      "before_px": 938,
+      "after_px": 905,
+      "retained_px": 728,
+      "gained_px": 177,
+      "lost_px": 210,
+      "contamination_share": 0.1956,
+      "retention_share": 0.7761
+    },
+    {
+      "index": 6,
+      "label": "Market gardening (fruits, vegetables, flowers)",
+      "before_px": 9609,
+      "after_px": 9609,
+      "retained_px": 7484,
+      "gained_px": 2125,
+      "lost_px": 2125,
+      "contamination_share": 0.2211,
+      "retention_share": 0.7789
+    },
+    {
+      "index": 7,
+      "label": "Vineyards",
+      "before_px": 13312,
+      "after_px": 14104,
+      "retained_px": 10786,
+      "gained_px": 3318,
+      "lost_px": 2526,
+      "contamination_share": 0.2353,
+      "retention_share": 0.8102
+    },
+    {
+      "index": 8,
+      "label": "unlabelled: olive",
+      "before_px": 0,
+      "after_px": 0,
+      "retained_px": 0,
+      "gained_px": 0,
+      "lost_px": 0,
+      "contamination_share": 0.0,
+      "retention_share": 0.0
+    },
+    {
+      "index": 9,
+      "label": "unlabelled: gray",
+      "before_px": 0,
+      "after_px": 0,
+      "retained_px": 0,
+      "gained_px": 0,
+      "lost_px": 0,
+      "contamination_share": 0.0,
+      "retention_share": 0.0
+    },
+    {
+      "index": 10,
+      "label": "unlabelled: dark gray",
+      "before_px": 0,
+      "after_px": 0,
+      "retained_px": 0,
+      "gained_px": 0,
+      "lost_px": 0,
+      "contamination_share": 0.0,
+      "retention_share": 0.0
+    },
+    {
+      "index": 11,
+      "label": "unlabelled: dark green",
+      "before_px": 0,
+      "after_px": 0,
+      "retained_px": 0,
+      "gained_px": 0,
+      "lost_px": 0,
+      "contamination_share": 0.0,
+      "retention_share": 0.0
+    },
+    {
+      "index": 12,
+      "label": "unlabelled: light green",
+      "before_px": 0,
+      "after_px": 0,
+      "retained_px": 0,
+      "gained_px": 0,
+      "lost_px": 0,
+      "contamination_share": 0.0,
+      "retention_share": 0.0
+    },
+    {
+      "index": 13,
+      "label": "unlabelled: dark red",
+      "before_px": 739,
+      "after_px": 0,
+      "retained_px": 0,
+      "gained_px": 0,
+      "lost_px": 739,
+      "contamination_share": 0.0,
+      "retention_share": 0.0
+    }
+  ]
+}

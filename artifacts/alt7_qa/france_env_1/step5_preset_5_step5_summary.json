@@ -1,0 +1,45 @@
+{
+  "scale_mm_per_px": 0.259,
+  "orientation": "portrait",
+  "map_size_mm": [
+    180.0,
+    190.1
+  ],
+  "page_mm": [
+    210.0,
+    297.0
+  ],
+  "min_texture_area_px": 7281,
+  "smoothing_sigma_px": 4.63,
+  "dissolved_components": 352,
+  "islands": {
+    "dropped": 0,
+    "exaggerated": 1
+  },
+  "classes_restored": [
+    "Forest",
+    "Market gardening (fruits, vegetables, flowers)",
+    "Vineyards"
+  ],
+  "line_joins": 0,
+  "lines_kept": 0,
+  "lines_dropped_short": 0,
+  "lines_dropped_redundant": 0,
+  "classes_vanished": [
+    "Olives (often with vines and wheat)",
+    "unlabelled: olive",
+    "unlabelled: gray",
+    "unlabelled: dark gray",
+    "unlabelled: dark green",
+    "unlabelled: light green",
+    "unlabelled: dark red"
+  ],
+  "params": {
+    "simplification_level": 5,
+    "min_texture_area_side_mm": 22.1,
+    "smooth_mm": 1.2,
+    "preserve_share": 0.03,
+    "keep_line_kinds": [],
+    "protected_classes": []
+  }
+}

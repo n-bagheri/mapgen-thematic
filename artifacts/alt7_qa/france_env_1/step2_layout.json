@@ -1,0 +1,43 @@
+{
+  "map_areas": [
+    {
+      "box_2d": [
+        10,
+        26,
+        823,
+        915
+      ],
+      "label": "France mainland"
+    },
+    {
+      "box_2d": [
+        798,
+        866,
+        961,
+        991
+      ],
+      "label": "Corsica"
+    }
+  ],
+  "legend": {
+    "box_2d": [
+      838,
+      158,
+      991,
+      834
+    ],
+    "label": "legend"
+  },
+  "title": {
+    "box_2d": [
+      52,
+      81,
+      79,
+      384
+    ],
+    "label": "title"
+  },
+  "scale_bar": null,
+  "north_arrow": null,
+  "other": []
+}

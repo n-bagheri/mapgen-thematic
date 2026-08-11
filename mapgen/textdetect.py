@@ -9,14 +9,18 @@ detection, so only true overlay text is reported.
 
 Artifacts per map, under runs/<name>/:
     step3_raw.json      merged Gemini detections (cached; delete to re-call)
+    step3_raw.sha256    fingerprint tying the Gemini cache to the prepared input
+    step3_craft.sha256  fingerprint tying the CRAFT cache to the prepared input
     labels.json         text, kind, priority, quad, anchor (map-area coords)
-    text_mask.png       union of dilated text strokes, aligned to map_area.png
+    text_mask.png       raw union of pixel-precise detected text strokes
+    text_removal_mask.png exact reviewed/default mask consumed by Step 4
     step3_debug.png     annotated overlay for human review
 """
 
 from __future__ import annotations
 
 import difflib
+import hashlib
 import json
 import os
 import re
@@ -51,7 +55,7 @@ class TextDetections(BaseModel):
     items: list[TextItem]
 
 
-# priority for Step 8 clutter resolution (1 = keep longest)
+# priority for Step 9 clutter resolution (1 = keep longest)
 KIND_PRIORITY = {
     TextKind.capital: 1, TextKind.region_label: 2, TextKind.river_label: 3,
     TextKind.line_label: 4, TextKind.city: 5, TextKind.other: 6,
@@ -146,36 +150,40 @@ def _tiles(img: np.ndarray) -> list[tuple[int, int, np.ndarray]]:
 
 
 def detect_text(map_bgr: np.ndarray, sem: MapSemantics, model: str | None) -> list[dict]:
-    """Run the (tiled) Gemini pass; returns items with pixel boxes in map-area coords."""
+    """Run the text-only Gemini pass and return pixel boxes."""
     context, capital_hint = _context_from_sem(sem)
     prompt = TEXT_PROMPT.format(context=context, capital_hint=capital_hint)
     raw: list[dict] = []
     for ox, oy, tile in _tiles(map_bgr):
         th, tw = tile.shape[:2]
-        for it in _gemini_text(tile, prompt, model).items:
+        detected = _gemini_text(tile, prompt, model)
+        for it in detected.items:
             y0, x0, y1, x1 = it.box_2d
             raw.append({
                 "text": it.text.strip(), "kind": it.kind.value,
                 "box": [int(ox) + int(x0 / 1000 * tw), int(oy) + int(y0 / 1000 * th),
                         int(ox) + int(x1 / 1000 * tw), int(oy) + int(y1 / 1000 * th)],
             })
-    # merge duplicates from tile overlap
-    raw.sort(key=lambda r: (r["box"][2] - r["box"][0]) * (r["box"][3] - r["box"][1]), reverse=True)
+    # merge duplicate text boxes from tile overlap
+    raw.sort(key=lambda r: (r["box"][2] - r["box"][0]) * (r["box"][3] - r["box"][1]),
+             reverse=True)
     merged: list[dict] = []
-    for r in raw:
-        rx = (r["box"][0] + r["box"][2]) / 2
-        ry = (r["box"][1] + r["box"][3]) / 2
-        dup = False
-        for m in merged:
-            mx = (m["box"][0] + m["box"][2]) / 2
-            my = (m["box"][1] + m["box"][3]) / 2
-            near = max(m["box"][2] - m["box"][0], m["box"][3] - m["box"][1])
-            if (abs(rx - mx) < 0.7 * near and abs(ry - my) < 0.7 * near
-                    and difflib.SequenceMatcher(None, r["text"].lower(), m["text"].lower()).ratio() > 0.7):
-                dup = True
+    for item in raw:
+        rx = (item["box"][0] + item["box"][2]) / 2
+        ry = (item["box"][1] + item["box"][3]) / 2
+        duplicate = False
+        for kept in merged:
+            mx = (kept["box"][0] + kept["box"][2]) / 2
+            my = (kept["box"][1] + kept["box"][3]) / 2
+            near = max(kept["box"][2] - kept["box"][0],
+                       kept["box"][3] - kept["box"][1])
+            if (abs(rx - mx) < 0.7 * near and abs(ry - my) < 0.7 * near and
+                    difflib.SequenceMatcher(
+                        None, item["text"].lower(), kept["text"].lower()).ratio() > 0.7):
+                duplicate = True
                 break
-        if not dup:
-            merged.append(r)
+        if not duplicate:
+            merged.append(item)
     return merged
 
 
@@ -192,6 +200,23 @@ def _vocabulary(sem: MapSemantics) -> set[str]:
 # --------------------------------------------------------------------------- craft localization
 
 _READER = None
+TEXT_CACHE_VERSION = 4
+
+
+def _text_input_signature(clean_bgr: np.ndarray) -> str:
+    """Fingerprint the exact pixels and detector-cache contract."""
+    digest = hashlib.sha256()
+    digest.update(f"textdetect-v{TEXT_CACHE_VERSION}\0".encode("ascii"))
+    digest.update(str(clean_bgr.shape).encode("ascii"))
+    digest.update(clean_bgr.tobytes())
+    return digest.hexdigest()
+
+
+def _cache_matches(signature_path: Path, signature: str) -> bool:
+    try:
+        return signature_path.read_text(encoding="ascii").strip() == signature
+    except OSError:
+        return False
 
 
 def _craft_reader():
@@ -224,12 +249,23 @@ def craft_detect(clean_bgr: np.ndarray) -> list[dict] | None:
 
 def fuse_detections(gemini_items: list[dict], craft_dets: list[dict] | None,
                     diag: float, vocab: set[str]) -> list[dict]:
-    """CRAFT supplies geometry, Gemini supplies reading + classification.
-    One-to-one matching by text similarity and proximity; unmatched CRAFT
-    detections with confident text become 'other' labels; unmatched Gemini
-    items stay but are flagged as geometrically unverified."""
+    """Fuse Gemini with the CRAFT + EasyOCR detection/recognition result.
+
+    Gemini supplies classification and the preferred final transcription;
+    EasyOCR supplies its own reading/confidence while CRAFT supplies geometry.
+    Preserve both readings and their agreement so review does not conflate
+    text recognition with box localization.
+    """
     if craft_dets is None:
-        return [dict(it, localization="gemini") for it in gemini_items]
+        return [dict(
+            it,
+            localization="gemini",
+            recognition_status="gemini-only",
+            gemini_text=it["text"],
+            easyocr_text=None,
+            easyocr_conf=None,
+            text_similarity=None,
+        ) for it in gemini_items]
     pairs = []
     for gi, g in enumerate(gemini_items):
         gc = ((g["box"][0] + g["box"][2]) / 2, (g["box"][1] + g["box"][3]) / 2)
@@ -238,31 +274,58 @@ def fuse_detections(gemini_items: list[dict], craft_dets: list[dict] | None,
             dist = ((gc[0] - cc[0]) ** 2 + (gc[1] - cc[1]) ** 2) ** 0.5
             ratio = difflib.SequenceMatcher(None, g["text"].lower(), c["text"].lower()).ratio()
             if ratio >= 0.5 or (dist < 0.05 * diag and ratio >= 0.25) or dist < 0.02 * diag:
-                pairs.append((ratio - dist / (0.2 * diag), gi, ci))
+                pairs.append((ratio - dist / (0.2 * diag), gi, ci, ratio))
     pairs.sort(key=lambda p: -p[0])
     used_g: set[int] = set()
     used_c: set[int] = set()
     fused = []
-    for _, gi, ci in pairs:
+    for _, gi, ci, ratio in pairs:
         if gi in used_g or ci in used_c:
             continue
         used_g.add(gi)
         used_c.add(ci)
         c = craft_dets[ci]
-        fused.append(dict(gemini_items[gi], box=list(c["box"]),
-                          localization="craft", craft_conf=c["conf"]))
+        status = ("text-confirmed" if ratio >= 0.7
+                  else "partial-text-match" if ratio >= 0.5
+                  else "geometry-only")
+        fused.append(dict(
+            gemini_items[gi],
+            box=list(c["box"]),
+            localization="craft",
+            recognition_status=status,
+            gemini_text=gemini_items[gi]["text"],
+            easyocr_text=c["text"],
+            easyocr_conf=c["conf"],
+            text_similarity=round(float(ratio), 3),
+        ))
     for gi, g in enumerate(gemini_items):
         if gi not in used_g:
-            fused.append(dict(g, localization="gemini-unverified"))
+            fused.append(dict(
+                g,
+                localization="gemini-unverified",
+                recognition_status="gemini-only",
+                gemini_text=g["text"],
+                easyocr_text=None,
+                easyocr_conf=None,
+                text_similarity=None,
+            ))
     for ci, c in enumerate(craft_dets):
         if ci in used_c or c["conf"] < 0.45:
             continue
         if len([ch for ch in c["text"] if ch.isalnum()]) < 3:
             continue
         m = difflib.get_close_matches(c["text"], vocab, n=1, cutoff=0.7)
-        fused.append({"text": m[0] if m else c["text"], "kind": "other",
-                      "box": list(c["box"]), "localization": "craft-only",
-                      "craft_conf": c["conf"]})
+        fused.append({
+            "text": m[0] if m else c["text"],
+            "kind": "other",
+            "box": list(c["box"]),
+            "localization": "craft-only",
+            "recognition_status": "easyocr-only",
+            "gemini_text": None,
+            "easyocr_text": c["text"],
+            "easyocr_conf": c["conf"],
+            "text_similarity": None,
+        })
     return fused
 
 
@@ -407,6 +470,7 @@ def run_step3(image_path: Path, model: str | None = None, runs_dir: Path = Path(
                  map_bgr, geo["map_crop"], geo["furniture"],
                  imread(out_dir / "map_mask.png")[..., 0],
              ))
+    input_signature = _text_input_signature(clean)
     furniture_local = []
     for f in geo["furniture"]:
         fx0, fy0, fx1, fy1 = f["box"]
@@ -416,25 +480,33 @@ def run_step3(image_path: Path, model: str | None = None, runs_dir: Path = Path(
             furniture_local.append((lx0, ly0, lx1, ly1))
 
     raw_path = out_dir / "step3_raw.json"
-    if raw_path.exists():
-        items = json.loads(raw_path.read_text(encoding="utf-8"))
+    raw_signature_path = out_dir / "step3_raw.sha256"
+    if raw_path.exists() and _cache_matches(raw_signature_path, input_signature):
+        raw_payload = json.loads(raw_path.read_text(encoding="utf-8"))
+        if isinstance(raw_payload, dict):
+            items = raw_payload.get("items", [])
+        else:  # defensive support for a manually preserved pre-v3 cache
+            items = raw_payload
         raw_cached = True
     else:
         items = detect_text(clean, sem, model)
         raw_path.write_text(json.dumps(items, indent=2, ensure_ascii=False), encoding="utf-8")
+        raw_signature_path.write_text(input_signature, encoding="ascii")
         raw_cached = False
 
     vocab = _vocabulary(sem)
 
     # pixel-true localization: CRAFT boxes replace Gemini's coarse ones
     craft_path = out_dir / "step3_craft.json"
-    if craft_path.exists():
+    craft_signature_path = out_dir / "step3_craft.sha256"
+    if craft_path.exists() and _cache_matches(craft_signature_path, input_signature):
         craft_dets = json.loads(craft_path.read_text(encoding="utf-8"))
     else:
         craft_dets = craft_detect(clean)
         if craft_dets is not None:
             craft_path.write_text(json.dumps(craft_dets, indent=2, ensure_ascii=False),
                                   encoding="utf-8")
+            craft_signature_path.write_text(input_signature, encoding="ascii")
     items = fuse_detections(items, craft_dets, float(np.hypot(mw, mh)), vocab)
     warnings: list[str] = []
     text_mask = np.zeros((mh, mw), np.uint8)
@@ -462,10 +534,22 @@ def run_step3(image_path: Path, model: str | None = None, runs_dir: Path = Path(
             "text": it["text"],
             "kind": it["kind"],
             "priority": KIND_PRIORITY[TextKind(it["kind"])],
-            "matches_step1": bool(difflib.get_close_matches(it["text"], vocab, n=1, cutoff=0.75)),
+            "matches_step1": any(
+                difflib.SequenceMatcher(None, it["text"].casefold(), name.casefold()).ratio() >= 0.75
+                for name in vocab
+            ),
             "localization": it.get("localization", "gemini"),
+            "recognition_status": it.get("recognition_status", "gemini-only"),
+            "gemini_text": it.get("gemini_text", it["text"]),
+            "easyocr_text": it.get("easyocr_text"),
+            "easyocr_conf": it.get("easyocr_conf"),
+            "text_similarity": it.get("text_similarity"),
             "box": bx,
             "quad": None,
+            "text_position": [ix, iy],
+            "text_position_source": "box_center",
+            "feature_position": None,
+            "feature_position_source": None,
             "anchor": [ix, iy],
             "anchor_source": "box_center",
             "mask_found": strokes["found"],
@@ -475,13 +559,25 @@ def run_step3(image_path: Path, model: str | None = None, runs_dir: Path = Path(
             m = strokes["mask"]
             text_mask[oy:oy + m.shape[0], ox:ox + m.shape[1]] |= m * 255
             entry["quad"] = strokes["quad"]
+            entry["text_position"] = strokes["centroid"]
+            entry["text_position_source"] = "stroke_centroid"
             entry["anchor"] = strokes["centroid"]
             entry["anchor_source"] = "stroke_centroid"
         else:
-            warnings.append(f"no strokes extracted for '{it['text']}' -- Step 4 must fill its whole box")
+            if it["kind"] in ("city", "capital"):
+                warnings.append(
+                    f"no strokes extracted for '{it['text']}' -- Step 4 will fill its city box"
+                )
+            else:
+                warnings.append(
+                    f"no strokes extracted for '{it['text']}' -- no precise removal mask; "
+                    "Step 4 will not fill this long-label box"
+                )
         if it["kind"] in ("city", "capital"):
             dot = find_point_symbol(clean, bx, text_mask)
             if dot:
+                entry["feature_position"] = dot
+                entry["feature_position_source"] = "point_symbol"
                 entry["anchor"] = dot
                 entry["anchor_source"] = "point_symbol"
         labels.append(entry)
@@ -497,6 +593,8 @@ def run_step3(image_path: Path, model: str | None = None, runs_dir: Path = Path(
         "warnings": warnings,
     }, indent=2, ensure_ascii=False), encoding="utf-8")
     imwrite(out_dir / "text_mask.png", text_mask)
+    from .labelreview import write_text_removal_mask
+    write_text_removal_mask(out_dir)
 
     # Render the checkpoint over the exact furniture-blanked image used for
     # detection. Using map_area.png here made excluded legend/scale text appear
@@ -525,7 +623,8 @@ def run_step3(image_path: Path, model: str | None = None, runs_dir: Path = Path(
     for lb in labels:
         kinds[lb["kind"]] = kinds.get(lb["kind"], 0) + 1
     return {
-        "out_dir": out_dir, "raw_cached": raw_cached, "total": len(labels),
+        "out_dir": out_dir, "raw_cached": raw_cached,
+        "total": len(labels),
         "kinds": kinds, "masked": sum(1 for lb in labels if lb["mask_found"]),
         "warnings": warnings,
     }

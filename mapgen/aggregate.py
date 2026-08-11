@@ -13,6 +13,7 @@ Artifact: runs/<name>/aggregation.json
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 from pathlib import Path
@@ -21,6 +22,107 @@ from pydantic import BaseModel, Field
 
 from .output_spec import OutputSpec
 from .semantics import DEFAULT_MODEL, MapSemantics, _ensure_api_key
+
+
+AGGREGATION_REVIEW_VERSION = 1
+AGGREGATION_REVIEW_ARTIFACT = "aggregation_review.json"
+
+
+def aggregation_fingerprint(aggregation: dict) -> str:
+    payload = {
+        "version": AGGREGATION_REVIEW_VERSION,
+        "slots": aggregation["slots"],
+        "source_classes": aggregation.get("source_classes", []),
+        "groups": [{"members": sorted(group["members"]), "label": group["label"]}
+                   for group in aggregation["groups"]],
+    }
+    return hashlib.sha256(json.dumps(
+        payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def load_aggregation_review(out_dir: Path, aggregation: dict) -> dict | None:
+    path = out_dir / AGGREGATION_REVIEW_ARTIFACT
+    if not path.exists():
+        return None
+    review = json.loads(path.read_text(encoding="utf-8"))
+    if (review.get("version") != AGGREGATION_REVIEW_VERSION
+            or review.get("proposal_fingerprint") != aggregation_fingerprint(aggregation)):
+        return None
+    return review
+
+
+def save_aggregation_review(out_dir: Path, aggregation: dict,
+                            decisions: list[dict]) -> dict:
+    """Save the reviewed canonical Step 6 grouping."""
+    source = {int(item["index"]): item["label"]
+              for item in aggregation.get("source_classes", [])}
+    if not source:
+        raise ValueError("aggregation proposal has no source classes; rerun Step 6")
+    if not isinstance(decisions, list) or not decisions:
+        raise ValueError("at least one final group is required")
+    if len(decisions) > int(aggregation["slots"]):
+        raise ValueError(f"at most {aggregation['slots']} final groups are allowed")
+
+    seen: set[int] = set()
+    groups = []
+    for position, decision in enumerate(decisions, start=1):
+        try:
+            members = [int(member) for member in decision.get("members", [])]
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"group {position} has invalid members") from exc
+        if not members:
+            continue
+        label = str(decision.get("label", "")).strip()
+        if not label:
+            raise ValueError(f"group {position} needs a label")
+        if len(set(members)) != len(members):
+            raise ValueError(f"group {position} contains a duplicate class")
+        unknown = [member for member in members if member not in source]
+        duplicate = [member for member in members if member in seen]
+        if unknown:
+            raise ValueError(f"group {position} contains unknown classes: {unknown}")
+        if duplicate:
+            raise ValueError(f"classes assigned more than once: {duplicate}")
+        seen.update(members)
+        groups.append({
+            "label": label,
+            "members": members,
+            "member_labels": [source[member] for member in members],
+            "rationale": str(decision.get(
+                "rationale", "human-reviewed grouping")).strip(),
+            "approved": bool(decision.get("approved", len(members) == 1)),
+        })
+    missing = sorted(set(source) - seen)
+    if missing:
+        raise ValueError(f"every source class must be assigned exactly once; missing {missing}")
+    rejected = [group["label"] for group in groups
+                if len(group["members"]) > 1 and not group["approved"]]
+    status = "rejected" if rejected else "approved"
+    review = {
+        "version": AGGREGATION_REVIEW_VERSION,
+        "proposal_fingerprint": aggregation_fingerprint(aggregation),
+        "status": status,
+        "approved": status == "approved",
+        "groups": groups,
+        "rejected_groups": rejected,
+    }
+    (out_dir / AGGREGATION_REVIEW_ARTIFACT).write_text(
+        json.dumps(review, indent=2, ensure_ascii=False), encoding="utf-8")
+    return review
+
+
+def effective_aggregation(out_dir: Path, aggregation: dict) -> dict:
+    if not aggregation.get("review_required"):
+        return aggregation
+    review = load_aggregation_review(out_dir, aggregation)
+    if not review or not review.get("approved"):
+        raise RuntimeError(
+            "Step 6 aggregation proposal requires approval before Step 7")
+    result = dict(aggregation)
+    result["groups"] = [{key: value for key, value in group.items()
+                         if key != "approved"} for group in review["groups"]]
+    result["review_status"] = "approved"
+    return result
 
 
 class MergeGroup(BaseModel):
@@ -163,10 +265,18 @@ def run_step6(image_path: Path, model: str | None = None, runs_dir: Path = Path(
         "water": ({"label": water[0]["label"], "members": [c["index"] for c in water]}
                   if water else None),
         "groups": groups,
+        "source_classes": [{"index": c["index"], "label": c["label"]}
+                           for c in thematic],
+        "review_required": any(len(group["members"]) > 1 for group in groups),
         "non_thematic_extra": [{"index": c["index"], "label": c["label"],
                                 "priority": c["priority"]} for c in extras],
         "notes": notes,
     }
+    aggregation["proposal_fingerprint"] = aggregation_fingerprint(aggregation)
+    review = load_aggregation_review(out_dir, aggregation)
+    aggregation["review_status"] = (
+        review["status"] if review else
+        "needs_review" if aggregation["review_required"] else "not_required")
     (out_dir / "aggregation.json").write_text(
         json.dumps(aggregation, indent=2, ensure_ascii=False), encoding="utf-8")
     return {"out_dir": out_dir, "aggregation": aggregation}

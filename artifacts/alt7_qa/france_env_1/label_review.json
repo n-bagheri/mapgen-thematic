@@ -1,0 +1,247 @@
+{
+  "version": 2,
+  "labels_fingerprint": "0b90a0f6eb6145a55ffa61d865d172ca7ce346a11259c088d4799af4768d36cf",
+  "saved_at": "2026-07-31T16:40:47.433867+00:00",
+  "decisions": [
+    {
+      "id": "label-0-f95186e42f",
+      "index": 0,
+      "original_text": "PARIS",
+      "text": "PARIS",
+      "include": true,
+      "remove": true
+    },
+    {
+      "id": "label-1-16e8f369d2",
+      "index": 1,
+      "original_text": "Ajaccio",
+      "text": "Ajaccio",
+      "include": true,
+      "remove": true
+    },
+    {
+      "id": "label-2-603c07300a",
+      "index": 2,
+      "original_text": "Nantes",
+      "text": "Nantes",
+      "include": true,
+      "remove": true
+    },
+    {
+      "id": "label-3-8a1e2f670a",
+      "index": 3,
+      "original_text": "Rennes",
+      "text": "Rennes",
+      "include": true,
+      "remove": true
+    },
+    {
+      "id": "label-4-d84979c468",
+      "index": 4,
+      "original_text": "Toulouse",
+      "text": "Toulouse",
+      "include": true,
+      "remove": true
+    },
+    {
+      "id": "label-5-07b3fed783",
+      "index": 5,
+      "original_text": "Orléans",
+      "text": "Orléans",
+      "include": true,
+      "remove": true
+    },
+    {
+      "id": "label-6-6a23a7cccc",
+      "index": 6,
+      "original_text": "Limoges",
+      "text": "Limoges",
+      "include": true,
+      "remove": true
+    },
+    {
+      "id": "label-7-c7db1c80d7",
+      "index": 7,
+      "original_text": "Marseille",
+      "text": "Marseille",
+      "include": true,
+      "remove": true
+    },
+    {
+      "id": "label-8-05cb040345",
+      "index": 8,
+      "original_text": "Bordeaux",
+      "text": "Bordeaux",
+      "include": true,
+      "remove": true
+    },
+    {
+      "id": "label-9-e20e50e900",
+      "index": 9,
+      "original_text": "Nancy",
+      "text": "Nancy",
+      "include": true,
+      "remove": true
+    },
+    {
+      "id": "label-10-20cd5f82c7",
+      "index": 10,
+      "original_text": "Reims",
+      "text": "Reims",
+      "include": true,
+      "remove": true
+    },
+    {
+      "id": "label-11-48e8c76a1b",
+      "index": 11,
+      "original_text": "Bourges",
+      "text": "Bourges",
+      "include": true,
+      "remove": true
+    },
+    {
+      "id": "label-12-ccc53b168f",
+      "index": 12,
+      "original_text": "Grenoble",
+      "text": "Grenoble",
+      "include": true,
+      "remove": true
+    },
+    {
+      "id": "label-13-8346a56cad",
+      "index": 13,
+      "original_text": "Dijon",
+      "text": "Dijon",
+      "include": true,
+      "remove": true
+    },
+    {
+      "id": "label-14-0724396a73",
+      "index": 14,
+      "original_text": "Lille",
+      "text": "Lille",
+      "include": true,
+      "remove": true
+    },
+    {
+      "id": "label-15-25e7fa88fc",
+      "index": 15,
+      "original_text": "Le Mans",
+      "text": "Le Mansfor the",
+      "include": true,
+      "remove": true
+    },
+    {
+      "id": "label-16-593f55c245",
+      "index": 16,
+      "original_text": "Rouen",
+      "text": "Rouen",
+      "include": true,
+      "remove": true
+    },
+    {
+      "id": "label-17-59c10e0c21",
+      "index": 17,
+      "original_text": "Perpignan",
+      "text": "Perpignan",
+      "include": true,
+      "remove": true
+    },
+    {
+      "id": "label-18-ea159282b4",
+      "index": 18,
+      "original_text": "Brest",
+      "text": "Brest",
+      "include": true,
+      "remove": true
+    },
+    {
+      "id": "label-19-93019742be",
+      "index": 19,
+      "original_text": "Garonne",
+      "text": "Garonne",
+      "include": true,
+      "remove": true
+    },
+    {
+      "id": "label-20-ac6412a82f",
+      "index": 20,
+      "original_text": "Moselle",
+      "text": "Moselle",
+      "include": true,
+      "remove": true
+    },
+    {
+      "id": "label-21-7c8d6c6072",
+      "index": 21,
+      "original_text": "Rhône",
+      "text": "Rhône",
+      "include": true,
+      "remove": true
+    },
+    {
+      "id": "label-22-93842b84d0",
+      "index": 22,
+      "original_text": "Seine",
+      "text": "Seine",
+      "include": true,
+      "remove": true
+    },
+    {
+      "id": "label-23-7548181bde",
+      "index": 23,
+      "original_text": "Loire",
+      "text": "Loire",
+      "include": true,
+      "remove": true
+    },
+    {
+      "id": "label-24-abe6532189",
+      "index": 24,
+      "original_text": "Saône",
+      "text": "Saône",
+      "include": true,
+      "remove": true
+    },
+    {
+      "id": "label-25-b74e866e36",
+      "index": 25,
+      "original_text": "Meuse",
+      "text": "Meuse",
+      "include": true,
+      "remove": true
+    },
+    {
+      "id": "label-26-9244cace4e",
+      "index": 26,
+      "original_text": "Rhône",
+      "text": "Rhône",
+      "include": true,
+      "remove": true
+    },
+    {
+      "id": "label-27-fa4293c8c0",
+      "index": 27,
+      "original_text": "Rhône",
+      "text": "Rhône",
+      "include": true,
+      "remove": true
+    },
+    {
+      "id": "label-28-9a9d985a0c",
+      "index": 28,
+      "original_text": "Lyon",
+      "text": "Lyon",
+      "include": true,
+      "remove": true
+    },
+    {
+      "id": "label-29-eb328b7e2c",
+      "index": 29,
+      "original_text": "Nice",
+      "text": "Nice",
+      "include": true,
+      "remove": true
+    }
+  ]
+}

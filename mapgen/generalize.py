@@ -218,6 +218,37 @@ def smooth_labels(label_map: np.ndarray, mask: np.ndarray, sigma: float) -> tupl
     return winner, new_mask
 
 
+def generalize_area_raster(label_map: np.ndarray, classes: list[dict],
+                           min_area_px: float, sigma: float,
+                           preserve_share: float = PRESERVE_SHARE,
+                           protected_classes: set[int] = frozenset()
+                           ) -> tuple[np.ndarray, np.ndarray, dict]:
+    """Run canonical Step 5's complete area algorithm on any class raster.
+
+    Both canonical Step 5 and Alt Step 6 call this function.  The alternate
+    branch can therefore aggregate Step 4 class identities first and then
+    apply the exact same island handling, small-component dissolution,
+    Gaussian label smoothing, second dissolution, and class preservation.
+    """
+    result = label_map.astype(np.int16, copy=True)
+    mask = np.where(result >= 0, 255, 0).astype(np.uint8)
+    original = result.copy()
+    islands = handle_islands(result, mask, min_area_px)
+    dissolved = dissolve_small(
+        result, mask, min_area_px, protected_classes=protected_classes)
+    result, mask = smooth_labels(result, mask, sigma)
+    dissolved += dissolve_small(
+        result, mask, min_area_px, protected_classes=protected_classes)
+    restored = preserve_thematic(
+        result, original, mask, classes, min_area_px,
+        preserve_share=preserve_share)
+    return result, mask, {
+        "dissolved_components": dissolved,
+        "islands": islands,
+        "classes_restored": restored,
+    }
+
+
 # --------------------------------------------------------------------------- lines
 
 def _endpoint_tangent(pts: np.ndarray, at_start: bool) -> np.ndarray:
@@ -295,6 +326,7 @@ SIMPLIFICATION_PRESETS = {
 
 PRESET_ARTIFACTS = (
     "label_map_gen.png",
+    "label_map_gen_preview.png",
     "classes_gen.json",
     "regions_gen.geojson",
     "lines_gen.geojson",
@@ -391,7 +423,6 @@ def run_step5(image_path: Path, model: str | None = None, runs_dir: Path = Path(
 
     label_map = imread(out_dir / "label_map.png")[..., 0].astype(np.int16) - 1
     h, w = label_map.shape
-    mask = np.where(label_map >= 0, 255, 0).astype(np.uint8)
     share_before = {c["index"]: c["area_share"] for c in classes}
 
     params = load_params(out_dir) if params_override is None else dict(params_override)
@@ -406,13 +437,12 @@ def run_step5(image_path: Path, model: str | None = None, runs_dir: Path = Path(
     protected = set(int(i) for i in params["protected_classes"])
 
     # ---- areas: islands -> dissolve -> smooth -> dissolve -> preserve ----
-    label_orig = label_map.copy()
-    islands = handle_islands(label_map, mask, min_area_px)
-    dissolved = dissolve_small(label_map, mask, min_area_px, protected_classes=protected)
-    label_map, mask = smooth_labels(label_map, mask, sigma)
-    dissolved += dissolve_small(label_map, mask, min_area_px, protected_classes=protected)
-    restored = preserve_thematic(label_map, label_orig, mask, classes, min_area_px,
-                                 preserve_share=params["preserve_share"])
+    label_map, mask, area_result = generalize_area_raster(
+        label_map, classes, min_area_px, sigma,
+        preserve_share=params["preserve_share"], protected_classes=protected)
+    islands = area_result["islands"]
+    dissolved = area_result["dissolved_components"]
+    restored = area_result["classes_restored"]
 
     # ---- lines: drop frame + redundant boundary ink, merge, simplify, filter ----
     keep_kinds = set(params["keep_line_kinds"])
@@ -493,6 +523,9 @@ def run_step5(image_path: Path, model: str | None = None, runs_dir: Path = Path(
     recon = np.full((h, w, 3), 255, np.uint8)
     for cl in survivors:
         recon[label_map == cl["index"]] = np.uint8(cl["rgb"][::-1])
+    # Human-readable rendering of the exact indexed raster consumed by Steps
+    # 6 and 7. Lines are added only to the debug image below, not this preview.
+    imwrite(out_dir / "label_map_gen_preview.png", recon)
     kind_col = {"border_or_coast": (0, 0, 0), "river": (255, 128, 0),
                 "road": (0, 0, 200), "border": (0, 0, 0), "line": (200, 0, 200)}
     for f in line_feats:

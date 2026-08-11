@@ -1,0 +1,183 @@
+{
+  "classes": [
+    {
+      "label": "Forest",
+      "is_thematic": true,
+      "priority": 5,
+      "rgb": [
+        30,
+        149,
+        73
+      ],
+      "lab": [
+        54.26,
+        -48.81,
+        31.23
+      ],
+      "hex": "#1e9549",
+      "swatch_bbox_orig": [
+        113,
+        638,
+        32,
+        21
+      ]
+    },
+    {
+      "label": "Grassland",
+      "is_thematic": true,
+      "priority": 1,
+      "rgb": [
+        182,
+        214,
+        65
+      ],
+      "lab": [
+        80.87,
+        -30.23,
+        66.17
+      ],
+      "hex": "#b6d641",
+      "swatch_bbox_orig": [
+        112,
+        662,
+        33,
+        14
+      ]
+    },
+    {
+      "label": "Grassland and crops",
+      "is_thematic": true,
+      "priority": 3,
+      "rgb": [
+        166,
+        215,
+        182
+      ],
+      "lab": [
+        81.78,
+        -22.36,
+        11.11
+      ],
+      "hex": "#a6d7b6",
+      "swatch_bbox_orig": [
+        112,
+        685,
+        33,
+        19
+      ]
+    },
+    {
+      "label": "Cropland (primarily wheat, sugar beets, corn)",
+      "is_thematic": true,
+      "priority": 4,
+      "rgb": [
+        241,
+        163,
+        31
+      ],
+      "lab": [
+        72.81,
+        19.34,
+        71.69
+      ],
+      "hex": "#f1a31f",
+      "swatch_bbox_orig": [
+        112,
+        708,
+        33,
+        20
+      ]
+    },
+    {
+      "label": "Other crops (primarily cereals)",
+      "is_thematic": true,
+      "priority": 2,
+      "rgb": [
+        237,
+        236,
+        181
+      ],
+      "lab": [
+        92.14,
+        -8.25,
+        26.78
+      ],
+      "hex": "#edecb5",
+      "swatch_bbox_orig": [
+        368,
+        640,
+        32,
+        21
+      ]
+    },
+    {
+      "label": "Olives (often with vines and wheat)",
+      "is_thematic": true,
+      "priority": 8,
+      "rgb": [
+        30,
+        25,
+        24
+      ],
+      "lab": [
+        9.27,
+        2.27,
+        1.62
+      ],
+      "hex": "#1e1918",
+      "swatch_bbox_orig": [
+        367,
+        671,
+        34,
+        19
+      ]
+    },
+    {
+      "label": "Market gardening (fruits, vegetables, flowers)",
+      "is_thematic": true,
+      "priority": 7,
+      "rgb": [
+        245,
+        75,
+        77
+      ],
+      "lab": [
+        56.95,
+        64.38,
+        36.78
+      ],
+      "hex": "#f54b4d",
+      "swatch_bbox_orig": [
+        369,
+        699,
+        32,
+        20
+      ]
+    },
+    {
+      "label": "Vineyards",
+      "is_thematic": true,
+      "priority": 6,
+      "rgb": [
+        188,
+        152,
+        174
+      ],
+      "lab": [
+        66.63,
+        17.05,
+        -6.33
+      ],
+      "hex": "#bc98ae",
+      "swatch_bbox_orig": [
+        369,
+        728,
+        32,
+        21
+      ]
+    }
+  ],
+  "warnings": [
+    "split merged legend blobs into 2 swatch(es)"
+  ]
+}

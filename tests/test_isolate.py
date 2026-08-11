@@ -3,7 +3,12 @@ import unittest
 import cv2
 import numpy as np
 
-from mapgen.isolate import detect_swatches, refine_map_mask, sample_swatch
+from mapgen.isolate import (
+    detect_swatches,
+    prepare_text_input,
+    refine_map_mask,
+    sample_swatch,
+)
 
 
 class MapMaskRefinementTests(unittest.TestCase):
@@ -40,6 +45,61 @@ class MapMaskRefinementTests(unittest.TestCase):
         self.assertGreater(mask[150, 150], 0)
         self.assertEqual(mask[60, 235], 0)
         self.assertTrue(any("outside the geographic content envelope" in w for w in warnings))
+
+
+class TextInputPreparationTests(unittest.TestCase):
+    def test_keeps_label_that_overhangs_small_island(self):
+        img = np.full((200, 300, 3), 255, np.uint8)
+        mask = np.zeros((200, 300), np.uint8)
+        cv2.rectangle(img, (220, 80), (260, 130), (40, 160, 80), -1)
+        cv2.rectangle(mask, (220, 80), (260, 130), 255, -1)
+
+        # Simulate a coastal label whose left-hand characters lie on paper.
+        cv2.putText(img, "CITY", (205, 108), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45, (0, 0, 0), 1, cv2.LINE_AA)
+        clean = prepare_text_input(img, [0, 0, 300, 200], [], mask)
+
+        original_ink = np.all(img[94:111, 205:220] < 80, axis=2)
+        retained_ink = np.all(clean[94:111, 205:220] < 80, axis=2)
+        self.assertEqual(np.count_nonzero(retained_ink), np.count_nonzero(original_ink))
+
+    def test_still_blanks_content_far_from_map(self):
+        img = np.full((200, 300, 3), 255, np.uint8)
+        mask = np.zeros((200, 300), np.uint8)
+        cv2.rectangle(img, (220, 80), (260, 130), (40, 160, 80), -1)
+        cv2.rectangle(mask, (220, 80), (260, 130), 255, -1)
+        cv2.putText(img, "NOTE", (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45, (0, 0, 0), 1, cv2.LINE_AA)
+
+        clean = prepare_text_input(img, [0, 0, 300, 200], [], mask)
+
+        self.assertTrue(np.all(clean[10:35, 5:60] > 240))
+
+    def test_furniture_is_blank_even_when_inside_context_halo(self):
+        img = np.full((200, 300, 3), 255, np.uint8)
+        mask = np.zeros((200, 300), np.uint8)
+        cv2.rectangle(img, (220, 80), (260, 130), (40, 160, 80), -1)
+        cv2.rectangle(mask, (220, 80), (260, 130), 255, -1)
+        cv2.putText(img, "KEY", (185, 108), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45, (0, 0, 0), 1, cv2.LINE_AA)
+
+        furniture = [{"name": "legend", "box": [180, 85, 220, 115]}]
+        clean = prepare_text_input(img, [0, 0, 300, 200], furniture, mask)
+
+        self.assertTrue(np.all(clean[85:115, 180:220] > 240))
+
+    def test_furniture_padding_does_not_cut_into_map(self):
+        img = np.full((200, 300, 3), 255, np.uint8)
+        mask = np.zeros((200, 300), np.uint8)
+        cv2.rectangle(img, (220, 80), (260, 130), (40, 160, 80), -1)
+        cv2.rectangle(mask, (220, 80), (260, 130), 255, -1)
+
+        # The detected furniture box and its padding overlap the map edge.
+        furniture = [{"name": "legend", "box": [180, 85, 240, 115]}]
+        clean = prepare_text_input(img, [0, 0, 300, 200], furniture, mask)
+
+        self.assertTrue(np.all(clean[90:110, 185:215] > 240))
+        np.testing.assert_array_equal(clean[90:110, 225:235], img[90:110, 225:235])
 
 
 class LegendDetectionTests(unittest.TestCase):

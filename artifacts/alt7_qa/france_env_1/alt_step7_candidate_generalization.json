@@ -1,0 +1,21 @@
+{
+  "whole_components_merged": 160,
+  "small_components_retained_for_area_budget": 29,
+  "changed_pixels": 30123,
+  "changed_share": 0.1283,
+  "min_area_px": 2519,
+  "boundary_smoothing_mm": 0.8,
+  "max_group_gain_loss_share": 0.18,
+  "per_group_gained_px": {
+    "0": 17301,
+    "1": 9106,
+    "2": 871,
+    "3": 4418
+  },
+  "per_group_lost_px": {
+    "0": 9409,
+    "1": 14092,
+    "2": 3777,
+    "3": 4418
+  }
+}

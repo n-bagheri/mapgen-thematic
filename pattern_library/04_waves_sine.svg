@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Layer_2" data-name="Layer 2" xmlns="http://www.w3.org/2000/svg" width="136.06299" height="136.06299" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 136.06299 136.06299">
+  <defs>
+    <pattern id="Nouvelle_nuance_de_motif_1" data-name="Nouvelle nuance de motif 1" x="0" y="0" width="28.375" height="7.54102" patternTransform="translate(4234.80779 8821.31911) scale(1.63519 2.11612)" patternUnits="userSpaceOnUse" viewBox="0 0 28.375 7.54102">
+      <g>
+        <rect width="28.375" height="7.54102" fill="none" stroke-width="0"/>
+        <g>
+          <path d="m28.4551,5.75584c13.77637-4.46093,14.90627-4.42187,28.21097.08203-13.9668-5.51562-28.21097-.08203-28.21097-.08203Z" stroke="#000" stroke-width=".70866"/>
+          <rect x="28.37307" y="-.00002" width="28.375" height="7.54102" fill="none" stroke-width="0"/>
+        </g>
+        <g>
+          <path d="m.0801,5.75584c13.77637-4.46093,14.90627-4.42187,28.21097.08203C14.32427.32225.0801,5.75584.0801,5.75584Z" stroke="#000" stroke-width=".70866"/>
+          <rect x="-.00193" y="-.00002" width="28.375" height="7.54102" fill="none" stroke-width="0"/>
+        </g>
+        <path d="m-28.2949,5.75584C-14.51853,1.29491-13.38863,1.33397-.08393,5.83787c-13.9668-5.51562-28.21097-.08203-28.21097-.08203Z" stroke="#000" stroke-width=".70866"/>
+      </g>
+    </pattern>
+  </defs>
+  <g id="Calque_1" data-name="Calque 1">
+    <rect width="136.06299" height="136.06299" fill="url(#Nouvelle_nuance_de_motif_1)" stroke-width="0"/>
+  </g>
+</svg>

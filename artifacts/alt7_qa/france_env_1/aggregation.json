@@ -1,0 +1,55 @@
+{
+  "mode": "semantic",
+  "slots": 5,
+  "water": null,
+  "groups": [
+    {
+      "label": "Forest",
+      "members": [
+        0
+      ],
+      "member_labels": [
+        "Forest"
+      ],
+      "rationale": "Single distinct land use category."
+    },
+    {
+      "label": "Grassland",
+      "members": [
+        1,
+        2
+      ],
+      "member_labels": [
+        "Grassland",
+        "Grassland and crops"
+      ],
+      "rationale": "Combines pure grassland with mixed grassland and crop areas."
+    },
+    {
+      "label": "Field Crops",
+      "members": [
+        3,
+        4
+      ],
+      "member_labels": [
+        "Cropland (primarily wheat, sugar beets, corn)",
+        "Other crops (primarily cereals)"
+      ],
+      "rationale": "Groups major cereal and field crop production."
+    },
+    {
+      "label": "Specialty Crops",
+      "members": [
+        6,
+        7
+      ],
+      "member_labels": [
+        "Market gardening (fruits, vegetables, flowers)",
+        "Vineyards"
+      ],
+      "rationale": "Combines high-value specialty agricultural uses."
+    }
+  ],
+  "non_thematic_extra": [],
+  "notes": []
+}

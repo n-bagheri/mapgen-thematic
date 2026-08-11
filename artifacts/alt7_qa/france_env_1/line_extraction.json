@@ -1,0 +1,23 @@
+{
+  "method": "mask-boundary-and-label-seeded-ridge-graph",
+  "boundary_features": 2,
+  "river_label_seeds": 9,
+  "river_components": 15,
+  "river_features": 28,
+  "pixel_supported_river_features": 24,
+  "graph_bridge_features": 4,
+  "unmatched_river_labels": [],
+  "omitted_unconfirmed_interior": false,
+  "coastline_cleanup": {
+    "method": "adaptive-inner-dark-edge-band",
+    "band_width_px": 6,
+    "pixels": 9380
+  },
+  "river_cleanup": {
+    "method": "pixel-supported-dark-fringe",
+    "fringe_radius_px": 2,
+    "centerline_pixels": 868,
+    "fringe_pixels": 1053,
+    "pixels": 1921
+  }
+}

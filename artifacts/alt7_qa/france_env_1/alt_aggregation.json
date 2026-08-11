@@ -1,0 +1,161 @@
+{
+  "branch": "alternate",
+  "mode": "semantic_merge_proposal",
+  "slots": 5,
+  "texture_ceiling": 5,
+  "texture_ceiling_is_target": false,
+  "proposed_texture_count": 4,
+  "unused_texture_capacity": 1,
+  "relationships_reviewed": false,
+  "review_required": true,
+  "review_status": "needs_review",
+  "water": null,
+  "groups": [
+    {
+      "label": "Grasslands",
+      "members": [
+        1,
+        2
+      ],
+      "member_labels": [
+        "Grassland",
+        "Grassland and crops"
+      ],
+      "rationale": "shared semantic family: grassland"
+    },
+    {
+      "label": "Field Crops",
+      "members": [
+        3,
+        4
+      ],
+      "member_labels": [
+        "Cropland (primarily wheat, sugar beets, corn)",
+        "Other crops (primarily cereals)"
+      ],
+      "rationale": "shared semantic family: field crops"
+    },
+    {
+      "label": "Forest",
+      "members": [
+        0
+      ],
+      "member_labels": [
+        "Forest"
+      ],
+      "rationale": "kept as its original class"
+    },
+    {
+      "label": "Specialty Crops",
+      "members": [
+        5,
+        6,
+        7
+      ],
+      "member_labels": [
+        "Olives (often with vines and wheat)",
+        "Market gardening (fruits, vegetables, flowers)",
+        "Vineyards"
+      ],
+      "rationale": "shared semantic family: specialty crops"
+    }
+  ],
+  "plain_thematic": [],
+  "source_classes": [
+    {
+      "index": 0,
+      "label": "Forest"
+    },
+    {
+      "index": 1,
+      "label": "Grassland"
+    },
+    {
+      "index": 2,
+      "label": "Grassland and crops"
+    },
+    {
+      "index": 3,
+      "label": "Cropland (primarily wheat, sugar beets, corn)"
+    },
+    {
+      "index": 4,
+      "label": "Other crops (primarily cereals)"
+    },
+    {
+      "index": 5,
+      "label": "Olives (often with vines and wheat)"
+    },
+    {
+      "index": 6,
+      "label": "Market gardening (fruits, vegetables, flowers)"
+    },
+    {
+      "index": 7,
+      "label": "Vineyards"
+    }
+  ],
+  "non_thematic_extra": [],
+  "merge_log": [
+    {
+      "left": [
+        "Olives (often with vines and wheat)"
+      ],
+      "right": [
+        "Market gardening (fruits, vegetables, flowers)"
+      ],
+      "result": "Specialty Crops",
+      "members": [
+        "Olives (often with vines and wheat)",
+        "Market gardening (fruits, vegetables, flowers)"
+      ],
+      "rationale": "shared semantic family: specialty crops"
+    },
+    {
+      "left": [
+        "Olives (often with vines and wheat)",
+        "Market gardening (fruits, vegetables, flowers)"
+      ],
+      "right": [
+        "Vineyards"
+      ],
+      "result": "Specialty Crops",
+      "members": [
+        "Olives (often with vines and wheat)",
+        "Market gardening (fruits, vegetables, flowers)",
+        "Vineyards"
+      ],
+      "rationale": "shared semantic family: specialty crops"
+    },
+    {
+      "left": [
+        "Cropland (primarily wheat, sugar beets, corn)"
+      ],
+      "right": [
+        "Other crops (primarily cereals)"
+      ],
+      "result": "Field Crops",
+      "members": [
+        "Cropland (primarily wheat, sugar beets, corn)",
+        "Other crops (primarily cereals)"
+      ],
+      "rationale": "shared semantic family: field crops"
+    },
+    {
+      "left": [
+        "Grassland"
+      ],
+      "right": [
+        "Grassland and crops"
+      ],
+      "result": "Grasslands",
+      "members": [
+        "Grassland",
+        "Grassland and crops"
+      ],
+      "rationale": "shared semantic family: grassland"
+    }
+  ],
+  "notes": [],
+  "proposal_fingerprint": "16f2be06f757e1d0c07c399ae57220419e4d711f43e07a2ab0419dccbf3bd159"
+}

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Layer_2" data-name="Layer 2" xmlns="http://www.w3.org/2000/svg" width="136.06299" height="136.06299" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 136.06299 136.06299">
+  <defs>
+    <pattern id="Nouvelle_nuance_de_motif_25" data-name="Nouvelle nuance de motif 25" x="0" y="0" width="20.2959" height="17.01364" patternTransform="translate(6794.91427 -217.54938) scale(2 1.05)" patternUnits="userSpaceOnUse" viewBox="0 0 20.2959 17.01364">
+      <g>
+        <rect width="20.2959" height="17.01364" fill="none" stroke-width="0"/>
+        <polyline points="19.29707 17.5455 30.16827 31.8489 41.60806 17.60249" fill="none" stroke="#000" stroke-width="1.98425"/>
+        <polyline points="-.99883 17.5455 9.87238 31.8489 21.31216 17.60249" fill="none" stroke="#000" stroke-width="1.98425"/>
+        <polyline points="-21.29473 17.5455 -10.42352 31.8489 1.01626 17.60249" fill="none" stroke="#000" stroke-width="1.98425"/>
+        <g>
+          <polyline points="19.29707 .53186 30.16827 14.83526 41.60806 .58885" fill="none" stroke="#000" stroke-width="1.98425"/>
+          <rect x="20.25937" y=".00592" width="20.36365" height="17.00787" fill="none" stroke-width="0"/>
+        </g>
+        <g>
+          <polyline points="-.99883 .53186 9.87238 14.83526 21.31216 .58885" fill="none" stroke="#000" stroke-width="1.98425"/>
+          <rect x="-.03653" y=".00592" width="20.36365" height="17.00787" fill="none" stroke-width="0"/>
+        </g>
+        <g>
+          <polyline points="-21.29473 .53186 -10.42352 14.83526 1.01626 .58885" fill="none" stroke="#000" stroke-width="1.98425"/>
+          <rect x="-20.33243" y=".00592" width="20.36365" height="17.00787" fill="none" stroke-width="0"/>
+        </g>
+      </g>
+    </pattern>
+  </defs>
+  <g id="Calque_1" data-name="Calque 1">
+    <rect width="136.06299" height="136.06299" fill="url(#Nouvelle_nuance_de_motif_25)" stroke-width="0"/>
+  </g>
+</svg>
