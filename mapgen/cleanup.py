@@ -20,9 +20,12 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .boundaries import (apply_boundary_strokes, build_group_map,
-                         open_endpoint_count, _render_step8_base)
+from .boundaries import (MIN_CONTOUR_COMPONENT_SPAN_PX, apply_boundary_strokes,
+                         build_group_map, discard_open_centerline_branches,
+                         open_endpoint_count, repair_tiny_centerline_gaps,
+                         _render_step8_base)
 from .isolate import imread, imwrite
+from .semantics import load_pipeline_semantics
 from .symbols import RENDER_PX_PER_MM
 
 
@@ -35,23 +38,37 @@ def _owner_centerline(group_map: np.ndarray,
         region = (group_map == group_id).astype(np.uint8)
         if not region.any():
             continue
-        padded = cv2.copyMakeBorder(
-            region, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0,
+        component_count, components, stats, _ = cv2.connectedComponentsWithStats(
+            region, connectivity=8,
         )
-        contours, _ = cv2.findContours(
-            padded, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE,
-        )
-        for contour in contours:
-            shifted = contour.copy()
-            shifted[:, :, 0] -= 1
-            shifted[:, :, 1] -= 1
-            cv2.drawContours(edge, [shifted], -1, 255, 1, lineType=cv2.LINE_8)
-        contour_count += len(contours)
+        for component_id in range(1, component_count):
+            _, _, width, height, _ = stats[component_id]
+            if min(width, height) < MIN_CONTOUR_COMPONENT_SPAN_PX:
+                continue
+            component = (components == component_id).astype(np.uint8)
+            padded = cv2.copyMakeBorder(
+                component, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0,
+            )
+            contours, _ = cv2.findContours(
+                padded, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE,
+            )
+            for contour in contours:
+                shifted = contour.copy()
+                shifted[:, :, 0] -= 1
+                shifted[:, :, 1] -= 1
+                cv2.drawContours(edge, [shifted], -1, 255, 1, lineType=cv2.LINE_8)
+            contour_count += len(contours)
     if edge.any():
         edge = cv2.ximgproc.thinning(
             edge, thinningType=cv2.ximgproc.THINNING_ZHANGSUEN,
         )
     return edge, contour_count
+
+
+def _repair_tiny_centerline_gaps(centerline: np.ndarray,
+                                 max_gap_px: int = 6) -> tuple[np.ndarray, int]:
+    """Backward-compatible alias for the shared contour repair."""
+    return repair_tiny_centerline_gaps(centerline, max_gap_px)
 
 
 def compose_component_layers(base: np.ndarray, group_map: np.ndarray,
@@ -67,11 +84,12 @@ def compose_component_layers(base: np.ndarray, group_map: np.ndarray,
         if pattern != "solid_black"
     }
     centerline, contour_count = _owner_centerline(group_map, owner_groups)
+    centerline, repaired_gaps = _repair_tiny_centerline_gaps(centerline)
     open_endpoints = open_endpoint_count(centerline)
+    discarded_open_outline_pixels = 0
     if open_endpoints:
-        raise RuntimeError(
-            f"refusing Step 8A cleanup with {open_endpoints} open owner endpoint(s)"
-        )
+        centerline, discarded_open_outline_pixels = discard_open_centerline_branches(centerline)
+        open_endpoints = open_endpoint_count(centerline)
     stroked, white_px, black_px = apply_boundary_strokes(
         base, centerline, px_per_mm,
     )
@@ -101,6 +119,8 @@ def compose_component_layers(base: np.ndarray, group_map: np.ndarray,
         "owner_group_ids": sorted(owner_groups),
         "owner_contours": contour_count,
         "open_owner_endpoints": open_endpoints,
+        "discarded_open_outline_pixels": discarded_open_outline_pixels,
+        "repaired_owner_gap_bridges": repaired_gaps,
         "repainted_groups": repainted_groups,
         "repainted_components": repainted_components,
         "restored_pixels": restored_pixels,
@@ -117,6 +137,7 @@ def run_step8a(image_path: Path, model: str | None = None,
     out_dir = runs_dir / image_path.stem
     if not (out_dir / "step8_boundaries.json").exists():
         run_step8(image_path, model=model, runs_dir=runs_dir)
+    load_pipeline_semantics(out_dir, "Step 8A")
 
     symbols = json.loads((out_dir / "symbols.json").read_text(encoding="utf-8"))
     boundary_audit = json.loads(
@@ -162,6 +183,8 @@ def run_step8a(image_path: Path, model: str | None = None,
         json.dumps(audit, indent=2, ensure_ascii=False), encoding="utf-8",
     )
     imwrite(out_dir / "step8a_cleanup.png", result)
+    from .symbols import render_hybrid_from_tactile
+    render_hybrid_from_tactile(out_dir, result, "step8a_hybrid.png")
 
     step8 = imread(out_dir / "step8_boundaries.png")[..., 0]
     debug = np.hstack((step8, result))

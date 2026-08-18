@@ -29,7 +29,7 @@ import cv2
 import numpy as np
 
 from .isolate import imread, imwrite, to_lab, NAMED_COLORS, _NAMED_LAB
-from .semantics import MapSemantics
+from .semantics import MapSemantics, require_pipeline_eligible
 
 UNSEEDED_DELTA = 16.0   # pixel farther than this from every seed -> needs a new cluster
 MERGE_DELTA = 10.0      # new cluster centers closer than this join an existing class
@@ -46,6 +46,9 @@ COAST_INNER_BAND_RATIO = 0.006
 COAST_INNER_BAND_MIN = 3
 COAST_INNER_BAND_MAX = 10
 RIVER_INK_FRINGE_RADIUS = 2
+BOUNDARY_INK_MAX_RGB = 90
+BOUNDARY_INK_MAX_SPREAD = 35
+GRATICULE_INK_MAX_SPREAD = 45
 
 
 # --------------------------------------------------------------------------- assignment
@@ -145,6 +148,11 @@ def reassign_water(label_map: np.ndarray, lab_img: np.ndarray, mask: np.ndarray,
     notes = []
     total = int(np.count_nonzero(mask))
     for cls_idx in range(len(seeds)):
+        # A legend class is authoritative.  Blue/teal thematic data can cover
+        # oceans on precipitation, temperature, or other continuous-surface
+        # maps; geographic location alone must never demote it to water.
+        if seeds[cls_idx]["source"] == "legend" and seeds[cls_idx]["is_thematic"]:
+            continue
         cls_mask = (label_map == cls_idx).astype(np.uint8)
         if not cls_mask.any():
             continue
@@ -252,6 +260,7 @@ LINE_PREVIEW_COLORS = {
     "border": (55, 55, 55),
     "border_or_coast": (55, 55, 55),
     "coastline": (92, 112, 48),
+    "graticule": (185, 185, 185),
     "frame": (135, 135, 135),
     "line": (168, 87, 126),
 }
@@ -357,6 +366,95 @@ def _boundary_line_kind(sem: MapSemantics) -> str | None:
     if has_border:
         return "border"
     return None
+
+
+def extract_semantic_boundary_ink(label_map: np.ndarray, seeds: list[dict],
+                                  sem: MapSemantics) \
+        -> tuple[np.ndarray, list[dict], dict]:
+    """Promote dark neutral, non-legend boundary ink out of the area classes.
+
+    Legend colours remain authoritative, including genuinely black thematic
+    classes.  Only an unseeded class can become linework, and only when Step 1
+    reports a visibly drawn border/coastline.  A component-width gate rejects
+    broad black fills while retaining intersecting administrative networks.
+    """
+    h, w = label_map.shape
+    kind = _boundary_line_kind(sem)
+    diagnostic = {
+        "semantic_ink_classes": [],
+        "semantic_ink_pixels": 0,
+        "semantic_ink_features": 0,
+        "semantic_ink_networks": 0,
+    }
+    semantic_kinds = {line.kind.value for line in sem.lines}
+    has_graticule = "graticule" in semantic_kinds
+    if kind is None and not has_graticule:
+        return np.zeros((h, w), np.uint8), [], diagnostic
+
+    eligible: list[tuple[int, str]] = []
+    for index, seed in enumerate(seeds):
+        rgb = [int(channel) for channel in seed.get("rgb", [])]
+        if seed.get("source") != "unseeded" or len(rgb) != 3:
+            continue
+        spread = max(rgb) - min(rgb)
+        if (kind is not None and max(rgb) <= BOUNDARY_INK_MAX_RGB
+                and spread <= BOUNDARY_INK_MAX_SPREAD):
+            eligible.append((index, kind))
+            diagnostic["semantic_ink_classes"].append(seed["label"])
+        elif has_graticule and spread <= GRATICULE_INK_MAX_SPREAD:
+            eligible.append((index, "graticule"))
+            diagnostic["semantic_ink_classes"].append(seed["label"])
+    if not eligible:
+        return np.zeros((h, w), np.uint8), [], diagnostic
+
+    accepted = np.zeros((h, w), np.uint8)
+    diagonal = float(np.hypot(h, w))
+    max_half_width = max(6.0, 0.003 * diagonal)
+    records = []
+    network_serial = 0
+    for class_index, line_kind in eligible:
+        candidates = (label_map == class_index).astype(np.uint8)
+        class_accepted = np.zeros((h, w), np.uint8)
+        count, components, stats, _ = cv2.connectedComponentsWithStats(
+            candidates, connectivity=8)
+        for component_id in range(1, count):
+            x, y, cw, ch, area = stats[component_id]
+            if area < 12:
+                continue
+            component = (components[y:y + ch, x:x + cw] == component_id).astype(np.uint8)
+            half_width = _component_half_width(component)
+            length_estimate = area / max(1.0, 2 * half_width)
+            if half_width > max_half_width or length_estimate < 8:
+                continue
+            class_accepted[y:y + ch, x:x + cw][component > 0] = 255
+        accepted[class_accepted > 0] = 255
+        if not class_accepted.any():
+            continue
+
+        skeleton = _thin_component(class_accepted)
+        network_count, networks = cv2.connectedComponents(
+            (skeleton > 0).astype(np.uint8), connectivity=8)
+        for network_index in range(1, network_count):
+            network = (networks == network_index).astype(np.uint8)
+            paths = _trace_polylines(network)
+            if not paths:
+                continue
+            network_serial += 1
+            network_id = f"semantic-line-network-{network_serial}"
+            for points in paths:
+                records.append({
+                    "kind": line_kind,
+                    "source_class": seeds[class_index]["label"],
+                    "source": "image_processing",
+                    "confidence": "semantic-class-ink",
+                    "label_evidence": None,
+                    "network_id": network_id,
+                    "points": points,
+                })
+            diagnostic["semantic_ink_networks"] += 1
+    diagnostic["semantic_ink_pixels"] = int(np.count_nonzero(accepted))
+    diagnostic["semantic_ink_features"] = len(records)
+    return accepted, records, diagnostic
 
 
 def _polyline_length(points: np.ndarray) -> float:
@@ -649,6 +747,7 @@ def extract_cartographic_lines(image: np.ndarray, mask: np.ndarray, raw_text_mas
         "graph_bridge_features": 0,
         "unmatched_river_labels": [],
         "omitted_unconfirmed_interior": False,
+        "mask_boundaries_skipped_as_frame": 0,
     }
 
     # A coastline/border is a property of the geographic silhouette, not a
@@ -658,6 +757,11 @@ def extract_cartographic_lines(image: np.ndarray, mask: np.ndarray, raw_text_mas
         contours, _ = cv2.findContours(
             (mask > 0).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
         for contour in contours:
+            x, y, cw, ch = cv2.boundingRect(contour)
+            rectangular_fill = cv2.contourArea(contour) / max(1, cw * ch)
+            if cw >= 0.95 * w and ch >= 0.95 * h and rectangular_fill >= 0.85:
+                diagnostic["mask_boundaries_skipped_as_frame"] += 1
+                continue
             if cv2.arcLength(contour, True) < max(24.0, 0.025 * diag):
                 continue
             approx = cv2.approxPolyDP(contour, 1.0, True).reshape(-1, 2)
@@ -785,6 +889,7 @@ def run_step4(image_path: Path, model: str | None = None, runs_dir: Path = Path(
         run_step3(image_path, model=model, runs_dir=runs_dir)
 
     sem = MapSemantics.model_validate_json((out_dir / "step1_semantics.json").read_text(encoding="utf-8"))
+    require_pipeline_eligible(sem, "Step 4")
     geo = json.loads((out_dir / "geometry.json").read_text(encoding="utf-8"))
     classes_json = json.loads((out_dir / "classes.json").read_text(encoding="utf-8"))
     img = imread(out_dir / "map_area.png")
@@ -852,16 +957,29 @@ def run_step4(image_path: Path, model: str | None = None, runs_dir: Path = Path(
     # narrow and elongated. Actual linework is now extracted independently
     # from the original image and geographic mask.
     _, halo_mask, _ = extract_lines(label_map, lab_img, mask, seeds, sem)
+    boundary_ink, boundary_records, boundary_diagnostic = \
+        extract_semantic_boundary_ink(label_map, seeds, sem)
     line_mask, line_records, line_diagnostic = extract_cartographic_lines(
         img, mask, raw_text_mask, sem, line_labels)
+    if any(record["kind"] in {"border", "border_or_coast", "coastline"}
+           for record in boundary_records):
+        mask_boundary_count = sum(
+            record.get("source") == "map_mask" for record in line_records)
+        if mask_boundary_count:
+            line_records = [record for record in line_records
+                            if record.get("source") != "map_mask"]
+        line_diagnostic["mask_boundaries_suppressed_by_ink"] = mask_boundary_count
+    line_records.extend(boundary_records)
+    line_diagnostic.update(boundary_diagnostic)
     river_cleanup, river_cleanup_diagnostic = extract_river_cleanup_mask(
         img, mask, line_mask)
     imwrite(out_dir / "river_cleanup_mask.png", river_cleanup)
     line_diagnostic["coastline_cleanup"] = coastline_diagnostic
     line_diagnostic["river_cleanup"] = river_cleanup_diagnostic
-    label_map[(river_cleanup > 0) | (halo_mask > 0)] = -1
+    label_map[(river_cleanup > 0) | (halo_mask > 0) | (boundary_ink > 0)] = -1
     notes.append(
         f"line extraction: {line_diagnostic['boundary_features']} mask-derived boundary, "
+        f"{line_diagnostic['semantic_ink_features']} semantic class-ink line, "
         f"{line_diagnostic['river_features']} label-seeded pixel river features"
     )
     notes.append(
@@ -943,6 +1061,7 @@ def run_step4(image_path: Path, model: str | None = None, runs_dir: Path = Path(
                 "source": r.get("source"),
                 "confidence": r.get("confidence"),
                 "label_evidence": r.get("label_evidence"),
+                "network_id": r.get("network_id"),
             },
             "geometry": {"type": "LineString", "coordinates": r["points"]},
         } for r in line_records],

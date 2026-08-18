@@ -2,10 +2,37 @@ import unittest
 
 import numpy as np
 
-from mapgen.cleanup import compose_component_layers
+from mapgen.boundaries import open_endpoint_count
+from mapgen.cleanup import _repair_tiny_centerline_gaps, compose_component_layers
 
 
 class ComponentLayerCleanupTests(unittest.TestCase):
+    def test_tiny_break_inside_one_contour_network_is_repaired(self):
+        centerline = np.zeros((40, 60), np.uint8)
+        centerline[8:31, 10] = 255
+        centerline[8:31, 45] = 255
+        centerline[8, 10:46] = 255
+        centerline[30, 10:46] = 255
+        centerline[30, 26:31] = 0
+
+        repaired, bridges = _repair_tiny_centerline_gaps(centerline)
+
+        self.assertGreater(bridges, 0)
+        self.assertEqual(open_endpoint_count(repaired), 0)
+
+    def test_sub_resolution_owner_sliver_is_not_contoured(self):
+        group_map = np.full((30, 40), -1, dtype=np.int16)
+        group_map[12:15, 10:24] = 0
+        base = np.full(group_map.shape, 255, np.uint8)
+
+        result, audit = compose_component_layers(
+            base, group_map, {0: "dots_sparse"}, px_per_mm=5.0,
+        )
+
+        self.assertTrue(np.array_equal(result, base))
+        self.assertEqual(audit["owner_contours"], 0)
+        self.assertEqual(audit["open_owner_endpoints"], 0)
+
     def test_non_owner_fill_is_repainted_above_centered_owner_stroke(self):
         height, width = 80, 120
         group_map = np.zeros((height, width), dtype=np.int16)

@@ -23,6 +23,9 @@ MM_PER_INCH = 25.4
 
 _FILL_REFERENCE_RE = re.compile(r"^\s*url\(\s*#([^\s)]+)\s*\)\s*$")
 _INVALID_ID_CHARACTER_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+# The directory also holds dedicated map-furniture SVGs such as ``N.svg``.
+# Only numbered Illustrator texture exports are repeating pattern assets.
+_PATTERN_FILENAME_RE = re.compile(r"^\d{2}_.+\.svg$", re.IGNORECASE)
 
 
 def mm_to_pt(mm: float) -> float:
@@ -95,6 +98,8 @@ class PatternLibrary:
 
         assets: dict[str, PatternAsset] = {}
         for source_file in sorted(self.directory.glob("*.svg")):
+            if not _PATTERN_FILENAME_RE.match(source_file.name):
+                continue
             asset = self._load_asset(source_file)
             if asset.name in assets:
                 raise ValueError(f"Duplicate pattern name: {asset.name!r}")

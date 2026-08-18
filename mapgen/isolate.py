@@ -30,7 +30,12 @@ import cv2
 import numpy as np
 from pydantic import BaseModel, Field, model_validator
 
-from .semantics import DEFAULT_MODEL, MapSemantics, _ensure_api_key
+from .semantics import (
+    DEFAULT_MODEL,
+    MapSemantics,
+    _ensure_api_key,
+    require_pipeline_eligible,
+)
 
 # --------------------------------------------------------------------------- layout call
 
@@ -231,6 +236,38 @@ def prepare_text_input(
 MIN_COMPONENT_PX = 100
 
 
+def _looks_like_edge_furniture(stats: np.ndarray, index: int,
+                               envelope: tuple[int, int, int, int],
+                               image_shape: tuple[int, int]) -> bool:
+    """Identify an isolated, ruler-like component at a proposed map edge.
+
+    This is deliberately stricter than the neatline test below.  It only
+    removes an *independent* component that is extremely thin, long, and
+    coincident with the outside of the AI-proposed map envelope.  Geographic
+    outlines remain connected to filled regions, while detached islands are
+    far less elongated, so both are retained.
+    """
+    h, w = image_shape
+    x = int(stats[index, cv2.CC_STAT_LEFT])
+    y = int(stats[index, cv2.CC_STAT_TOP])
+    cw = int(stats[index, cv2.CC_STAT_WIDTH])
+    ch = int(stats[index, cv2.CC_STAT_HEIGHT])
+    x1, y1 = x + cw, y + ch
+    ex0, ey0, ex1, ey1 = envelope
+    edge_pad = max(4, int(0.02 * max(w, h)))
+    vertical_ruler = (
+        ch >= 0.35 * h
+        and cw <= max(4, int(0.018 * w))
+        and (x <= ex0 + edge_pad or x1 >= ex1 - edge_pad)
+    )
+    horizontal_ruler = (
+        cw >= 0.35 * w
+        and ch <= max(4, int(0.018 * h))
+        and (y <= ey0 + edge_pad or y1 >= ey1 - edge_pad)
+    )
+    return vertical_ruler or horizontal_ruler
+
+
 def refine_map_mask(
     img: np.ndarray,
     map_boxes: list[tuple[int, int, int, int]],
@@ -274,6 +311,7 @@ def refine_map_mask(
     warnings: list[str] = []
     keep: list[int] = []
     rejected_neatlines = 0
+    rejected_edge_furniture = 0
     for i in range(1, n):
         area = int(stats[i, cv2.CC_STAT_AREA])
         if area < min_area:
@@ -294,6 +332,8 @@ def refine_map_mask(
         )
         if looks_like_neatline:
             rejected_neatlines += 1
+        elif _looks_like_edge_furniture(stats, i, (ux0, uy0, ux1, uy1), (h, w)):
+            rejected_edge_furniture += 1
         else:
             keep.append(i)
     # With one broad VLM box, sparse ticks and clipped frame segments can be
@@ -330,6 +370,11 @@ def refine_map_mask(
     if rejected_neatlines:
         warnings.append(
             f"excluded {rejected_neatlines} sparse outer neatline/tick frame "
+            "from the map mask"
+        )
+    if rejected_edge_furniture:
+        warnings.append(
+            f"excluded {rejected_edge_furniture} isolated edge ruler/tick component(s) "
             "from the map mask"
         )
     if broad_map_band:
@@ -383,9 +428,36 @@ def _erode_rect(x: int, y: int, w: int, h: int, frac: float = 0.22) -> tuple[int
     return x + dx, y + dy, max(1, w - 2 * dx), max(1, h - 2 * dy)
 
 
-def _swatch_ok(lab: np.ndarray, rect: tuple[int, int, int, int]) -> bool:
+def _swatch_ok(lab: np.ndarray, rect: tuple[int, int, int, int],
+               bg: np.ndarray | None = None) -> bool:
     ex, ey, ew, eh = _erode_rect(*rect)
-    return _uniform(lab[ey:ey + eh, ex:ex + ew])
+    patch = lab[ey:ey + eh, ex:ex + ew]
+    if not _uniform(patch):
+        return False
+    if bg is None:
+        return True
+    # Closed glyphs such as 0, 6, 8, 9, and letters expose a very uniform
+    # paper-coloured interior.  Their external contour can therefore look
+    # more rectangular than the actual legend swatches.  A real swatch must
+    # have an interior colour that is materially different from the paper.
+    median = np.median(patch.reshape(-1, 3), axis=0)
+    return float(np.linalg.norm(median - bg)) >= 4
+
+
+def _textured_swatch_ok(lab: np.ndarray, rect: tuple[int, int, int, int],
+                        bg: np.ndarray) -> bool:
+    """Accept a visibly coloured but non-uniform printed swatch.
+
+    Historical maps often use halftone/ink texture inside otherwise ordinary
+    rectangular swatches.  Text glyphs remain rejected because their eroded
+    interior is mostly paper; a true textured swatch is coloured throughout.
+    """
+    ex, ey, ew, eh = _erode_rect(*rect)
+    patch = lab[ey:ey + eh, ex:ex + ew]
+    if patch.size == 0:
+        return False
+    distance = np.linalg.norm(patch - bg, axis=2)
+    return bool(np.median(distance) >= 10 and np.mean(distance >= 10) >= 0.85)
 
 
 def _split_merged(
@@ -426,7 +498,7 @@ def _split_merged(
     elif 0.5 * med_h <= h <= 1.8 * med_h and w > 1.8 * med_w:
         # swatch fused with the text to its right: test the leading rectangle
         sub = (x, y, int(med_w), h)
-        if _swatch_ok(lab, sub):
+        if _swatch_ok(lab, sub, bg):
             out.append(sub)
     return out
 
@@ -538,6 +610,84 @@ def detect_horizontal_colorbar(
     ]
 
 
+def _detect_compact_grid_swatches(
+    legend_bgr: np.ndarray, expected: int,
+) -> list[tuple[int, int, int, int]] | None:
+    """Recover very small ordered swatches arranged in repeated columns."""
+    if expected < 12:
+        return None
+    lh, lw = legend_bgr.shape[:2]
+    hsv = cv2.cvtColor(legend_bgr, cv2.COLOR_BGR2HSV)
+    mask = (hsv[:, :, 1] >= 40).astype(np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((2, 2), np.uint8))
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    candidates: list[tuple[int, int, int, int]] = []
+    for contour in contours:
+        x, y, w, h = cv2.boundingRect(contour)
+        if w < 4 or h < 4 or w > 0.25 * lw or h > 0.2 * lh:
+            continue
+        if not 0.7 <= w / h <= 3.0:
+            continue
+        if cv2.contourArea(contour) / (w * h) < 0.4:
+            continue
+        candidates.append((x, y, w, h))
+    if len(candidates) < expected - 2:
+        return None
+
+    med_w = float(np.median([r[2] for r in candidates]))
+    centers = sorted(r[0] + r[2] / 2 for r in candidates)
+    columns: list[list[tuple[int, int, int, int]]] = []
+    for rect in sorted(candidates, key=lambda r: (r[0], r[1])):
+        center = rect[0] + rect[2] / 2
+        for column in columns:
+            column_center = float(np.median([r[0] + r[2] / 2 for r in column]))
+            if abs(center - column_center) <= 1.8 * med_w:
+                column.append(rect)
+                break
+        else:
+            columns.append([rect])
+    columns.sort(key=lambda col: float(np.median([r[0] for r in col])))
+    if len(columns) < 2 or len(columns) > 6:
+        return None
+
+    # Extra entries belong to the columns with the greatest vertical extent;
+    # this handles the usual final black/no-data cell that has no saturation.
+    counts = [expected // len(columns)] * len(columns)
+    for index in sorted(range(len(columns)),
+                        key=lambda i: (len(columns[i]), max(r[1] for r in columns[i])))[:expected % len(columns)]:
+        counts[index] += 1
+
+    ordered: list[tuple[int, int, int, int]] = []
+    for column, target in zip(columns, counts):
+        column.sort(key=lambda r: r[1])
+        width = int(round(np.median([r[2] for r in column])))
+        height = int(round(np.median([r[3] for r in column])))
+        x = int(round(np.median([r[0] for r in column])))
+        ys = [r[1] for r in column]
+        pitches = np.diff(ys)
+        pitch = float(np.median(pitches[pitches > 0])) if np.any(pitches > 0) else 0.0
+        if pitch < max(5.0, height * 0.8):
+            return None
+        start = ys[0]
+        for row in range(target):
+            # Preserve observed row positions (small raster rounding errors
+            # accumulate across compact legends); extrapolate only missing
+            # endpoint cells.
+            if row < len(column):
+                observed = column[row]
+                x, y, cell_w, cell_h = observed
+            else:
+                x = int(round(np.median([r[0] for r in column])))
+                y = int(round(column[-1][1] + (row - len(column) + 1) * pitch))
+                cell_w, cell_h = width, height
+            if y + cell_h > lh:
+                if row < len(column) or y - column[-1][1] > 1.5 * pitch:
+                    return None
+                y = lh - cell_h
+            ordered.append((x, y, cell_w, cell_h))
+    return ordered if len(ordered) == expected else None
+
+
 def detect_swatches(
     legend_bgr: np.ndarray,
     expected: int,
@@ -549,6 +699,9 @@ def detect_swatches(
         colorbar = detect_horizontal_colorbar(legend_bgr, expected, labels)
         if colorbar is not None:
             return colorbar
+        compact = _detect_compact_grid_swatches(legend_bgr, expected)
+        if compact is not None:
+            return compact, [f"reconstructed compact {len(compact)}-swatch legend grid"]
 
     lh, lw = legend_bgr.shape[:2]
     lab = to_lab(legend_bgr)
@@ -568,9 +721,9 @@ def detect_swatches(
         if cv2.contourArea(c) / (w * h) < 0.55:  # text/blobs are not filled rectangles
             rejected_size.append((x, y, w, h))
             continue
-        if not _swatch_ok(lab, (x, y, w, h)):
-            continue
-        cands.append((x, y, w, h))
+        rect = (x, y, w, h)
+        if _swatch_ok(lab, rect, bg) or _textured_swatch_ok(lab, rect, bg):
+            cands.append(rect)
 
     warnings: list[str] = []
     if not cands:
@@ -673,6 +826,10 @@ def sample_swatch(legend_bgr: np.ndarray, rect: tuple[int, int, int, int]) -> tu
 DELTA_E_WARN = 10.0
 
 
+class LegendSwatchDetectionError(ValueError):
+    """Raised instead of emitting a partial or misaligned legend palette."""
+
+
 def run_step2(image_path: Path, model: str | None = None, runs_dir: Path = Path("runs")) -> dict:
     from .semantics import interpret_map, save_semantics
 
@@ -685,6 +842,8 @@ def run_step2(image_path: Path, model: str | None = None, runs_dir: Path = Path(
     else:
         sem = interpret_map(image_path, model=model)
         save_semantics(sem, image_path, runs_dir)
+
+    require_pipeline_eligible(sem, "Step 2")
 
     layout_path = out_dir / "step2_layout.json"
     if layout_path.exists():
@@ -731,6 +890,11 @@ def run_step2(image_path: Path, model: str | None = None, runs_dir: Path = Path(
     map_area = img[ty0:ty1, tx0:tx1]
     imwrite(out_dir / "map_area.png", map_area)
     cropped_mask = mask[ty0:ty1, tx0:tx1]
+    # Retain an untouched automatic baseline for the Step 2 mask-review tool.
+    # Re-running Step 2 intentionally starts a fresh review against the new
+    # automatic result instead of replaying strokes in changed coordinates.
+    imwrite(out_dir / "map_mask_auto.png", cropped_mask)
+    (out_dir / "map_mask_review.json").unlink(missing_ok=True)
     imwrite(out_dir / "map_mask.png", cropped_mask)
     imwrite(out_dir / "map_text_input.png",
             prepare_text_input(map_area, tight, furniture, cropped_mask))
@@ -744,16 +908,44 @@ def run_step2(image_path: Path, model: str | None = None, runs_dir: Path = Path(
         legend_img = img[ly0:ly1, lx0:lx1]
         imwrite(out_dir / "legend.png", legend_img)
 
-        expected = len(sem.legend_entries)
+        # Symbols and line samples can be legitimate legend entries, but they
+        # have no area-fill palette to sample. Only thematic entries must pair
+        # with detected colour swatches.
+        # Vision transcription can repeat a thematic label when a multi-column
+        # legend wraps or OCR revisits a row. Repeated labels cannot represent
+        # distinct palette classes, so retain the first occurrence.
+        legend_entries = []
+        seen_thematic_labels: set[str] = set()
+        for entry in sem.legend_entries:
+            if entry.is_thematic:
+                if entry.label in seen_thematic_labels:
+                    warnings.append(f"ignored duplicate thematic legend entry '{entry.label}'")
+                    continue
+                seen_thematic_labels.add(entry.label)
+            legend_entries.append(entry)
+        thematic_entries = [entry for entry in legend_entries if entry.is_thematic]
+        expected = len(thematic_entries)
+        if expected == 0:
+            raise LegendSwatchDetectionError(
+                "Step 2 cannot continue: Step 1 reported a legend but transcribed "
+                "no thematic swatch entries. Rerun Step 1 or use a clearer source image."
+            )
         rects, sw_warn = detect_swatches(
             legend_img,
             expected,
-            labels=[entry.label for entry in sem.legend_entries],
+            labels=[entry.label for entry in thematic_entries],
             ordered=sem.data_ordering.value == "ordered",
         )
         warnings += sw_warn
+        if len(rects) != expected:
+            raise LegendSwatchDetectionError(
+                f"Step 2 cannot continue: detected {len(rects)} legend swatches "
+                f"but Step 1 identified {expected} thematic entries. The palette cannot "
+                "be aligned safely; inspect the legend crop or rerun Step 1."
+            )
         prio = {c.label: c.priority for c in sem.thematic_classes}
-        for i, entry in enumerate(sem.legend_entries):
+        thematic_rects = iter(rects)
+        for entry in legend_entries:
             row = {
                 "label": entry.label,
                 "is_thematic": entry.is_thematic,
@@ -761,9 +953,10 @@ def run_step2(image_path: Path, model: str | None = None, runs_dir: Path = Path(
                 "rgb": None, "lab": None, "hex": None,
                 "swatch_bbox_orig": None,
             }
-            if i < len(rects):
-                x, y, sw_, sh_ = rects[i]
-                rgb, lab_v = sample_swatch(legend_img, rects[i])
+            if entry.is_thematic:
+                rect = next(thematic_rects)
+                x, y, sw_, sh_ = rect
+                rgb, lab_v = sample_swatch(legend_img, rect)
                 row.update({
                     "rgb": rgb, "lab": lab_v,
                     "hex": "#{:02x}{:02x}{:02x}".format(*rgb),

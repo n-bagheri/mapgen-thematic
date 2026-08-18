@@ -43,6 +43,16 @@ class TextDetectionTests(unittest.TestCase):
         self.assertEqual(items, [{"text": "Seine", "kind": "river_label",
                                   "box": [20, 25, 60, 35]}])
 
+    def test_text_pass_skips_detection_when_step1_found_no_overlay_text(self):
+        sem = self._semantics()
+        sem.overlay_text.has_line_labels = False
+
+        with patch("mapgen.textdetect._gemini_text") as text_call:
+            items = detect_text(np.zeros((2000, 2000, 3), np.uint8), sem, "test")
+
+        self.assertEqual(items, [])
+        text_call.assert_not_called()
+
     def test_extract_strokes_can_convert_input_to_lab(self):
         image = np.zeros((20, 20, 3), dtype=np.uint8)
 

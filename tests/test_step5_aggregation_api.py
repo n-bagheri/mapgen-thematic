@@ -7,12 +7,12 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 
-from mapgen.alt_mapgen import _source_digest
+from mapgen.postprocess import _source_digest
 from webui import server
 
 
-class AltAggregationReviewApiTests(unittest.TestCase):
-    def test_review_endpoint_persists_approval_and_invalidates_alt_steps6_and7(self):
+class Step5AggregationReviewApiTests(unittest.TestCase):
+    def test_review_endpoint_persists_approval_and_invalidates_steps6_and7(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             maps_dir = root / "maps"
@@ -35,7 +35,7 @@ class AltAggregationReviewApiTests(unittest.TestCase):
             (run_dir / "classes_final.json").write_text(
                 json.dumps({"classes": classes}), encoding="utf-8")
             aggregation = {
-                "branch": "alternate",
+                "branch": "canonical",
                 "mode": "semantic_merge_proposal",
                 "slots": 2,
                 "review_required": True,
@@ -55,20 +55,20 @@ class AltAggregationReviewApiTests(unittest.TestCase):
                 "plain_thematic": [],
                 "source_digest": _source_digest(source, classes),
             }
-            (run_dir / "alt_aggregation.json").write_text(
+            (run_dir / "aggregation.json").write_text(
                 json.dumps(aggregation), encoding="utf-8")
             for step in (6, 7):
-                for name in server.ALT_STEP_ARTIFACTS[step]:
+                for name in server.STEP_ARTIFACTS[step]:
                     (run_dir / name).write_bytes(b"stale")
 
             with patch.object(server, "MAPS_DIR", maps_dir), \
                     patch.object(server, "RUNS_DIR", root / "runs"):
                 client = server.app.test_client()
-                pending = client.get("/api/alt-aggregation-review/sample")
+                pending = client.get("/api/aggregation-review/sample")
                 self.assertEqual(pending.status_code, 200)
                 self.assertIsNone(pending.get_json()["review"])
 
-                saved = client.post("/api/alt-aggregation-review/sample", json={"groups": [
+                saved = client.post("/api/aggregation-review/sample", json={"groups": [
                     {"label": "Forest", "members": [0], "approved": True},
                     {"label": "Field Crops", "members": [1, 2], "approved": True,
                      "rationale": "approved field-crop category"},
@@ -76,14 +76,14 @@ class AltAggregationReviewApiTests(unittest.TestCase):
                 self.assertEqual(saved.status_code, 200)
                 self.assertEqual(saved.get_json()["review"]["status"], "approved")
 
-                current = client.get("/api/alt-aggregation-review/sample").get_json()
+                current = client.get("/api/aggregation-review/sample").get_json()
                 self.assertTrue(current["review"]["approved"])
 
-            self.assertTrue((run_dir / "alt_aggregation_review.json").exists())
-            self.assertTrue((run_dir / "alt_group_map_source.png").exists())
-            self.assertTrue((run_dir / "alt_groups.json").exists())
+            self.assertTrue((run_dir / "aggregation_review.json").exists())
+            self.assertTrue((run_dir / "group_map_source.png").exists())
+            self.assertTrue((run_dir / "groups.json").exists())
             for step in (6, 7):
-                for name in server.ALT_STEP_ARTIFACTS[step]:
+                for name in server.STEP_ARTIFACTS[step]:
                     self.assertFalse((run_dir / name).exists())
 
 

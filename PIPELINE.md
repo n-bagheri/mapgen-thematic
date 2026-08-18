@@ -6,12 +6,14 @@ tactile map masters with braille labeling, a tactile legend, and a reading guide
 **Changes vs. v1:**
 
 - Added **Step 0** (output specification) — the physical medium and page size drive every later decision.
-- Added **Step 6** (class aggregation) — merging classes is the primary strategy when a map has more than the available texture slots; dropping to white is the last resort.
+- Added **Step 5** (class aggregation before simplification) — merging classes is the primary strategy when a map has more than the available texture slots; dropping to white is the last resort.
 - Merged text removal into segmentation (old Steps 4+5): text pixels are filled by growing the surrounding regions, not by generic inpainting.
 - Fixed the water contradiction: **water always gets the wavy pattern when present**, so there are 4 thematic slots with water, 5 without.
 - Added a second symbol-assignment strategy for **ordered (classed-sequential) data**: texture ramps instead of max-haptic-distance.
-- Added **Step 8** for selective compound boundaries, including the map-wide
-  pattern-priority exception.
+- Consolidated symbols, selective compound boundaries, and component-layer cleanup
+  into **Step 7**, which produces the clean tactile master used by Step 8.
+- Added **Step 8**: a local, live editor for full Grade 1 Braille labels, visibility,
+  and manually draggable location pins.
 - Simplification now happens **in vector space, after segmentation, topology-aware** (shared boundaries simplified once, so no slivers/gaps).
 - Added minimum-size generalization driven by physical constants (drop/merge polygons too small to feel; exaggerate critical small features such as islands).
 - Defined a structured intermediate artifact per step and three human-review checkpoints.
@@ -31,7 +33,7 @@ Decide before anything else; these values are inputs to Steps 5–13.
 
 | Constant | Default | Used in |
 |---|---|---|
-| Braille cell footprint (incl. spacing) | ~6.2 × 10 mm | Steps 9, 13, 14 |
+| Braille cell footprint (incl. spacing) | ~6.2 × 10 mm | Steps 8, 13, 14 |
 | Min. area for an identifiable texture | ~13 × 13 mm | Steps 5, 6, 7 |
 | Min. gap between distinct raised elements | ~3 mm | Steps 5, 8, 9 |
 | Min. tactile line width / length | ~1 mm / ~13 mm | Steps 5, 7, 8 |
@@ -45,7 +47,8 @@ with fewer classes simply uses fewer patterns.
 
 A multimodal model reads the full source image and emits **structured JSON** (schema-validated):
 
-- Map type (chorochromatic / area-class, classed-sequential, other → out of scope flag).
+- Map type (chorochromatic / area-class and isopleth are in scope; choropleth
+  and other map types are out of scope).
 - **Data ordering:** qualitative (unordered classes) vs. ordered (e.g., temperature bands).
   This selects the symbol-assignment strategy in Step 7.
 - What the map shows; brief detailed description (feeds the reading guide, Step 15).
@@ -59,6 +62,10 @@ A multimodal model reads the full source image and emits **structured JSON** (sc
 **Rule:** the VLM supplies *semantics only*. Exact colors, coordinates, and bounding
 boxes always come from CV/pixel operations (Steps 2–5), because VLMs are unreliable at
 pixel-exact work (e.g., near-identical legend blues on the Iran sample).
+
+**Required input:** the source map must contain a visible legend. Step 1 records
+whether one was detected; when none is present, the entire tactile-map pipeline
+is blocked before Step 2 because class and color analysis cannot be grounded.
 
 > **Checkpoint A (human review):** confirm map type, class list, priorities, capital.
 
@@ -106,76 +113,47 @@ boundaries, so:
 Artifact: raster label map + vector `regions.geojson` (polygons with class attribute) and
 `lines.geojson` (polylines with type).
 
-## Step 5 — Vector simplification and generalization
+## Step 5 — Class aggregation
 
-Operates on the shared **boundary graph**, not per-polygon:
+Step 5 reads every surviving category directly from Step 4's immutable
+`label_map.png` and `classes_final.json`. It builds a complete aggregation
+proposal that fits the tactile texture capacity: **4 thematic slots when water
+is present, otherwise 5**. The limit is a ceiling, never a target.
 
-- Topology-aware simplification (Visvalingam / Douglas–Peucker on shared arcs) so
-  neighboring regions stay gap- and sliver-free.
-- **Minimum-size generalization** using Step 0 constants at output scale:
-  - Polygons below the minimum texture area → merge into the dominant neighbor
-    (or drop, if isolated speckle — e.g., the vineyard speckles on the France sample).
-  - Critical small features flagged in Step 1 (islands, capital region) → exaggerate to
-    the minimum feelable size instead of dropping.
-  - Parallel lines closer than the minimum gap → merge or displace.
-- Smooth remaining boundaries for clean tactile tracing.
+- **Qualitative maps:** propose semantically coherent category merges.
+- **Ordered maps:** re-bin adjacent legend classes into contiguous groups.
+- Every surviving Step 4 category is assigned exactly once.
+- A human review is required only when a proposed group contains more than one
+  source category; the decision is stored in `aggregation_review.json`.
 
-> **Checkpoint B (human review):** overlay simplified vectors on the source; fix
-> mis-segmented regions before symbolization.
+The approved result changes category identities only. It writes the grouped
+raster and an audit proving that no geographic pixel was moved or erased.
+Step 6 and later steps remain blocked until every multi-class merge is approved.
 
-### Alt MapGen: aggregate before simplifying
+## Step 6 — Simplify for touch
 
-The alternate branch can run beside the canonical Steps 5–7 without
-overwriting them. Each alternate step is manual: Alt Step 6 will not generate
-Alt Step 5, and Alt Step 7 will not generate Alt Step 6.
+Step 6 takes the approved aggregated raster from Step 5 and applies the same
+area-generalization algorithm and five physical presets previously used by
+canonical Step 5:
 
-```text
-python -m mapgen alt-step5 MAP
-python -m mapgen alt-step6 MAP
-python -m mapgen alt-step7 MAP
-```
+- handle islands using the configured tactile minimum area;
+- dissolve undersized components into neighboring final categories;
+- smooth shared category boundaries;
+- run a second small-component pass;
+- preserve significant or explicitly protected groups; and
+- retain, reconnect, simplify, and filter the selected line classes using the
+  same physical thresholds.
 
-- **Alt Step 5** reads every surviving class directly from Step 4's immutable
-  `label_map.png` and `classes_final.json`. It proposes at most five tactile
-  groups. Five is a ceiling, never a target. A review is required only when a
-  group contains more than one source class. Creating the proposed group
-  raster changes class identities but moves or erases zero geographic pixels.
-- **Alt Step 6** takes the actual cached raster from each canonical Step 5
-  preset, so its island handling, minimum-area removal, and boundary smoothing
-  are pixel-for-pixel the canonical result. It then changes only each
-  simplified source class identity into its approved final group. This removes
-  internal boundaries between an approved pair but cannot retain extra small
-  patches or jagged boundaries. The complete source-class-to-final-group
-  transition report and changed-pixel overlay are saved for audit.
-- **Alt Step 7** assigns textures and renders the exact Alt Step 6 group raster.
-  It performs no additional geographic simplification. Pattern footprint
-  checks are reported as warnings only. Non-thematic extras remain plain, so
-  unused texture capacity stays unused. If the canonical Step 7 render exists,
-  a side-by-side `step7_comparison.png` is also written.
+The five presets differ only in their physical detail parameters. Selecting a
+preset activates its cached `label_map_gen.png`, `classes_gen.json`,
+`regions_gen.geojson`, and `lines_gen.geojson` artifacts. The untouched Step 4
+raster remains the audit source, and `step6_transitions.json` records any pixel
+that ends in a neighboring final group during simplification.
 
-Alternate artifacts use an `alt_` prefix. The web UI places the three manual,
-expandable panels in a separate **Alt MapGen** section after canonical Step 8.
-The concrete Alt Step 5 decision is persisted in
-`alt_aggregation_review.json`.
-
-## Step 6 — Class aggregation (NEW)
-
-Compute available texture slots: **4 if water is present, else 5** (see Step 7).
-If thematic classes exceed the slots:
-
-- **Qualitative maps:** the VLM proposes semantic merges (e.g., "Grassland" +
-  "Grassland and crops"; specialty crops → "other agriculture"), human confirms.
-- **Ordered maps:** re-bin into ≤ slots contiguous bins (e.g., 11 temperature bands → 4).
-- **Only if aggregation is impossible:** keep the highest-priority classes and set the
-  rest to plain white. Step 8 then applies only the selective boundary rule below;
-  dropping classes to white remains the last resort, not the default.
-
-Every canonical multi-class proposal is reviewed inside Step 6 and saved in
-`aggregation_review.json`. Canonical Step 7 is blocked until every proposed
-merge is approved; changing the reviewed grouping invalidates the old Step 7
-render and its Step 8 boundary result.
-
-## Step 7 — Tactile symbol assignment
+> **Checkpoint B (human review):** compare the simplified approved-category
+> raster with the original and select the appropriate physical detail preset
+> before symbolization.
+## Step 7 — Tactile symbols & final master render
 
 **Areas** (patterns from the 5-group pattern library):
 
@@ -201,16 +179,31 @@ render and its Step 8 boundary result.
   exterior are excluded because those fills may neighbour anything. Mean eligible-edge
   distance, then configured candidate order, breaks ties.
 - **Ordered data:** use a **texture ramp** with perceived ordering (e.g., increasing dot
-  density), not max-distance assignment — the reader must feel "more/less", matching the corrected bins from Step 6.
+  density), not max-distance assignment — the reader must feel "more/less", matching the corrected bins from Step 5.
 - Non-thematic areas beyond water: patterned only if slots remain, in priority order;
   otherwise plain white.
-- Step 7 retains its default embossed boundary rendering between every distinct
-  region. Step 8 does not overwrite or otherwise alter this artifact.
+- The symbol-assignment raster is retained as an audit artifact while Step 7
+  continues with boundary rendering and component-layer cleanup to produce the final master.
 
 **Lines:** distinct tactile line styles for borders / rivers / roads (e.g., solid thick,
 solid thin, dashed), respecting the minimum gap to area boundaries.
 
-## Step 8 — Adding boundaries
+The Step 7 UI places a visual pattern legend beside the final tactile map. Selecting
+an area opens a non-destructive transform editor for horizontal/vertical scale,
+horizontal/vertical movement, and rotation. These per-area values are layered over
+the complete Illustrator `patternTransform`; the SVG files in `pattern_library/`
+are never modified. Changes are stored in `pattern_transforms.json` and locally
+rerender the symbol, boundary, and cleanup passes without another model call.
+
+Each legend area also has a **Change** action exposing every SVG library pattern,
+plus no fill and pure black. The selected concrete pattern is held fixed. If its
+family was already used, the displaced area takes the vacated or next unused
+family; all unlocked variants are then globally re-optimized against map adjacency.
+This preserves the one-area-per-pattern-family rule while maximizing the minimum
+haptic distance between eligible adjacent areas. Dependent boundary, cleanup,
+Braille-map, and existing Braille-legend artifacts are rerendered locally.
+
+### Boundary rendering within Step 7
 
 Evaluate adjacencies across the complete map before drawing any boundary:
 
@@ -231,17 +224,17 @@ Evaluate adjacencies across the complete map before drawing any boundary:
 Each selected boundary is a **5 mm white stroke** with a **1 mm black stroke centered
 on top of it**. The wide white stroke clears nearby texture marks; the black centerline
 is the raised tactile boundary. The decision audit is saved in
-`step8_boundaries.json`, and the final raster is `step8_boundaries.png`.
+`step8_boundaries.json`, and its intermediate raster is `step8_boundaries.png`.
 
-Step 8 rebuilds a boundary-free copy of the Step 7 pattern layer in memory; the saved
-Step 7 raster and debug artifacts remain unchanged. Priority-pattern occurrences are
+The boundary pass rebuilds a boundary-free copy of the Step 7 pattern layer in memory;
+the saved symbol-assignment raster and debug artifacts remain unchanged. Priority-pattern occurrences are
 rendered as complete closed contours (including holes and canvas-edge contacts), not as
 independent adjacency fragments, so the 1 mm centerline cannot end at the map outside.
 
-## Step 8A — Component-layer cleanup
+### Component-layer cleanup within Step 7
 
-Leave every Step 1–8 artifact unchanged and reproduce an SVG-style paint stack in a new
-output. Every non-black component, including plain areas and water/wave patterns, is
+Leave every earlier artifact unchanged and reproduce an SVG-style paint stack in the
+final Step 7 output. Every non-black component, including plain areas and water/wave patterns, is
 first rendered without a stroke, followed by its complete centered 5 mm white stroke
 and centered 1 mm black stroke. Plain fill remains at the bottom, while still owning a
 closed contour. Every solid-black component is then repainted at its exact geometry as a
@@ -251,22 +244,49 @@ hides the portion extending into it.
 This makes disconnected occurrences such as A and A2 inherit the same pattern ownership,
 while a solid-black component such as C receives no stroke and is not consumed
 by its neighbours' white strokes. Owner-owner boundaries retain the complete centered
-compound stroke. Artifacts are `step8a_cleanup.png`, `step8a_cleanup.json`, and
-`step8a_debug.png`.
+compound stroke. The final Step 7 artifacts are `step8a_cleanup.png`,
+`step8a_cleanup.json`, and `step8a_debug.png`.
 
-## Step 9 — Braille labels
+## Step 8 — Editable Braille label overlay
 
-- **Abbreviation rule:** first two letters; on collision, first letter + next
-  distinguishing consonant; uniqueness enforced in one table; every abbreviation is
-  listed in the legend (Step 14).
-- Cities are omitted except the **capital**: its 2-letter abbreviation goes in the text-box
-  icon at the Step 3 anchor.
-- Other overlay labels: 2-letter abbreviation in the text-box icon at their anchors.
-- **Clutter resolution** (braille is fixed-size and cannot be scaled): if boxes collide or
-  a region is too small to host one, drop labels in ascending priority
-  (site labels → region labels → … capital last) until the layout is clean. Avoid tactile
-  leader lines — they read as map lines. Everything dropped here is still covered by the
-  legend and reading guide.
+- Start from every reviewed label and its original text coordinate in
+  `overlay_labels.json`. The original text coordinate becomes the center of its pin.
+- Convert editable Latin-script text locally to uncontracted Unified English Braille
+  Grade 1. The supplied `assets/fonts/Braille SW 2024 INSEI.ttf` renders the cells at
+  **24 pt**; Step 8 makes no model or external API call.
+- Put the Braille text in a white box with **3 mm clear space on every side**. The
+  selected left, right, top, or bottom position always describes the **pin's position
+  relative to that text box**.
+- Draw a **6 × 6 mm black pin** with a **2 mm white ring** at the label coordinate
+  (10 × 10 mm complete visible footprint).
+- The UI shows the map on the left and one editable Braille preview plus on/off switch
+  per label on the right. Users can add labels even when no source labels were detected;
+  text and visibility updates appear immediately.
+- The top of the right panel also contains an editable Braille map title. Its detected
+  Step 1 title is used when available (otherwise it starts blank for manual entry), and
+  it starts in a full-width title box inset **5 mm from the configured paper margins**.
+  Its 24 pt Braille can be left-, centre-, or right-aligned, wraps within that box, and
+  the title box can be selected and dragged on the page.
+- Pins are draggable directly on the map. A pin and its attached box move together;
+  users can choose the side on which every pin attaches. Labels remain where the
+  source or user placed them. Step 8 performs no automatic collision avoidance or
+  rearrangement. A master switch can show or hide all labels at once.
+- Editable state is saved in `braille_labels.json`; the export and audit are
+  `step8_braille.png` and `step8_braille.json`. The export is a full page at
+  the configured size (A4 portrait by default), rendered at 127 DPI / 5 px per
+  mm with the tactile map centered inside the configured margins. The Step 8
+  UI previews that complete page rather than a map-only crop.
+
+## Step 9 — Editable Braille legend
+
+- Create a separate A4 legend page so the map page keeps its intended physical scale.
+- Render every Step 7 pattern assignment as a **40 × 20 mm** sample, using its exact
+  SVG pattern transform. Samples retain a 1 mm black outer outline; patterns with the
+  map's compound boundary also receive a 2 mm white inset before the pattern.
+- Place the category name in 24 pt Grade 1 Braille beside every sample. The legend
+  title and all category text are editable live in the UI and saved in
+  `legend_labels.json`.
+- Outputs are `step9_legend_base.png`, `step9_legend.png`, and `step9_legend.json`.
 
 ## Steps 10–13 — Frame and furniture layout
 
@@ -280,7 +300,7 @@ Furniture must respect the minimum-gap constant relative to map content.
 
 ## Step 14 — Legend creation
 
-- Each used pattern → class name (post-aggregation names from Step 6).
+- Each used pattern → class name (post-aggregation names from Step 5).
 - Each line style → meaning.
 - Capital-city symbol and text-box symbol, if used.
 - Abbreviation list (abbr → full text).
@@ -289,7 +309,7 @@ Furniture must respect the minimum-gap constant relative to map content.
 ## Step 15 — Reading guide creation
 
 Merge the Step 1 detailed description with the adaptation record: what was aggregated
-(Step 6), what was dropped or exaggerated (Steps 5, 9), what each pattern means, and how
+(Step 5), what was dropped or exaggerated (Steps 6, 9), what each pattern means, and how
 to read the sheet. Output as braille-ready text and/or audio script.
 
 > **Checkpoint C (human review):** final proof of the master + guide before production.

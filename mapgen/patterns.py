@@ -122,6 +122,39 @@ LEGACY_PATTERN_ALIASES = {
     "grid_cross": "02_grid_checkers",
 }
 
+DEFAULT_PATTERN_TRANSFORM: dict[str, float] = {
+    "scale_x_percent": 100.0,
+    "scale_y_percent": 100.0,
+    "move_x_mm": 0.0,
+    "move_y_mm": 0.0,
+    "rotate_deg": 0.0,
+}
+
+PATTERN_TRANSFORM_LIMITS: dict[str, tuple[float, float]] = {
+    "scale_x_percent": (10.0, 500.0),
+    "scale_y_percent": (10.0, 500.0),
+    "move_x_mm": (-100.0, 100.0),
+    "move_y_mm": (-100.0, 100.0),
+    "rotate_deg": (-360.0, 360.0),
+}
+
+
+def normalize_pattern_transform(transform: Mapping[str, object] | None = None) -> dict[str, float]:
+    """Validate one non-destructive transform layered over the SVG asset."""
+
+    raw = transform or {}
+    result: dict[str, float] = {}
+    for key, default in DEFAULT_PATTERN_TRANSFORM.items():
+        try:
+            value = float(raw.get(key, default))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{key} must be a number") from exc
+        low, high = PATTERN_TRANSFORM_LIMITS[key]
+        if not np.isfinite(value) or not low <= value <= high:
+            raise ValueError(f"{key} must be between {low:g} and {high:g}")
+        result[key] = value
+    return result
+
 
 @lru_cache(maxsize=1)
 def svg_pattern_library() -> PatternLibrary:
@@ -149,7 +182,8 @@ def pattern_info(pattern_id: str) -> dict:
     return PATTERNS[canonical_pattern_id(pattern_id)]
 
 
-def _pattern_svg(asset: PatternAsset, shape: tuple[int, int], px_per_mm: float) -> str:
+def _pattern_svg(asset: PatternAsset, shape: tuple[int, int], px_per_mm: float,
+                 transform: Mapping[str, object] | None = None) -> str:
     """Create a carrier canvas around an unmodified copied pattern definition."""
 
     height_px, width_px = shape
@@ -172,6 +206,23 @@ def _pattern_svg(asset: PatternAsset, shape: tuple[int, int], px_per_mm: float) 
     )
     defs = ET.SubElement(root, f"{{{SVG_NAMESPACE}}}defs")
     fill = svg_pattern_library().copy_to_defs(asset.name, defs)
+    pattern_copy = defs[-1]
+    user = normalize_pattern_transform(transform)
+    user_transform = (
+        f"translate({mm_to_pt(user['move_x_mm']):.12g} "
+        f"{mm_to_pt(user['move_y_mm']):.12g}) "
+        f"rotate({user['rotate_deg']:.12g}) "
+        f"scale({user['scale_x_percent'] / 100:.12g} "
+        f"{user['scale_y_percent'] / 100:.12g})"
+    )
+    original_transform = pattern_copy.get("patternTransform", "").strip()
+    # Prefix the user transform so horizontal/vertical movement is expressed
+    # in final map coordinates, while the complete Illustrator transform
+    # remains the untouched inner transform.
+    pattern_copy.set(
+        "patternTransform",
+        f"{user_transform} {original_transform}".strip(),
+    )
     carrier_attributes = {
         "width": str(width_pt),
         "height": str(height_pt),
@@ -189,6 +240,7 @@ def render_pattern(
     pattern_id: str,
     shape: tuple[int, int],
     px_per_mm: float,
+    transform: Mapping[str, object] | None = None,
 ) -> np.ndarray:
     """Render one exact SVG pattern as a white-to-black uint8 canvas.
 
@@ -220,7 +272,7 @@ def render_pattern(
         ) from exc
 
     asset = svg_pattern_library().get(canonical_id)
-    svg = _pattern_svg(asset, shape, px_per_mm)
+    svg = _pattern_svg(asset, shape, px_per_mm, transform)
     png_bytes = resvg_py.svg_to_bytes(
         svg_string=svg,
         width=int(shape[1]),
@@ -339,7 +391,7 @@ def optimize_adjacent_pattern_variants(
     """
 
     normalized_candidates: dict[int, tuple[str, ...]] = {}
-    regular_family_owner: dict[str, int] = {}
+    family_owner: dict[str, int] = {}
     for raw_group_id, raw_candidates in sorted(candidates_by_group.items()):
         group_id = int(raw_group_id)
         candidates = tuple(dict.fromkeys(
@@ -356,14 +408,14 @@ def optimize_adjacent_pattern_variants(
                 f"Group {group_id} candidates span multiple families: {sorted(families)}"
             )
         family = next(iter(families))
-        if family not in {"none", "solids"}:
-            previous_owner = regular_family_owner.get(family)
+        if family != "none":
+            previous_owner = family_owner.get(family)
             if previous_owner is not None and previous_owner != group_id:
                 raise ValueError(
                     f"Pattern family {family!r} is assigned to groups "
                     f"{previous_owner} and {group_id}"
                 )
-            regular_family_owner[family] = group_id
+            family_owner[family] = group_id
         normalized_candidates[group_id] = candidates
 
     present_groups = {int(group_id) for group_id in np.unique(group_map) if group_id >= 0}
@@ -439,6 +491,100 @@ def optimize_adjacent_pattern_variants(
     return best_assignment, audit
 
 
+def optimize_user_pattern_change(
+    group_map: np.ndarray,
+    current_assignment: Mapping[int, str],
+    locked_group_id: int,
+    locked_pattern: str,
+) -> tuple[dict[int, str], dict]:
+    """Re-optimize a map after one area receives a user-selected pattern.
+
+    The selected concrete pattern is an immutable constraint. Other areas keep
+    their existing semantic family whenever possible. If the selected family
+    was already owned by another area, that area takes the family vacated by
+    the selected area (or the first unused family), preserving the one-owner-
+    per-family rule before all remaining SVG variants are optimized globally.
+    ``plain`` is a no-fill choice rather than a pattern family and may repeat.
+    """
+
+    assignments = {
+        int(group_id): canonical_pattern_id(pattern)
+        for group_id, pattern in current_assignment.items()
+    }
+    locked_group_id = int(locked_group_id)
+    locked_pattern = canonical_pattern_id(locked_pattern)
+    if locked_group_id not in assignments:
+        raise ValueError(f"Unknown pattern group: {locked_group_id}")
+    if locked_pattern not in PATTERNS:
+        raise ValueError(f"Unknown pattern: {locked_pattern}")
+    unknown = [pattern for pattern in assignments.values() if pattern not in PATTERNS]
+    if unknown:
+        raise ValueError(f"Unknown current patterns: {sorted(set(unknown))}")
+
+    family_order = tuple(GROUPS)
+    locked_family = PATTERNS[locked_pattern]["group"]
+    old_locked_family = PATTERNS[assignments[locked_group_id]]["group"]
+    allocated_families: dict[int, str] = {}
+    used_families: set[str] = set()
+    if locked_family != "none":
+        allocated_families[locked_group_id] = locked_family
+        used_families.add(locked_family)
+
+    displaced: list[int] = []
+    for group_id in sorted(assignments):
+        if group_id == locked_group_id:
+            continue
+        family = PATTERNS[assignments[group_id]]["group"]
+        if family == "none":
+            allocated_families[group_id] = family
+        elif family not in used_families:
+            allocated_families[group_id] = family
+            used_families.add(family)
+        else:
+            displaced.append(group_id)
+
+    available_families = [
+        family for family in family_order if family not in used_families
+    ]
+    if old_locked_family in available_families:
+        available_families.remove(old_locked_family)
+        available_families.insert(0, old_locked_family)
+    for group_id in displaced:
+        if available_families:
+            family = available_families.pop(0)
+            allocated_families[group_id] = family
+            used_families.add(family)
+        else:
+            allocated_families[group_id] = "none"
+
+    candidates_by_group: dict[int, tuple[str, ...]] = {}
+    for group_id in sorted(assignments):
+        if group_id == locked_group_id:
+            candidates_by_group[group_id] = (locked_pattern,)
+            continue
+        family = allocated_families.get(group_id, "none")
+        candidates_by_group[group_id] = (
+            tuple(GROUPS[family]) if family != "none" else ("plain",)
+        )
+
+    optimized, audit = optimize_adjacent_pattern_variants(
+        group_map, candidates_by_group,
+    )
+    audit.update({
+        "method": "global_exhaustive_adjacent_pattern_maximin_with_user_lock",
+        "user_constraint": {
+            "group_id": locked_group_id,
+            "pattern": locked_pattern,
+            "family": locked_family,
+        },
+        "families_by_group": {
+            str(group_id): PATTERNS[pattern]["group"]
+            for group_id, pattern in optimized.items()
+        },
+    })
+    return optimized, audit
+
+
 def pick_pattern(group: str, used: list[str]) -> str:
     """Choose the maximin-distance candidate from ``group``.
 
@@ -475,6 +621,7 @@ __all__ = [
     "haptic_distance",
     "haptic_embeddings",
     "optimize_adjacent_pattern_variants",
+    "optimize_user_pattern_change",
     "pattern_field",
     "pattern_info",
     "pick_pattern",

@@ -32,7 +32,7 @@ import numpy as np
 from pydantic import BaseModel, Field
 
 from .isolate import imread, imwrite, prepare_text_input, to_lab
-from .semantics import DEFAULT_MODEL, MapSemantics, _ensure_api_key
+from .semantics import DEFAULT_MODEL, MapSemantics, _ensure_api_key, require_pipeline_eligible
 
 # --------------------------------------------------------------------------- schema
 
@@ -106,6 +106,23 @@ def _context_from_sem(sem: MapSemantics) -> tuple[str, str]:
     return "\n".join(lines), capital_hint
 
 
+def _expects_overlay_text(sem: MapSemantics) -> bool:
+    """Whether Step 1 found any text that can occur in the map area.
+
+    The title, legend and source note are furniture and are deliberately
+    blanked before this stage.  When Step 1 says none of the remaining text
+    categories exists, sending a large map through the remote detector and
+    EasyOCR is both unnecessary and prone to false positives.
+    """
+    overlay = sem.overlay_text
+    return bool(
+        overlay.has_city_labels
+        or overlay.has_region_labels
+        or overlay.has_line_labels
+        or overlay.capital_city
+    )
+
+
 def _gemini_text(tile_bgr: np.ndarray, prompt: str, model: str | None) -> TextDetections:
     from google import genai
     from google.genai import types
@@ -151,6 +168,8 @@ def _tiles(img: np.ndarray) -> list[tuple[int, int, np.ndarray]]:
 
 def detect_text(map_bgr: np.ndarray, sem: MapSemantics, model: str | None) -> list[dict]:
     """Run the text-only Gemini pass and return pixel boxes."""
+    if not _expects_overlay_text(sem):
+        return []
     context, capital_hint = _context_from_sem(sem)
     prompt = TEXT_PROMPT.format(context=context, capital_hint=capital_hint)
     raw: list[dict] = []
@@ -456,6 +475,7 @@ def run_step3(image_path: Path, model: str | None = None, runs_dir: Path = Path(
         run_step2(image_path, model=model, runs_dir=runs_dir)
     sem = MapSemantics.model_validate_json(
         (out_dir / "step1_semantics.json").read_text(encoding="utf-8"))
+    require_pipeline_eligible(sem, "Step 3")
     geo = json.loads((out_dir / "geometry.json").read_text(encoding="utf-8"))
 
     map_bgr = imread(out_dir / "map_area.png")
@@ -496,10 +516,14 @@ def run_step3(image_path: Path, model: str | None = None, runs_dir: Path = Path(
 
     vocab = _vocabulary(sem)
 
-    # pixel-true localization: CRAFT boxes replace Gemini's coarse ones
+    # Pixel-true localization: CRAFT boxes replace Gemini's coarse ones.
+    # Do not run OCR when Step 1 explicitly found no overlay text: it would
+    # only manufacture false positives from map texture or linework.
     craft_path = out_dir / "step3_craft.json"
     craft_signature_path = out_dir / "step3_craft.sha256"
-    if craft_path.exists() and _cache_matches(craft_signature_path, input_signature):
+    if not _expects_overlay_text(sem):
+        craft_dets = []
+    elif craft_path.exists() and _cache_matches(craft_signature_path, input_signature):
         craft_dets = json.loads(craft_path.read_text(encoding="utf-8"))
     else:
         craft_dets = craft_detect(clean)

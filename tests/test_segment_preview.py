@@ -8,6 +8,7 @@ from mapgen.segment import (
     extract_coastline_cleanup_mask,
     extract_river_cleanup_mask,
     extract_cartographic_lines,
+    extract_semantic_boundary_ink,
     render_lines_preview,
 )
 from mapgen.semantics import MapSemantics
@@ -161,6 +162,50 @@ class SegmentLinePreviewTests(unittest.TestCase):
 
         self.assertFalse(any(record["kind"] == "river" for record in records))
         self.assertEqual(diagnostic["river_features"], 0)
+
+    def test_unseeded_dark_border_ink_becomes_lines_but_broad_fill_does_not(self):
+        label_map = np.zeros((100, 160), np.int16)
+        cv2.line(label_map, (10, 30), (145, 30), 1, 3)
+        cv2.line(label_map, (80, 15), (80, 75), 1, 3)
+        label_map[55:90, 110:150] = 1
+        seeds = [{
+            "label": "mapped class", "rgb": [220, 190, 50],
+            "is_thematic": True, "source": "legend",
+        }, {
+            "label": "unlabelled: black", "rgb": [15, 18, 17],
+            "is_thematic": False, "source": "unseeded",
+        }]
+
+        ink, records, diagnostic = extract_semantic_boundary_ink(
+            label_map, seeds, _semantics(["border", "coastline"]))
+
+        self.assertGreater(ink[30, 40], 0)
+        self.assertEqual(ink[70, 130], 0)
+        self.assertGreater(diagnostic["semantic_ink_pixels"], 0)
+        self.assertTrue(records)
+        self.assertTrue(all(record["kind"] == "border_or_coast"
+                            for record in records))
+
+    def test_unseeded_light_graticule_is_removed_from_area_classes(self):
+        label_map = np.zeros((100, 160), np.int16)
+        for x in (35, 80, 125):
+            cv2.line(label_map, (x, 5), (x, 94), 1, 2)
+        for y in (30, 65):
+            cv2.line(label_map, (5, y), (154, y), 1, 2)
+        seeds = [{
+            "label": "mapped class", "rgb": [30, 155, 137],
+            "is_thematic": True, "source": "legend",
+        }, {
+            "label": "unlabelled: cream", "rgb": [183, 208, 199],
+            "is_thematic": False, "source": "unseeded",
+        }]
+
+        ink, records, _ = extract_semantic_boundary_ink(
+            label_map, seeds, _semantics(["graticule"]))
+
+        self.assertGreater(ink[30, 35], 0)
+        self.assertTrue(records)
+        self.assertTrue(all(record["kind"] == "graticule" for record in records))
 
 
 if __name__ == "__main__":

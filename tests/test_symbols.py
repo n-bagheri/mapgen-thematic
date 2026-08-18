@@ -1,9 +1,48 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
-from mapgen.symbols import build_overlay_labels
+import numpy as np
+
+from mapgen.isolate import imread, imwrite
+from mapgen.symbols import (build_overlay_labels, render_hybrid_from_tactile,
+                            resolve_group_raster_indices)
 
 
 class OverlayLabelTests(unittest.TestCase):
+    def test_hybrid_render_uses_category_color_under_tactile_and_boundary_layers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            out_dir = Path(directory)
+            (out_dir / "symbols.json").write_text(json.dumps({
+                "area_assignments": [{"members": [0], "color": "#59F7FF"}],
+            }), encoding="utf-8")
+            imwrite(out_dir / "label_map_gen.png", np.ones((3, 3), np.uint8))
+            tactile = np.full((3, 3), 255, np.uint8)
+            tactile[0, 0] = 0
+            white_mask = np.zeros((3, 3), np.uint8)
+            white_mask[1, :] = 255
+            black_mask = np.zeros((3, 3), np.uint8)
+            black_mask[1, 1] = 255
+            imwrite(out_dir / "step8_white_stroke_mask.png", white_mask)
+            imwrite(out_dir / "step8_black_stroke_mask.png", black_mask)
+
+            self.assertTrue(render_hybrid_from_tactile(out_dir, tactile, "hybrid.png"))
+
+            rendered = imread(out_dir / "hybrid.png")
+            self.assertEqual(rendered[2, 2].tolist(), [255, 247, 89])
+            self.assertEqual(rendered[0, 0].tolist(), [0, 0, 0])
+            self.assertEqual(rendered[1, 0].tolist(), [255, 255, 255])
+            self.assertEqual(rendered[1, 1].tolist(), [0, 0, 0])
+
+    def test_step7_resolves_aggregated_source_members_to_group_raster_id(self):
+        classes = [
+            {"index": 0, "members": [4], "label": "Forest"},
+            {"index": 1, "members": [7, 9], "label": "Field Crops"},
+        ]
+
+        self.assertEqual(resolve_group_raster_indices(classes, [9, 7]), [1])
+
     def test_transforms_explicit_text_and_feature_positions(self):
         source = {
             "labels": [{

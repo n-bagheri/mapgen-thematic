@@ -48,6 +48,13 @@ def cmd_step1(args: argparse.Namespace) -> int:
         print(f"  {len(sem.thematic_classes)} thematic classes, water={sem.water_present} "
               f"-> {slots} texture slots (aggregation needed: {len(sem.thematic_classes) > slots})")
         print(f"  -> {out}")
+        if not sem.in_scope:
+            print(f"  PIPELINE STOPPED: map type '{sem.map_type.value}' is out of scope; "
+                  "only chorochromatic and isopleth maps can continue")
+        elif not sem.legend_present:
+            print("  PIPELINE BLOCKED: no legend was detected; a visible legend is required "
+                  "to create the tactile map", file=sys.stderr)
+            failures += 1
     return 1 if failures else 0
 
 
@@ -137,38 +144,7 @@ def cmd_step4(args: argparse.Namespace) -> int:
 
 
 def cmd_step5(args: argparse.Namespace) -> int:
-    from .generalize import run_step5_presets
-
-    OutputSpec.load_or_create()
-    failures = 0
-    for image in args.images:
-        image = Path(image)
-        if not image.exists():
-            print(f"missing: {image}", file=sys.stderr)
-            failures += 1
-            continue
-        print(f"generalizing {image.name} ...")
-        try:
-            r = run_step5_presets(image, model=args.model)
-        except Exception as exc:  # noqa: BLE001 - CLI boundary
-            print(f"  FAILED: {exc}", file=sys.stderr)
-            failures += 1
-            continue
-        s = r["summary"]
-        print(f"  scale {s['scale_mm_per_px']} mm/px ({s['orientation']}, "
-              f"map {s['map_size_mm'][0]}x{s['map_size_mm'][1]} mm on {s['page_mm'][0]}x{s['page_mm'][1]} mm)")
-        print(f"  dissolved {s['dissolved_components']} small components; islands: "
-              f"{s['islands']['dropped']} dropped, {s['islands']['exaggerated']} exaggerated")
-        print(f"  lines: {s['lines_kept']} kept ({s['line_joins']} joins, "
-              f"{s['lines_dropped_short']} dropped short); {r['polygons']} polygons")
-        if s["classes_vanished"]:
-            print(f"  vanished classes: {', '.join(s['classes_vanished'])}")
-        print(f"  -> {r['out_dir']}\\step5_debug.png")
-    return 1 if failures else 0
-
-
-def cmd_step6(args: argparse.Namespace) -> int:
-    from .aggregate import run_step6
+    from .aggregate import run_step5
 
     OutputSpec.load_or_create()
     failures = 0
@@ -180,23 +156,49 @@ def cmd_step6(args: argparse.Namespace) -> int:
             continue
         print(f"aggregating {image.name} ...")
         try:
-            r = run_step6(image, model=args.model)
+            r = run_step5(image, model=args.model)
         except Exception as exc:  # noqa: BLE001 - CLI boundary
             print(f"  FAILED: {exc}", file=sys.stderr)
             failures += 1
             continue
         a = r["aggregation"]
         print(f"  mode={a['mode']}; {len(a['groups'])} groups in {a['slots']} slots; "
-              f"water={'yes' if a['water'] else 'no'}")
+              f"review={a['review_status']}; geographic pixels changed=0")
         for g in a["groups"]:
             print(f"    {g['label']}  <-  {', '.join(g['member_labels'])}")
-        for n in a["notes"]:
-            print(f"  NOTE: {n}")
+        print(f"  -> {r['out_dir']}\\aggregation.json")
+    return 1 if failures else 0
+
+
+def cmd_step6(args: argparse.Namespace) -> int:
+    from .postprocess import run_step6_presets
+
+    OutputSpec.load_or_create()
+    failures = 0
+    for image in args.images:
+        image = Path(image)
+        if not image.exists():
+            print(f"missing: {image}", file=sys.stderr)
+            failures += 1
+            continue
+        print(f"simplifying approved categories for touch in {image.name} ...")
+        try:
+            r = run_step6_presets(image, model=args.model)
+        except Exception as exc:  # noqa: BLE001 - CLI boundary
+            print(f"  FAILED: {exc}", file=sys.stderr)
+            failures += 1
+            continue
+        s = r["summary"]
+        print(f"  changed {s['changed_share'] * 100:.2f}% of pixels; "
+              f"dissolved={s['dissolved_components']}; smoothing={s['smoothing_mm']} mm")
+        print(f"  -> {r['out_dir']}\\label_map_gen.png")
     return 1 if failures else 0
 
 
 def cmd_step7(args: argparse.Namespace) -> int:
     from .symbols import run_step7
+    from .boundaries import run_step8
+    from .cleanup import run_step8a
 
     OutputSpec.load_or_create()
     failures = 0
@@ -206,24 +208,28 @@ def cmd_step7(args: argparse.Namespace) -> int:
             print(f"missing: {image}", file=sys.stderr)
             failures += 1
             continue
-        print(f"assigning symbols for {image.name} ...")
+        print(f"building the final tactile master for {image.name} ...")
         try:
-            r = run_step7(image, model=args.model)
+            symbols = run_step7(image, model=args.model)
+            boundaries = run_step8(image, model=args.model)
+            cleanup = run_step8a(image, model=args.model)
         except Exception as exc:  # noqa: BLE001 - CLI boundary
             print(f"  FAILED: {exc}", file=sys.stderr)
             failures += 1
             continue
-        for a in r["assignments"]:
+        for a in symbols["assignments"]:
             print(f"    {a['label'][:38]:40} -> {a['pattern_desc']}")
-        for n in r["notes"]:
+        for n in symbols["notes"]:
             print(f"  NOTE: {n}")
-        print(f"  tactile render {r['canvas_px'][0]}x{r['canvas_px'][1]} px "
-              f"-> {r['out_dir']}\\step7_tactile.png")
+        print(f"  {boundaries['selected_adjacencies']} selected adjacency type(s); "
+              f"{cleanup['repainted_components']} top component layer(s)")
+        print(f"  final tactile render {cleanup['canvas_px'][0]}x{cleanup['canvas_px'][1]} px "
+              f"-> {cleanup['out_dir']}\\step8a_cleanup.png")
     return 1 if failures else 0
 
 
 def cmd_step8(args: argparse.Namespace) -> int:
-    from .boundaries import run_step8
+    from .braille import run_step8
 
     OutputSpec.load_or_create()
     failures = 0
@@ -233,16 +239,37 @@ def cmd_step8(args: argparse.Namespace) -> int:
             print(f"missing: {image}", file=sys.stderr)
             failures += 1
             continue
-        print(f"adding selected boundaries for {image.name} ...")
+        print(f"adding editable Braille labels for {image.name} ...")
         try:
-            result = run_step8(image, model=args.model)
+            result = run_step8(image)
         except Exception as exc:  # noqa: BLE001 - CLI boundary
             print(f"  FAILED: {exc}", file=sys.stderr)
             failures += 1
             continue
-        print(f"  {result['selected_adjacencies']} selected adjacency type(s); "
-              f"priority patterns={len(result['active_patterns'])}")
-        print(f"  -> {result['out_dir']}\\step8_boundaries.png")
+        print(f"  {result['enabled_labels']}/{result['total_labels']} labels enabled; "
+              "24 pt Unified English Braille Grade 1; API calls=0")
+        print(f"  -> {result['out_dir']}\\step8_braille.png")
+    return 1 if failures else 0
+
+
+def cmd_step9(args: argparse.Namespace) -> int:
+    from .legend import run_step9
+
+    failures = 0
+    for image in args.images:
+        image = Path(image)
+        if not image.exists():
+            print(f"missing: {image}", file=sys.stderr)
+            failures += 1
+            continue
+        try:
+            result = run_step9(image)
+        except Exception as exc:  # noqa: BLE001 - CLI boundary
+            print(f"  FAILED: {exc}", file=sys.stderr)
+            failures += 1
+            continue
+        print(f"  legend: {result['entries']} pattern samples; local render, API calls=0")
+        print(f"  -> {result['out_dir']}\\step9_legend.png")
     return 1 if failures else 0
 
 
@@ -268,80 +295,6 @@ def cmd_step8a(args: argparse.Namespace) -> int:
               f"{result['repainted_components']} top component layer(s); "
               f"{result['restored_pixels']} pixels restored")
         print(f"  -> {result['out_dir']}\\step8a_cleanup.png")
-    return 1 if failures else 0
-
-
-def cmd_alt_step5(args: argparse.Namespace) -> int:
-    from .alt_mapgen import run_alt_step5
-
-    OutputSpec.load_or_create()
-    failures = 0
-    for image in args.images:
-        image = Path(image)
-        if not image.exists():
-            print(f"missing: {image}", file=sys.stderr)
-            failures += 1
-            continue
-        print(f"Alt MapGen aggregation from untouched Step 4 data for {image.name} ...")
-        try:
-            result = run_alt_step5(image, model=args.model)
-        except Exception as exc:  # noqa: BLE001 - CLI boundary
-            print(f"  FAILED: {exc}", file=sys.stderr)
-            failures += 1
-            continue
-        aggregation = result["aggregation"]
-        print(f"  {len(aggregation['groups'])} proposed thematic group(s); "
-              f"review={aggregation['review_status']}; geographic pixels changed=0")
-        print(f"  -> {result['out_dir']}\\alt_aggregation.json")
-    return 1 if failures else 0
-
-
-def cmd_alt_step6(args: argparse.Namespace) -> int:
-    from .alt_mapgen import run_alt_step6_presets
-
-    OutputSpec.load_or_create()
-    failures = 0
-    for image in args.images:
-        image = Path(image)
-        if not image.exists():
-            print(f"missing: {image}", file=sys.stderr)
-            failures += 1
-            continue
-        print(f"Alt MapGen grouping of canonical Step 5 geometry for {image.name} ...")
-        try:
-            result = run_alt_step6_presets(image, model=args.model)
-        except Exception as exc:  # noqa: BLE001 - CLI boundary
-            print(f"  FAILED: {exc}", file=sys.stderr)
-            failures += 1
-            continue
-        summary = result["summary"]
-        print(f"  changed {summary['changed_share'] * 100:.2f}% of pixels; "
-              f"dissolved={summary['dissolved_components']}; "
-              f"smoothing={summary['smoothing_mm']} mm")
-        print(f"  -> {result['out_dir']}\\alt_label_map_gen.png")
-    return 1 if failures else 0
-
-
-def cmd_alt_step7(args: argparse.Namespace) -> int:
-    from .alt_symbols import run_alt_step7
-
-    OutputSpec.load_or_create()
-    failures = 0
-    for image in args.images:
-        image = Path(image)
-        if not image.exists():
-            print(f"missing: {image}", file=sys.stderr)
-            failures += 1
-            continue
-        print(f"alternate tactile render of {image.name} ...")
-        try:
-            result = run_alt_step7(image, model=args.model)
-        except Exception as exc:  # noqa: BLE001 - CLI boundary
-            print(f"  FAILED: {exc}", file=sys.stderr)
-            failures += 1
-            continue
-        print(f"  tactile render {result['canvas_px'][0]}x{result['canvas_px'][1]} px")
-        print(f"  -> {result['out_dir']}\\alt_step7_tactile.png")
     return 1 if failures else 0
 
 
@@ -374,48 +327,28 @@ def main(argv: list[str] | None = None) -> int:
     p4.add_argument("--model", default=None, help="model id if earlier steps must be run first")
     p4.set_defaults(func=cmd_step4)
 
-    p5 = sub.add_parser("step5", help="minimum-size generalization + simplification (no AI)")
+    p5 = sub.add_parser("step5", help="reviewed class aggregation from Step 4")
     p5.add_argument("images", nargs="+", help="map image file(s)")
     p5.add_argument("--model", default=None, help="model id if earlier steps must be run first")
     p5.set_defaults(func=cmd_step5)
 
-    p6 = sub.add_parser("step6", help="class aggregation into texture slots")
+    p6 = sub.add_parser("step6", help="minimum-size generalization + simplification (no AI)")
     p6.add_argument("images", nargs="+", help="map image file(s)")
-    p6.add_argument("--model", default=None, help="override model id for merge proposals")
+    p6.add_argument("--model", default=None, help="model id if earlier steps must be run first")
     p6.set_defaults(func=cmd_step6)
 
-    p7 = sub.add_parser("step7", help="tactile symbol assignment + master render")
+    p7 = sub.add_parser("step7", help="final tactile master: symbols, boundaries, and cleanup")
     p7.add_argument("images", nargs="+", help="map image file(s)")
     p7.add_argument("--model", default=None, help="override model id for texture proposals")
     p7.set_defaults(func=cmd_step7)
 
-    p8 = sub.add_parser("step8", help="select and render compound area boundaries")
+    p8 = sub.add_parser("step8", help="editable Grade 1 Braille label overlay (no AI)")
     p8.add_argument("images", nargs="+", help="map image file(s)")
-    p8.add_argument("--model", default=None,
-                    help="model id if Step 7 must first be generated")
     p8.set_defaults(func=cmd_step8)
 
-    p8a = sub.add_parser("step8a", help="SVG-style component layer cleanup")
-    p8a.add_argument("images", nargs="+", help="map image file(s)")
-    p8a.add_argument("--model", default=None,
-                     help="model id if Step 8 must first be generated")
-    p8a.set_defaults(func=cmd_step8a)
-
-    pa5 = sub.add_parser("alt-step5", help="Alt MapGen aggregation from untouched Step 4 data")
-    pa5.add_argument("images", nargs="+", help="map image file(s)")
-    pa5.add_argument("--model", default=None,
-                     help="model id if an earlier canonical step is required")
-    pa5.set_defaults(func=cmd_alt_step5)
-
-    pa6 = sub.add_parser("alt-step6", help="Alt MapGen simplification after approved aggregation")
-    pa6.add_argument("images", nargs="+", help="map image file(s)")
-    pa6.add_argument("--model", default=None, help="model id if Alt Step 5 must run first")
-    pa6.set_defaults(func=cmd_alt_step6)
-
-    pa7 = sub.add_parser("alt-step7", help="alternate tactile render from Alt Steps 5 and 6")
-    pa7.add_argument("images", nargs="+", help="map image file(s)")
-    pa7.add_argument("--model", default=None, help="model id for texture proposals")
-    pa7.set_defaults(func=cmd_alt_step7)
+    p9 = sub.add_parser("step9", help="editable Braille legend page (no AI)")
+    p9.add_argument("images", nargs="+", help="map image file(s)")
+    p9.set_defaults(func=cmd_step9)
 
     args = parser.parse_args(argv)
     return args.func(args)

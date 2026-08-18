@@ -24,12 +24,17 @@ import cv2
 import numpy as np
 
 from .isolate import imread, imwrite
+from .semantics import load_pipeline_semantics
 from .symbols import RENDER_PX_PER_MM
 
 WHITE_STROKE_MM = 5.0
 BLACK_STROKE_MM = 1.0
 NON_PATTERN_IDS = frozenset({"plain", "solid_black"})
 OUTSIDE_GROUP = -1
+# A patterned area narrower than this cannot retain a distinct, embossed
+# boundary at the 5 px/mm render scale.  Excluding it from contouring avoids
+# OpenCV producing a one-pixel dangling contour around rasterization slivers.
+MIN_CONTOUR_COMPONENT_SPAN_PX = 4
 
 
 def is_regular_pattern(pattern_id: str | None) -> bool:
@@ -202,19 +207,38 @@ def closed_pattern_centerline(group_map: np.ndarray,
     for region in carrier_masks:
         if not region.any():
             continue
-        padded = cv2.copyMakeBorder(region, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0)
-        contours, _ = cv2.findContours(
-            padded, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE,
+        # Work per connected component: a tiny rasterization sliver can have
+        # an open OpenCV contour despite the padded mask.  It is below the
+        # physical boundary resolution, so it must not create a dangling
+        # embossed stroke or block the whole Step 7 job.
+        component_count, components, stats, _ = cv2.connectedComponentsWithStats(
+            region, connectivity=8,
         )
-        for contour in contours:
-            shifted = contour.copy()
-            shifted[:, :, 0] -= 1
-            shifted[:, :, 1] -= 1
-            cv2.drawContours(edge, [shifted], -1, 255, 1, lineType=cv2.LINE_8)
-        contour_count += len(contours)
+        for component_id in range(1, component_count):
+            _, _, width, height, _ = stats[component_id]
+            if min(width, height) < MIN_CONTOUR_COMPONENT_SPAN_PX:
+                continue
+            component = (components == component_id).astype(np.uint8)
+            padded = cv2.copyMakeBorder(
+                component, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0,
+            )
+            contours, _ = cv2.findContours(
+                padded, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE,
+            )
+            for contour in contours:
+                shifted = contour.copy()
+                shifted[:, :, 0] -= 1
+                shifted[:, :, 1] -= 1
+                cv2.drawContours(edge, [shifted], -1, 255, 1, lineType=cv2.LINE_8)
+            contour_count += len(contours)
+    repaired_gaps = 0
     if edge.any():
         edge = cv2.ximgproc.thinning(edge, thinningType=cv2.ximgproc.THINNING_ZHANGSUEN)
-    return edge, contour_count, closure_pairs, black_closure_components
+        # OpenCV can turn a closed 8-connected raster contour into a tiny
+        # dangling spur at a diagonal pinch.  Repair only within that existing
+        # connected contour network; never bridge separate map regions.
+        edge, repaired_gaps = repair_tiny_centerline_gaps(edge)
+    return edge, contour_count, closure_pairs, black_closure_components, repaired_gaps
 
 
 def open_endpoint_count(centerline: np.ndarray) -> int:
@@ -224,6 +248,145 @@ def open_endpoint_count(centerline: np.ndarray) -> int:
         binary, -1, np.ones((3, 3), np.uint8), borderType=cv2.BORDER_CONSTANT,
     ) - binary
     return int(np.count_nonzero((binary > 0) & (neighbours < 2)))
+
+
+def repair_tiny_centerline_gaps(centerline: np.ndarray,
+                                max_gap_px: int = 6) -> tuple[np.ndarray, int]:
+    """Reconnect a short raster-only break within one contour component.
+
+    The input is composed exclusively from padded, closed contours.  A nearby
+    connection inside the same 8-connected network is therefore a rendering
+    defect (usually a diagonal pinch), not a geographic gap.  The limit keeps
+    this repair strictly below the physical boundary resolution.
+    """
+    repaired = (centerline > 0).astype(np.uint8) * 255
+    bridges = 0
+    for _ in range(4):
+        component_count, components = cv2.connectedComponents(
+            (repaired > 0).astype(np.uint8), connectivity=8)
+        if component_count <= 1:
+            break
+        points = np.argwhere(repaired > 0)
+        point_set = set(map(tuple, points.tolist()))
+        endpoints = []
+        for y, x in point_set:
+            degree = sum(
+                (y + dy, x + dx) in point_set
+                for dy in (-1, 0, 1) for dx in (-1, 0, 1)
+                if dy or dx
+            )
+            if degree < 2:
+                endpoints.append((y, x))
+        if not endpoints:
+            break
+
+        def branch_from_endpoint(start: tuple[int, int]) -> set[tuple[int, int]]:
+            """Return the existing dangling branch, including its junction.
+
+            Euclidean proximity alone is not enough: the next pixel along the
+            same dangling branch is also nearby.  Excluding that branch makes
+            a bridge close an actual pinch instead of retracing the spur.
+            """
+            branch: set[tuple[int, int]] = set()
+            previous: tuple[int, int] | None = None
+            current = start
+            while current not in branch:
+                branch.add(current)
+                y, x = current
+                forward = [
+                    (y + dy, x + dx)
+                    for dy in (-1, 0, 1) for dx in (-1, 0, 1)
+                    if (dy or dx) and (y + dy, x + dx) in point_set
+                    and (y + dy, x + dx) != previous
+                ]
+                if len(forward) != 1:
+                    break
+                previous, current = current, forward[0]
+            return branch
+
+        bridged = False
+        for y, x in endpoints:
+            component = components[y, x]
+            if component == 0:
+                continue
+            branch = branch_from_endpoint((y, x))
+            endpoint_targets = [
+                (oy, ox) for oy, ox in endpoints
+                if (oy, ox) != (y, x)
+                and (oy, ox) not in branch
+                and components[oy, ox] == component
+                and 2.0 < float(np.hypot(ox - x, oy - y)) <= max_gap_px
+            ]
+            if endpoint_targets:
+                ty, tx = min(endpoint_targets,
+                             key=lambda point: float(np.hypot(point[1] - x, point[0] - y)))
+            elif len(endpoints) == 1:
+                # A lone end is the same defect seen at a diagonal pinch.
+                ys, xs = np.where(components == component)
+                distances = np.hypot(xs - x, ys - y)
+                candidates = [index for index, distance in enumerate(distances)
+                              if 2.0 < distance <= max_gap_px
+                              and (int(ys[index]), int(xs[index])) not in branch]
+                if not candidates:
+                    continue
+                target = min(candidates, key=lambda index: distances[index])
+                ty, tx = int(ys[target]), int(xs[target])
+            else:
+                continue
+            cv2.line(repaired, (int(x), int(y)), (int(tx), int(ty)), 255, 1, cv2.LINE_8)
+            bridges += 1
+            bridged = True
+            break
+        if not bridged:
+            break
+    return repaired, bridges
+
+
+def discard_open_centerline_branches(centerline: np.ndarray) -> tuple[np.ndarray, int]:
+    """Trim residual open raster branches rather than blocking map production.
+
+    This layer is built from padded, closed region contours, so an endpoint is
+    a thinning/raster artifact, never an intentional geographic line. Closed
+    portions are retained; a dangling branch (or fully open remnant) is
+    removed as the final contour-safety fallback.
+    """
+    result = (centerline > 0).astype(np.uint8) * 255
+    removed = 0
+    for _ in range(int(np.count_nonzero(result)) + 1):
+        points = set(map(tuple, np.argwhere(result > 0).tolist()))
+        endpoints = []
+        for y, x in points:
+            degree = sum(
+                (y + dy, x + dx) in points
+                for dy in (-1, 0, 1) for dx in (-1, 0, 1)
+                if dy or dx
+            )
+            if degree < 2:
+                endpoints.append((y, x))
+        if not endpoints:
+            break
+        branch: list[tuple[int, int]] = []
+        previous: tuple[int, int] | None = None
+        current = endpoints[0]
+        while current in points and current not in branch:
+            branch.append(current)
+            cy, cx = current
+            forward = [
+                (cy + dy, cx + dx)
+                for dy in (-1, 0, 1) for dx in (-1, 0, 1)
+                if (dy or dx) and (cy + dy, cx + dx) in points
+                and (cy + dy, cx + dx) != previous
+            ]
+            if len(forward) != 1:
+                if len(forward) > 1:  # retain the first junction pixel
+                    branch.pop()
+                break
+            previous, current = current, forward[0]
+        for y, x in branch:
+            if result[y, x]:
+                result[y, x] = 0
+                removed += 1
+    return result, removed
 
 
 def apply_boundary_strokes(canvas: np.ndarray, centerline: np.ndarray,
@@ -274,8 +437,15 @@ def _render_step8_base(out_dir: Path, symbols: dict) -> np.ndarray:
         group_id: assignment["pattern"]
         for group_id, assignment in enumerate(assignments)
     }
+    group_transforms = {
+        group_id: assignment.get("transform")
+        for group_id, assignment in enumerate(assignments)
+    }
     label_map = imread(out_dir / "label_map_gen.png")[..., 0].astype(np.int16) - 1
-    summary = json.loads((out_dir / "step5_summary.json").read_text(encoding="utf-8"))
+    summary_path = (out_dir / "step6_summary.json"
+                    if (out_dir / "step6_summary.json").exists()
+                    else out_dir / "step5_summary.json")
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
     line_data = json.loads((out_dir / "lines_gen.geojson").read_text(encoding="utf-8"))
     lines = [
         feature["properties"] | {"points": feature["geometry"]["coordinates"]}
@@ -285,6 +455,7 @@ def _render_step8_base(out_dir: Path, symbols: dict) -> np.ndarray:
         label_map, idx_to_group, group_patterns, lines,
         float(summary["scale_mm_per_px"]), OutputSpec.load_or_create(),
         include_region_boundaries=False,
+        group_transforms=group_transforms,
     )
 
 
@@ -296,6 +467,7 @@ def run_step8(image_path: Path, model: str | None = None,
     out_dir = runs_dir / image_path.stem
     if not (out_dir / "step7_tactile.png").exists():
         run_step7(image_path, model=model, runs_dir=runs_dir)
+    load_pipeline_semantics(out_dir, "Step 8")
 
     symbols = json.loads((out_dir / "symbols.json").read_text(encoding="utf-8"))
     assignments = symbols["area_assignments"]
@@ -308,17 +480,21 @@ def run_step8(image_path: Path, model: str | None = None,
     canvas = _render_step8_base(out_dir, symbols)
     group_map = build_group_map(label_map, assignments, canvas.shape[:2])
     selected, active_patterns, contacts = select_boundary_pairs(group_map, group_patterns)
-    centerline, closed_contours, closure_pairs, black_closure_components = closed_pattern_centerline(
+    centerline, closed_contours, closure_pairs, black_closure_components, repaired_gaps = closed_pattern_centerline(
         group_map, group_patterns, active_patterns,
     )
     open_endpoints = open_endpoint_count(centerline)
+    discarded_open_outline_pixels = 0
     if open_endpoints:
-        raise RuntimeError(
-            f"refusing to render Step 8 with {open_endpoints} open contour endpoint(s)"
-        )
+        centerline, discarded_open_outline_pixels = discard_open_centerline_branches(centerline)
+        open_endpoints = open_endpoint_count(centerline)
     result, white_px, black_px = apply_boundary_strokes(
         canvas, centerline, float(symbols.get("render_px_per_mm", RENDER_PX_PER_MM)),
     )
+    white_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (white_px, white_px))
+    black_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (black_px, black_px))
+    white_stroke_mask = cv2.dilate(centerline, white_kernel)
+    black_stroke_mask = cv2.dilate(centerline, black_kernel)
 
     adjacency_audit = []
     for pair, contact_px in sorted(contacts.items()):
@@ -352,7 +528,9 @@ def run_step8(image_path: Path, model: str | None = None,
         "selected_adjacencies": len(selected | closure_pairs),
         "closed_priority_contours": closed_contours,
         "black_closure_components": black_closure_components,
+        "repaired_centerline_gap_bridges": repaired_gaps,
         "open_contour_endpoints": open_endpoints,
+        "discarded_open_outline_pixels": discarded_open_outline_pixels,
         "boundary_centerline_px": int(np.count_nonzero(centerline)),
         "step7_artifacts_modified": False,
         "adjacencies": adjacency_audit,
@@ -361,6 +539,8 @@ def run_step8(image_path: Path, model: str | None = None,
         json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8",
     )
     imwrite(out_dir / "step8_boundaries.png", result)
+    imwrite(out_dir / "step8_white_stroke_mask.png", white_stroke_mask)
+    imwrite(out_dir / "step8_black_stroke_mask.png", black_stroke_mask)
 
     debug = np.hstack((step7_canvas, result))
     if debug.shape[1] > 2200:

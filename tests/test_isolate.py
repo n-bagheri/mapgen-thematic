@@ -46,6 +46,23 @@ class MapMaskRefinementTests(unittest.TestCase):
         self.assertEqual(mask[60, 235], 0)
         self.assertTrue(any("outside the geographic content envelope" in w for w in warnings))
 
+    def test_removes_isolated_long_ruler_at_ai_map_edge(self):
+        img = np.full((300, 400, 3), 255, np.uint8)
+        cv2.rectangle(img, (70, 70), (260, 240), (40, 160, 80), -1)
+        # A tall, independent coordinate ruler mistakenly included by a broad
+        # model-proposed map box.
+        cv2.rectangle(img, (382, 35), (384, 270), (200, 40, 40), -1)
+
+        mask, _, warnings = refine_map_mask(
+            img,
+            map_boxes=[(45, 25, 390, 280)],
+            exclude_boxes=[],
+        )
+
+        self.assertGreater(mask[150, 150], 0)
+        self.assertEqual(mask[150, 383], 0)
+        self.assertTrue(any("edge ruler/tick" in warning for warning in warnings))
+
 
 class TextInputPreparationTests(unittest.TestCase):
     def test_keeps_label_that_overhangs_small_island(self):
@@ -154,6 +171,51 @@ class LegendDetectionTests(unittest.TestCase):
         self.assertEqual(len(rects), 3)
         sampled = [sample_swatch(legend, rect)[0] for rect in rects]
         self.assertEqual(len({tuple(rgb) for rgb in sampled}), 3)
+
+    def test_closed_label_glyphs_are_not_detected_as_white_swatches(self):
+        legend = np.full((250, 620, 3), 255, np.uint8)
+        colors_bgr = [
+            (80, 220, 245), (80, 190, 110), (170, 80, 55),
+            (110, 45, 145),
+        ]
+        for i, color in enumerate(colors_bgr):
+            column = i // 2
+            row = i % 2
+            x = 12 + column * 300
+            y = 70 + row * 70
+            cv2.rectangle(legend, (x, y), (x + 64, y + 38), color, -1)
+            cv2.putText(legend, f"{1000 + i * 1000} - {2000 + i * 1000}",
+                        (x + 82, y + 31), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.8, (0, 0, 0), 2, cv2.LINE_AA)
+
+        rects, warnings = detect_swatches(
+            legend,
+            expected=4,
+            labels=["1000 - 2000", "2000 - 3000", "3000 - 4000", "4000 - 5000"],
+            ordered=True,
+        )
+
+        self.assertEqual(len(rects), 4, warnings)
+        sampled = [sample_swatch(legend, rect)[0] for rect in rects]
+        self.assertTrue(all(max(rgb) - min(rgb) > 20 for rgb in sampled))
+        self.assertEqual(len({tuple(rgb) for rgb in sampled}), 4)
+
+    def test_compact_three_column_grid_recovers_tiny_swatches(self):
+        legend = np.full((105, 132, 3), 245, np.uint8)
+        colours = [(20 + i * 7, 80 + i * 5, 180 + i * 2) for i in range(24)]
+        index = 0
+        for column, count in enumerate((8, 8, 9)):
+            for row in range(count):
+                x, y = column * 45, row * 12
+                colour = colours[index] if index < 24 else (20, 20, 20)
+                cv2.rectangle(legend, (x, y), (x + 13, y + 7), colour, -1)
+                index += 1
+
+        rects, warnings = detect_swatches(
+            legend, expected=25, labels=[str(i) for i in range(25)], ordered=True,
+        )
+
+        self.assertEqual(len(rects), 25, warnings)
 
 
 if __name__ == "__main__":

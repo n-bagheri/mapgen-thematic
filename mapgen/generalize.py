@@ -1,19 +1,13 @@
-"""Step 5 -- Simplification and minimum-size generalization.
+"""Shared physical simplification and minimum-size generalization for Step 6.
 
-Everything physical starts here: the output scale (mm per source pixel) is
+The output scale (mm per source pixel) is
 fixed from the Step 0 page spec, and the Step 0 constants are converted into
 pixel thresholds. Generalization and smoothing run on the RASTER label map,
 where the partition cannot develop gaps or slivers; simplified vectors are
 then extracted from the generalized raster. Lines are merged across the gaps
 text removal left (tangent-aware bridging), simplified, and length-filtered.
-
-Artifacts per map, under runs/<name>/:
-    label_map_gen.png    generalized + smoothed class raster (index + 1)
-    classes_gen.json     classes with area shares before/after generalization
-    regions_gen.geojson  simplified area polygons
-    lines_gen.geojson    merged + simplified polylines with kind and length_mm
-    step5_summary.json   scale, thresholds, dissolve/island/line statistics
-    step5_debug.png      original | generalized reconstruction
+The canonical Step 6 runner in ``postprocess.py`` applies these operations to
+the approved Step 5 group raster.
 """
 
 from __future__ import annotations
@@ -28,12 +22,15 @@ import numpy as np
 from .isolate import imread, imwrite
 from .output_spec import OutputSpec
 from .segment import fill_holes_nearest, polygonize
+from .semantics import MapSemantics, load_pipeline_semantics
 
 SMOOTH_MM = 0.5          # boundary smoothing radius on the page
 SIMPLIFY_MM = 0.25       # Douglas-Peucker tolerance on the page
 ISLAND_KEEP_FRACTION = 0.2   # islands >= this share of min area get exaggerated, smaller are dropped
 LINE_JOIN_NEAR_MM = 1.5      # endpoints closer than this always reconnect
 LINE_JOIN_FAR_MM = 12.0      # bridge up to this far if the tangents agree
+BOUNDARY_MIN_LINE_MM = 2.0   # short segments participate in a larger border network
+BOUNDARY_LINE_KINDS = {"border", "border_or_coast", "coastline", "graticule"}
 
 
 # --------------------------------------------------------------------------- scale
@@ -190,7 +187,7 @@ def drop_redundant_boundary_lines(lines: list[dict], label_map: np.ndarray) -> t
     kept, dropped = [], 0
     h, w = label_map.shape
     for ln in lines:
-        if ln["kind"] not in ("border", "border_or_coast"):
+        if ln["kind"] not in ("border", "border_or_coast", "coastline"):
             kept.append(ln)
             continue
         pts = np.array(ln["points"], int)
@@ -223,12 +220,12 @@ def generalize_area_raster(label_map: np.ndarray, classes: list[dict],
                            preserve_share: float = PRESERVE_SHARE,
                            protected_classes: set[int] = frozenset()
                            ) -> tuple[np.ndarray, np.ndarray, dict]:
-    """Run canonical Step 5's complete area algorithm on any class raster.
+    """Run canonical Step 6's complete area algorithm on any class raster.
 
-    Both canonical Step 5 and Alt Step 6 call this function.  The alternate
-    branch can therefore aggregate Step 4 class identities first and then
-    apply the exact same island handling, small-component dissolution,
-    Gaussian label smoothing, second dissolution, and class preservation.
+    Step 6 calls this after Step 5 aggregates the Step 4 class identities, so
+    the same island handling, small-component dissolution, Gaussian label
+    smoothing, second dissolution, and class preservation operate on the
+    approved final categories.
     """
     result = label_map.astype(np.int16, copy=True)
     mask = np.where(result >= 0, 255, 0).astype(np.uint8)
@@ -314,7 +311,10 @@ def line_length(pts: np.ndarray) -> float:
 
 # --------------------------------------------------------------------------- runner
 
-ALL_LINE_KINDS = ["river", "road", "border", "border_or_coast", "line"]
+ALL_LINE_KINDS = [
+    "river", "road", "border", "border_or_coast", "coastline", "graticule", "line",
+]
+LINE_POLICY_VERSION = 1
 
 SIMPLIFICATION_PRESETS = {
     1: {"side_factor": 0.55, "smooth_mm": 0.2, "preserve_share": 0.003},
@@ -341,13 +341,31 @@ DEFAULT_PARAMS = {
     "min_texture_area_side_mm": None,  # null -> use the Step 0 spec constant
     "smooth_mm": SMOOTH_MM,
     "preserve_share": PRESERVE_SHARE,
-    # ink lines are extracted (so areas stay clean) but NOT drawn by default:
-    # region boundaries are embossed anyway, rivers are not part of the tactile
-    # output, and interior ink is often just boundary ink misclassified.
-    # Re-enable kinds per map in the Step 5 manual controls when needed.
+    # Explicit borders/coastlines reported by Step 1 are selected contextually
+    # by load_params(); other extracted line kinds remain opt-in.
     "keep_line_kinds": [],
+    "line_policy_version": LINE_POLICY_VERSION,
     "protected_classes": [],           # class indices exempt from dissolution
 }
+
+
+def semantic_default_line_kinds(out_dir: Path) -> list[str]:
+    """Keep explicitly visible political/coastal context without manual rescue."""
+    path = out_dir / "step1_semantics.json"
+    if not path.exists():
+        return []
+    try:
+        sem = MapSemantics.model_validate_json(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    kinds = {line.kind.value for line in sem.lines}
+    if "border" in kinds and "coastline" in kinds:
+        return ["border_or_coast"]
+    if "border" in kinds:
+        return ["border"]
+    if "coastline" in kinds:
+        return ["coastline"]
+    return []
 
 
 def load_params(out_dir: Path) -> dict:
@@ -360,6 +378,15 @@ def load_params(out_dir: Path) -> dict:
         # values, even when they happen to resemble the Balanced preset.
         if "simplification_level" not in saved:
             params["simplification_level"] = None
+        # Older defaults silently discarded every extracted line.  Migrate
+        # only that old empty default; a non-empty saved selection remains an
+        # explicit user choice.
+        if (int(saved.get("line_policy_version", 0)) < LINE_POLICY_VERSION
+                and not saved.get("keep_line_kinds")):
+            params["keep_line_kinds"] = semantic_default_line_kinds(out_dir)
+    else:
+        params["keep_line_kinds"] = semantic_default_line_kinds(out_dir)
+    params["line_policy_version"] = LINE_POLICY_VERSION
     return params
 
 
@@ -416,6 +443,7 @@ def run_step5(image_path: Path, model: str | None = None, runs_dir: Path = Path(
     out_dir = runs_dir / image_path.stem
     if not (out_dir / "label_map.png").exists() or not (out_dir / "classes_final.json").exists():
         run_step4(image_path, model=model, runs_dir=runs_dir)
+    load_pipeline_semantics(out_dir, "Step 5")
 
     spec = OutputSpec.load_or_create()
     classes = json.loads((out_dir / "classes_final.json").read_text(encoding="utf-8"))["classes"]
@@ -450,14 +478,47 @@ def run_step5(image_path: Path, model: str | None = None, runs_dir: Path = Path(
                   for f in lines_in
                   if f["properties"]["kind"] != "frame" and f["properties"]["kind"] in keep_kinds]
     kept_lines, redundant = drop_redundant_boundary_lines(kept_lines, label_map)
-    merged, joins = merge_lines(kept_lines,
-                                near_px=LINE_JOIN_NEAR_MM / mm, far_px=LINE_JOIN_FAR_MM / mm)
+    # Administrative networks are already split at real junctions.  Generic
+    # gap bridging is unsafe here: on a dense world map it connects unrelated
+    # countries with long diagonal chords.  Preserve accurate source segments
+    # and reserve reconnection for rivers/roads interrupted by text masks.
+    boundary_lines = [line for line in kept_lines if line["kind"] in BOUNDARY_LINE_KINDS]
+    reconnectable_lines = [line for line in kept_lines
+                           if line["kind"] not in BOUNDARY_LINE_KINDS]
+    merged, joins = merge_lines(
+        reconnectable_lines,
+        near_px=LINE_JOIN_NEAR_MM / mm,
+        far_px=LINE_JOIN_FAR_MM / mm,
+    )
+    merged += [{"kind": line["kind"],
+                "network_id": line.get("network_id"),
+                "pts": np.asarray(line["points"], dtype=np.float64)}
+               for line in boundary_lines]
+    boundary_network_lengths: dict[str, float] = {}
+    for line in merged:
+        network_id = line.get("network_id")
+        if network_id:
+            boundary_network_lengths[network_id] = (
+                boundary_network_lengths.get(network_id, 0.0)
+                + line_length(line["pts"])
+            )
     line_feats = []
     dropped_short = 0
     for ln in merged:
         pts = simplify_line(ln["pts"], eps_px)
         length = line_length(pts)
-        if length < min_line_px:
+        network_id = ln.get("network_id")
+        network_is_long = bool(
+            network_id
+            and boundary_network_lengths.get(network_id, 0.0) >= min_line_px
+        )
+        required_length = (
+            0.0 if network_is_long
+            else BOUNDARY_MIN_LINE_MM / mm
+            if ln["kind"] in BOUNDARY_LINE_KINDS
+            else min_line_px
+        )
+        if length < required_length:
             dropped_short += 1
             continue
         line_feats.append({
@@ -526,8 +587,10 @@ def run_step5(image_path: Path, model: str | None = None, runs_dir: Path = Path(
     # Human-readable rendering of the exact indexed raster consumed by Steps
     # 6 and 7. Lines are added only to the debug image below, not this preview.
     imwrite(out_dir / "label_map_gen_preview.png", recon)
-    kind_col = {"border_or_coast": (0, 0, 0), "river": (255, 128, 0),
-                "road": (0, 0, 200), "border": (0, 0, 0), "line": (200, 0, 200)}
+    kind_col = {"border_or_coast": (0, 0, 0), "coastline": (48, 96, 64),
+                "graticule": (170, 170, 170),
+                "river": (255, 128, 0), "road": (0, 0, 200),
+                "border": (0, 0, 0), "line": (200, 0, 200)}
     for f in line_feats:
         pts = np.array(f["geometry"]["coordinates"], np.int32)
         cv2.polylines(recon, [pts], False, kind_col.get(f["properties"]["kind"], (0, 0, 0)), 2)

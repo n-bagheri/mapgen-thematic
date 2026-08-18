@@ -1,0 +1,203 @@
+import json
+import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+
+from mapgen.semantics import MapSemantics
+from webui import server
+
+
+def _semantics(map_type: str, legend_present: bool = True) -> dict:
+    return {
+        "map_type": map_type,
+        "in_scope": True,
+        "data_ordering": "ordered",
+        "map_language": "English",
+        "subject": "Synthetic thematic map",
+        "description": "Synthetic map used to verify the Step 1 gate.",
+        "title": "Synthetic map",
+        "legend_present": legend_present,
+        "legend_title": "Values" if legend_present else None,
+        "legend_entries": ([{
+            "label": "Low",
+            "color_hint": "yellow",
+            "is_thematic": True,
+        }] if legend_present else []),
+        "water_present": False,
+        "thematic_classes": [{
+            "label": "Low",
+            "priority": 1,
+            "approx_area_share_percent": 100.0,
+        }],
+        "non_thematic": [],
+        "lines": [],
+        "overlay_text": {
+            "has_city_labels": False,
+            "capital_city": None,
+            "has_region_labels": False,
+            "has_line_labels": False,
+            "notes": "",
+        },
+    }
+
+
+class Step1GateApiTests(unittest.TestCase):
+    def make_project(self, root: Path, semantics: dict):
+        maps_dir = root / "maps"
+        runs_dir = root / "runs"
+        run_dir = runs_dir / "sample"
+        maps_dir.mkdir()
+        run_dir.mkdir(parents=True)
+        (maps_dir / "sample.png").write_bytes(b"synthetic")
+        (run_dir / "step1_semantics.json").write_text(
+            json.dumps(semantics), encoding="utf-8")
+        return maps_dir, runs_dir
+
+    def test_out_of_scope_map_keeps_step1_but_blocks_later_steps(self):
+        with TemporaryDirectory() as directory:
+            maps_dir, runs_dir = self.make_project(
+                Path(directory), _semantics("choropleth"))
+            run_dir = runs_dir / "sample"
+            with patch.object(server, "MAPS_DIR", maps_dir), \
+                    patch.object(server, "RUNS_DIR", runs_dir):
+                client = server.app.test_client()
+                record = client.get("/api/maps").get_json()["maps"][0]
+                self.assertTrue(record["steps"]["1"])
+                self.assertFalse(record["in_scope"])
+                self.assertIsNone(record["step1_error"])
+                self.assertIsNone(record["pipeline_error"])
+                self.assertTrue(all(not done for step, done in record["steps"].items()
+                                    if step != "1"))
+                self.assertNotIn("alt_steps", record)
+
+                blocked = client.post("/api/run", json={
+                    "stem": "sample", "steps": [2], "model": server.DEFAULT_MODEL,
+                })
+                self.assertEqual(blocked.status_code, 409)
+
+                alt_removed = client.post("/api/run-alt", json={
+                    "stem": "sample", "steps": [5], "model": server.DEFAULT_MODEL,
+                })
+                self.assertIn(alt_removed.status_code, (404, 405))
+
+                with patch.object(server.threading.Thread, "start"):
+                    rerun = client.post("/api/run", json={
+                        "stem": "sample", "steps": [1],
+                        "model": server.DEFAULT_MODEL,
+                    })
+                self.assertEqual(rerun.status_code, 200)
+                server._jobs.pop("sample", None)
+
+    def test_supported_map_types_can_start_step2(self):
+        for map_type in ("area_class_chorochromatic", "isopleth"):
+            with self.subTest(map_type=map_type), TemporaryDirectory() as directory:
+                maps_dir, runs_dir = self.make_project(
+                    Path(directory), _semantics(map_type))
+                with patch.object(server, "MAPS_DIR", maps_dir), \
+                        patch.object(server, "RUNS_DIR", runs_dir), \
+                        patch.object(server.threading.Thread, "start"):
+                    client = server.app.test_client()
+                    record = client.get("/api/maps").get_json()["maps"][0]
+                    self.assertTrue(record["steps"]["1"])
+                    self.assertTrue(record["in_scope"])
+                    self.assertIsNone(record["step1_error"])
+                    self.assertIsNone(record["pipeline_error"])
+                    response = client.post("/api/run", json={
+                        "stem": "sample", "steps": [2],
+                        "model": server.DEFAULT_MODEL,
+                    })
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(server._jobs["sample"]["steps"], [2])
+                server._jobs.pop("sample", None)
+
+    def test_run_remaining_continues_for_supported_map(self):
+        record = {
+            "status": "running", "steps": [1, 2, 3], "current": None,
+            "model": server.DEFAULT_MODEL, "log": [], "error": None,
+        }
+        server._jobs["sample"] = record
+        try:
+            with patch.object(server, "_run_single_step", return_value=None) as run:
+                server._job_worker(
+                    "sample", Path("sample.png"), [1, 2, 3], server.DEFAULT_MODEL)
+            self.assertEqual([call.args[0] for call in run.call_args_list], [1, 2, 3])
+            self.assertEqual(record["status"], "done")
+            self.assertIsNone(record["error"])
+            self.assertFalse(any("PIPELINE STOPPED" in line for line in record["log"]))
+        finally:
+            server._jobs.pop("sample", None)
+
+    def test_run_remaining_stops_after_successful_choropleth_step1(self):
+        semantics = MapSemantics.model_validate(_semantics("choropleth"))
+        record = {
+            "status": "running", "steps": [1, 2, 3], "current": None,
+            "model": server.DEFAULT_MODEL, "log": [], "error": None,
+        }
+        server._jobs["sample"] = record
+        try:
+            with patch.object(server, "_run_single_step", return_value=semantics) as run:
+                server._job_worker(
+                    "sample", Path("sample.png"), [1, 2, 3], server.DEFAULT_MODEL)
+            self.assertEqual(run.call_count, 1)
+            self.assertEqual(run.call_args.args[0], 1)
+            self.assertEqual(record["status"], "done")
+            self.assertIsNone(record["error"])
+            self.assertTrue(any("PIPELINE STOPPED" in line for line in record["log"]))
+        finally:
+            server._jobs.pop("sample", None)
+
+    def test_failed_rerun_retains_existing_valid_choropleth_result(self):
+        with TemporaryDirectory() as directory:
+            maps_dir, runs_dir = self.make_project(
+                Path(directory), _semantics("choropleth"))
+            record = {
+                "status": "running", "steps": [1, 2], "current": None,
+                "model": server.DEFAULT_MODEL, "log": [], "error": None,
+            }
+            server._jobs["sample"] = record
+            try:
+                with patch.object(server, "MAPS_DIR", maps_dir), \
+                        patch.object(server, "RUNS_DIR", runs_dir), \
+                        patch.object(server, "_run_single_step",
+                                     side_effect=ValueError("truncated JSON")) as run:
+                    server._job_worker(
+                        "sample", maps_dir / "sample.png", [1, 2],
+                        server.DEFAULT_MODEL)
+                self.assertEqual(run.call_count, 1)
+                self.assertEqual(record["status"], "done")
+                self.assertIsNone(record["error"])
+                self.assertTrue(any("existing valid Step 1 result was retained" in line
+                                    for line in record["log"]))
+                self.assertTrue(any("choropleth" in line and "out of scope" in line
+                                    for line in record["log"]))
+            finally:
+                server._jobs.pop("sample", None)
+
+    def test_missing_legend_completes_step1_but_blocks_the_pipeline(self):
+        with TemporaryDirectory() as directory:
+            maps_dir, runs_dir = self.make_project(
+                Path(directory), _semantics("isopleth", legend_present=False))
+            with patch.object(server, "MAPS_DIR", maps_dir), \
+                    patch.object(server, "RUNS_DIR", runs_dir):
+                record = server.app.test_client().get(
+                    "/api/maps").get_json()["maps"][0]
+            self.assertTrue(record["steps"]["1"])
+            self.assertTrue(record["in_scope"])
+            self.assertIsNone(record["step1_error"])
+            self.assertIn("no legend was detected", record["pipeline_error"])
+            self.assertTrue(all(not done for step, done in record["steps"].items()
+                                if step != "1"))
+
+            with patch.object(server, "MAPS_DIR", maps_dir), \
+                    patch.object(server, "RUNS_DIR", runs_dir):
+                blocked = server.app.test_client().post("/api/run", json={
+                    "stem": "sample", "steps": [2],
+                    "model": server.DEFAULT_MODEL,
+                })
+            self.assertEqual(blocked.status_code, 409)
+            self.assertIn("no legend was detected", blocked.get_data(as_text=True))
+
+
+if __name__ == "__main__":
+    unittest.main()

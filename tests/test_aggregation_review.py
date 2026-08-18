@@ -2,8 +2,8 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from mapgen.aggregate import (effective_aggregation, load_aggregation_review,
-                              save_aggregation_review)
+from mapgen.aggregate import (_range_label, effective_aggregation,
+                              load_aggregation_review, save_aggregation_review)
 
 
 class CanonicalAggregationReviewTests(unittest.TestCase):
@@ -54,6 +54,11 @@ class CanonicalAggregationReviewTests(unittest.TestCase):
                     {"label": "Forest", "members": [0], "approved": True},
                     {"label": "Cropland", "members": [1], "approved": True},
                 ])
+
+    def test_ordered_range_label_preserves_open_ended_comparator(self):
+        self.assertEqual(_range_label("<= 1", "100 - 250"), "≤ 250")
+        self.assertEqual(_range_label("1500 - 2000", "8000 - 10000"),
+                         "1500–10000")
 
 
 if __name__ == "__main__":

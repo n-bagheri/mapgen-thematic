@@ -1,7 +1,7 @@
 """Step 7 -- Tactile symbol assignment + first tactile master render.
 
-Water always gets the sinusoidal wave and closes the wave group (only the
-triangular wave remains usable when no water exists). Ordered data gets a
+Visible water gets the sinusoidal wave; water represented by the unprinted
+white background remains no-fill. Ordered data gets a
 perceived-order texture ramp; qualitative groups are matched to texture
 groups by meaning (small Gemini call, one DISTINCT texture group per class),
 then all concrete SVG variants are chosen together to maximize the worst
@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 import cv2
@@ -28,15 +29,19 @@ from pydantic import BaseModel, Field
 
 from .isolate import imread, imwrite
 from .output_spec import OutputSpec
-from .patterns import (GROUPS, ORDERED_RAMPS, PATTERNS,
-                       optimize_adjacent_pattern_variants, render_pattern)
-from .semantics import DEFAULT_MODEL, MapSemantics, _ensure_api_key
+from .patterns import (DEFAULT_PATTERN_TRANSFORM, GROUPS, ORDERED_RAMPS, PATTERNS,
+                       normalize_pattern_transform,
+                       optimize_adjacent_pattern_variants,
+                       optimize_user_pattern_change, render_pattern)
+from .semantics import DEFAULT_MODEL, MapSemantics, _ensure_api_key, require_pipeline_eligible
 
 RENDER_PX_PER_MM = 5.0
 
 LINE_STYLES = {  # tactile line symbology per feature kind
     "border": {"width_mm": 1.2, "dash_mm": None, "desc": "thick solid line"},
     "border_or_coast": {"width_mm": 1.2, "dash_mm": None, "desc": "thick solid line"},
+    "coastline": {"width_mm": 1.2, "dash_mm": None, "desc": "thick solid line"},
+    "graticule": {"width_mm": 0.6, "dash_mm": [4.0, 2.0], "desc": "thin dashed line"},
     "river": {"width_mm": 0.6, "dash_mm": None, "desc": "thin solid line"},
     "road": {"width_mm": 0.8, "dash_mm": [3.0, 2.0], "desc": "dashed line"},
     "line": {"width_mm": 0.6, "dash_mm": [2.0, 2.0], "desc": "thin dashed line"},
@@ -94,26 +99,37 @@ def propose_textures(group_labels: list[str], available: list[str], sem: MapSema
 
 def assign_qualitative(groups: list[dict], available: list[str], sem: MapSemantics,
                        model: str | None, notes: list[str]) -> None:
-    """Sets group['texture_group'] for each group, distinct, semantically chosen."""
+    """Set distinct texture families without blocking the rendering pipeline.
+
+    Step 5 has already produced the reviewed semantic grouping.  Calling the
+    language model again here made Step 7 wait for a network timeout (and a
+    retry) before falling back to the same greedy assignment.  Keep that
+    optional proposal behind an explicit opt-in, while the normal pipeline is
+    deterministic and local.
+    """
     labels = [g["label"] for g in groups]
     chosen: dict[str, str] = {}
-    try:
-        plan = propose_textures(labels, available, sem, model)
-        used: set[str] = set()
-        for c in plan.choices:
-            if c.class_label in labels and c.texture_group in available and c.texture_group not in used:
-                chosen[c.class_label] = c.texture_group
-                used.add(c.texture_group)
-                for g in groups:
-                    if g["label"] == c.class_label:
-                        g["texture_rationale"] = c.rationale
-    except Exception as exc:  # noqa: BLE001 - proposal is best-effort
-        notes.append(f"texture proposal failed ({exc}); assigning greedily")
+    use_model = os.environ.get("MAPGEN_STEP7_AI_TEXTURES", "").lower() in {"1", "true", "yes"}
+    if use_model:
+        try:
+            plan = propose_textures(labels, available, sem, model)
+            used: set[str] = set()
+            for c in plan.choices:
+                if c.class_label in labels and c.texture_group in available and c.texture_group not in used:
+                    chosen[c.class_label] = c.texture_group
+                    used.add(c.texture_group)
+                    for g in groups:
+                        if g["label"] == c.class_label:
+                            g["texture_rationale"] = c.rationale
+        except Exception as exc:  # noqa: BLE001 - proposal is best-effort
+            notes.append(f"texture proposal failed ({exc}); assigning deterministically")
+    else:
+        notes.append("texture proposal skipped in Step 7; deterministic assignment used after reviewed aggregation")
     remaining = [t for t in available if t not in chosen.values()]
     for g in groups:
         if g["label"] not in chosen:
             g["texture_group"] = remaining.pop(0) if remaining else "dots"
-            g.setdefault("texture_rationale", "greedy assignment")
+            g.setdefault("texture_rationale", "deterministic assignment after reviewed aggregation")
         else:
             g["texture_group"] = chosen[g["label"]]
 
@@ -144,7 +160,8 @@ def _draw_dashed(canvas: np.ndarray, pts: np.ndarray, thickness: int, dash_px: l
 def render_tactile(label_map: np.ndarray, idx_to_group: dict[int, int],
                    group_patterns: dict[int, str], lines: list[dict],
                    mm_per_px: float, spec: OutputSpec,
-                   include_region_boundaries: bool = True) -> np.ndarray:
+                   include_region_boundaries: bool = True,
+                   group_transforms: dict[int, dict] | None = None) -> np.ndarray:
     h, w = label_map.shape
     scale = mm_per_px * RENDER_PX_PER_MM
     W2, H2 = int(round(w * scale)), int(round(h * scale))
@@ -160,7 +177,10 @@ def render_tactile(label_map: np.ndarray, idx_to_group: dict[int, int],
         region = gmap == gid
         if not region.any() or pid == "plain":
             continue
-        rendered_pattern = render_pattern(pid, (H2, W2), RENDER_PX_PER_MM)
+        rendered_pattern = render_pattern(
+            pid, (H2, W2), RENDER_PX_PER_MM,
+            (group_transforms or {}).get(gid),
+        )
         canvas[region] = rendered_pattern[region]
 
     if include_region_boundaries:
@@ -188,6 +208,57 @@ def render_tactile(label_map: np.ndarray, idx_to_group: dict[int, int],
         else:
             cv2.polylines(canvas, [np.int32(pts)], False, 0, thickness)
     return canvas
+
+
+def _hex_to_bgr(value: object) -> tuple[int, int, int] | None:
+    text = str(value or "").strip()
+    if not re.fullmatch(r"#[0-9a-fA-F]{6}", text):
+        return None
+    return tuple(int(text[index:index + 2], 16) for index in (5, 3, 1))
+
+
+def render_hybrid_from_tactile(out_dir: Path, tactile: np.ndarray,
+                               output_name: str) -> bool:
+    """Colour regions underneath a saved black tactile layer."""
+    symbols = json.loads((out_dir / "symbols.json").read_text(encoding="utf-8"))
+    assignments = symbols["area_assignments"]
+    colors = {group: _hex_to_bgr(item.get("color"))
+              for group, item in enumerate(assignments)}
+    if not any(colors.values()):
+        (out_dir / output_name).unlink(missing_ok=True)
+        return False
+    label_map = imread(out_dir / "label_map_gen.png")[..., 0].astype(np.int16) - 1
+    idx_to_group = {int(index): group for group, item in enumerate(assignments)
+                    for index in item.get("members", [])}
+    scaled = cv2.resize((label_map + 1).astype(np.uint8),
+                        (tactile.shape[1], tactile.shape[0]), interpolation=cv2.INTER_NEAREST)
+    lut = np.full(256, -1, np.int16)
+    for index, group in idx_to_group.items():
+        lut[index + 1] = group
+    groups = lut[scaled]
+    hybrid = np.full((*tactile.shape, 3), 255, np.uint8)
+    for group, color in colors.items():
+        if color is not None:
+            hybrid[groups == group] = color
+    # Exact print stack: category colour, black tactile pattern, white boundary
+    # clearance, then the centered black boundary stroke.
+    hybrid[tactile < 128] = (0, 0, 0)
+    white_mask_path = out_dir / "step8_white_stroke_mask.png"
+    if white_mask_path.exists():
+        white_mask = imread(white_mask_path)[..., 0]
+        if white_mask.shape != tactile.shape:
+            white_mask = cv2.resize(white_mask, (tactile.shape[1], tactile.shape[0]),
+                                    interpolation=cv2.INTER_NEAREST)
+        hybrid[white_mask > 0] = (255, 255, 255)
+    black_mask_path = out_dir / "step8_black_stroke_mask.png"
+    if black_mask_path.exists():
+        black_mask = imread(black_mask_path)[..., 0]
+        if black_mask.shape != tactile.shape:
+            black_mask = cv2.resize(black_mask, (tactile.shape[1], tactile.shape[0]),
+                                    interpolation=cv2.INTER_NEAREST)
+        hybrid[black_mask > 0] = (0, 0, 0)
+    imwrite(out_dir / output_name, hybrid)
+    return True
 
 
 def _point(values: list[float] | tuple[float, float]) -> list[float]:
@@ -288,7 +359,10 @@ def write_overlay_labels(out_dir: Path) -> dict:
 
     label_map = imread(out_dir / "label_map_gen.png")[..., 0]
     canvas = imread(out_dir / "step7_tactile.png")
-    summary5 = json.loads((out_dir / "step5_summary.json").read_text(encoding="utf-8"))
+    summary_path = (out_dir / "step6_summary.json"
+                    if (out_dir / "step6_summary.json").exists()
+                    else out_dir / "step5_summary.json")
+    summary6 = json.loads(summary_path.read_text(encoding="utf-8"))
     raw_path = out_dir / "labels.json"
     raw_json = (json.loads(raw_path.read_text(encoding="utf-8"))
                 if raw_path.exists() else {"labels": []})
@@ -307,7 +381,7 @@ def write_overlay_labels(out_dir: Path) -> dict:
         labels_json,
         source_shape=label_map.shape[:2],
         canvas_shape=canvas.shape[:2],
-        mm_per_px=float(summary5["scale_mm_per_px"]),
+        mm_per_px=float(summary6["scale_mm_per_px"]),
     )
     result["review_source"] = labels_path.name
     (out_dir / "overlay_labels.json").write_text(
@@ -318,24 +392,199 @@ def write_overlay_labels(out_dir: Path) -> dict:
 
 # --------------------------------------------------------------------------- runner
 
+def resolve_group_raster_indices(classes: list[dict], source_members: list[int]) -> list[int]:
+    """Map Step 4 class ids to the corresponding aggregated Step 6 raster id."""
+    wanted = {int(index) for index in source_members}
+    matches = [int(cl["index"]) for cl in classes
+               if {int(index) for index in cl.get("members", [cl["index"]])} == wanted]
+    return matches or [int(index) for index in source_members]
+
+
+def _assignment_transform_key(assignment: dict) -> tuple[int, ...]:
+    return tuple(sorted(int(index) for index in assignment.get(
+        "source_members", assignment.get("members", []))))
+
+
+def load_pattern_transforms(out_dir: Path) -> dict[tuple[int, ...], dict[str, float]]:
+    """Load saved per-area transforms, indexed by stable Step 4 membership."""
+
+    path = out_dir / "pattern_transforms.json"
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return {
+            tuple(sorted(int(index) for index in item.get("source_members", []))):
+                normalize_pattern_transform(item.get("transform"))
+            for item in payload.get("groups", [])
+            if item.get("source_members")
+        }
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return {}
+
+
+def save_pattern_transforms(out_dir: Path, assignments: list[dict]) -> dict:
+    """Persist transforms separately so SVG source assets remain immutable."""
+
+    payload = {
+        "version": 1,
+        "coordinate_contract": {
+            "scale": "percent layered over the Illustrator SVG patternTransform",
+            "move": "millimetres in final tactile-map coordinates",
+            "rotate": "degrees clockwise in SVG canvas coordinates",
+        },
+        "groups": [{
+            "group_id": group_id,
+            "label": assignment.get("label", f"group {group_id}"),
+            "pattern": assignment["pattern"],
+            "source_members": list(_assignment_transform_key(assignment)),
+            "transform": normalize_pattern_transform(assignment.get("transform")),
+        } for group_id, assignment in enumerate(assignments)],
+    }
+    (out_dir / "pattern_transforms.json").write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return payload
+
+
+def reassign_step7_pattern(out_dir: Path, symbols: dict, group_id: int,
+                           pattern_id: str) -> dict:
+    """Lock one user's pattern choice and re-optimize every other area."""
+
+    assignments = symbols.get("area_assignments", [])
+    if group_id < 0 or group_id >= len(assignments):
+        raise ValueError(f"Unknown Step 7 area: {group_id}")
+    if pattern_id not in PATTERNS:
+        raise ValueError(f"Unknown pattern: {pattern_id}")
+
+    label_map = imread(out_dir / "label_map_gen.png")[..., 0].astype(np.int16) - 1
+    assignment_group_map = np.full(label_map.shape, -1, np.int32)
+    for assignment_id, assignment in enumerate(assignments):
+        for class_index in assignment.get("members", []):
+            assignment_group_map[label_map == int(class_index)] = assignment_id
+
+    current = {
+        assignment_id: assignment["pattern"]
+        for assignment_id, assignment in enumerate(assignments)
+    }
+    optimized, audit = optimize_user_pattern_change(
+        assignment_group_map, current, group_id, pattern_id,
+    )
+    for assignment_id, assignment in enumerate(assignments):
+        old_pattern = assignment["pattern"]
+        chosen_pattern = optimized[assignment_id]
+        family = PATTERNS[chosen_pattern]["group"]
+        assignment.setdefault("pipeline_rationale", assignment.get("rationale", ""))
+        assignment["pattern"] = chosen_pattern
+        assignment["pattern_desc"] = PATTERNS[chosen_pattern]["desc"]
+        assignment["pattern_family"] = family
+        assignment["pattern_candidates"] = (
+            [chosen_pattern] if assignment_id == group_id else
+            list(GROUPS[family]) if family != "none" else ["plain"]
+        )
+        assignment["user_locked"] = assignment_id == group_id
+        if assignment_id == group_id:
+            assignment["rationale"] = (
+                "user-selected pattern; all remaining pattern variants were "
+                "globally reoptimized for adjacent-area haptic distance"
+            )
+        elif chosen_pattern != old_pattern:
+            assignment["rationale"] = (
+                "reassigned after a user pattern change to preserve unique "
+                "pattern families and maximize adjacent-area haptic distance"
+            )
+        else:
+            assignment["rationale"] = assignment["pipeline_rationale"]
+
+    symbols["pattern_optimization"] = audit
+    symbols["last_user_pattern_change"] = {
+        "group_id": group_id,
+        "pattern": pattern_id,
+    }
+    return symbols
+
+
+def rerender_step7_artifacts(out_dir: Path, symbols: dict | None = None) -> dict:
+    """Re-render saved Step 7 assignments locally, without another model call."""
+
+    symbols_path = out_dir / "symbols.json"
+    if symbols is None:
+        symbols = json.loads(symbols_path.read_text(encoding="utf-8"))
+    assignments = symbols["area_assignments"]
+    for assignment in assignments:
+        assignment["transform"] = normalize_pattern_transform(assignment.get("transform"))
+    symbols_path.write_text(
+        json.dumps(symbols, indent=2, ensure_ascii=False), encoding="utf-8")
+    save_pattern_transforms(out_dir, assignments)
+
+    classes = json.loads((out_dir / "classes_gen.json").read_text(encoding="utf-8"))["classes"]
+    summary6 = json.loads((out_dir / "step6_summary.json").read_text(encoding="utf-8"))
+    lines = [feature["properties"] | {"points": feature["geometry"]["coordinates"]}
+             for feature in json.loads(
+                 (out_dir / "lines_gen.geojson").read_text(encoding="utf-8"))["features"]]
+    label_map = imread(out_dir / "label_map_gen.png")[..., 0].astype(np.int16) - 1
+    idx_to_group = {
+        int(class_index): group_id
+        for group_id, assignment in enumerate(assignments)
+        for class_index in assignment.get("members", [])
+    }
+    group_patterns = {
+        group_id: assignment["pattern"]
+        for group_id, assignment in enumerate(assignments)
+    }
+    group_transforms = {
+        group_id: assignment["transform"]
+        for group_id, assignment in enumerate(assignments)
+    }
+    canvas = render_tactile(
+        label_map, idx_to_group, group_patterns, lines,
+        summary6["scale_mm_per_px"], OutputSpec.load_or_create(),
+        group_transforms=group_transforms,
+    )
+    imwrite(out_dir / "step7_tactile.png", canvas)
+    render_hybrid_from_tactile(out_dir, canvas, "step7_hybrid.png")
+    overlay_labels = write_overlay_labels(out_dir)
+
+    recon = np.full((*label_map.shape, 3), 255, np.uint8)
+    for category in classes:
+        if category["area_px"] > 0:
+            recon[label_map == category["index"]] = np.uint8(category["rgb"][::-1])
+    recon = cv2.resize(recon, (canvas.shape[1], canvas.shape[0]),
+                       interpolation=cv2.INTER_NEAREST)
+    debug = np.hstack([recon, cv2.cvtColor(canvas, cv2.COLOR_GRAY2BGR)])
+    if debug.shape[1] > 2200:
+        scale = 2200 / debug.shape[1]
+        debug = cv2.resize(debug, None, fx=scale, fy=scale,
+                           interpolation=cv2.INTER_AREA)
+    imwrite(out_dir / "step7_debug.png", debug)
+    return {
+        "canvas_px": [canvas.shape[1], canvas.shape[0]],
+        "overlay_labels": len(overlay_labels["labels"]),
+    }
+
+
 def run_step7(image_path: Path, model: str | None = None, runs_dir: Path = Path("runs")) -> dict:
-    from .aggregate import effective_aggregation, run_step6
+    from .aggregate import effective_aggregation, run_step5
+    from .postprocess import run_step6_presets
 
     out_dir = runs_dir / image_path.stem
     if not (out_dir / "aggregation.json").exists():
-        run_step6(image_path, model=model, runs_dir=runs_dir)
+        run_step5(image_path, model=model, runs_dir=runs_dir)
+    if not (out_dir / "label_map_gen.png").exists():
+        run_step6_presets(image_path, model=model, runs_dir=runs_dir)
 
     spec = OutputSpec.load_or_create()
     sem = MapSemantics.model_validate_json((out_dir / "step1_semantics.json").read_text(encoding="utf-8"))
+    require_pipeline_eligible(sem, "Step 7")
     agg = json.loads((out_dir / "aggregation.json").read_text(encoding="utf-8"))
     agg = effective_aggregation(out_dir, agg)
     classes = json.loads((out_dir / "classes_gen.json").read_text(encoding="utf-8"))["classes"]
-    summary5 = json.loads((out_dir / "step5_summary.json").read_text(encoding="utf-8"))
+    summary6 = json.loads((out_dir / "step6_summary.json").read_text(encoding="utf-8"))
     lines = [f["properties"] | {"points": f["geometry"]["coordinates"]}
              for f in json.loads((out_dir / "lines_gen.geojson").read_text(encoding="utf-8"))["features"]]
     label_map = imread(out_dir / "label_map_gen.png")[..., 0].astype(np.int16) - 1
 
     notes: list[str] = list(agg.get("notes", []))
+    saved_transforms = load_pattern_transforms(out_dir)
     groups = [dict(g) for g in agg["groups"]]
     water = agg["water"]
     assignments: list[dict] = []
@@ -344,15 +593,22 @@ def run_step7(image_path: Path, model: str | None = None, runs_dir: Path = Path(
     pattern_candidates: dict[int, tuple[str, ...]] = {}
     gid = 0
 
+    textured_water = bool(water) and not bool(water.get("is_background"))
     if water:
-        group_patterns[gid] = "04_waves_sine"
-        pattern_candidates[gid] = ("04_waves_sine",)
-        for idx in water["members"]:
+        raster_ids = resolve_group_raster_indices(classes, water["members"])
+        water_pattern = "04_waves_sine" if textured_water else "plain"
+        group_patterns[gid] = water_pattern
+        pattern_candidates[gid] = (water_pattern,)
+        for idx in raster_ids:
             idx_to_group[idx] = gid
-        assignments.append({"label": water["label"], "members": water["members"],
-                            "pattern": "04_waves_sine",
-                            "pattern_desc": PATTERNS["04_waves_sine"]["desc"],
-                            "rationale": "water always gets the wavy pattern", "is_thematic": False})
+        assignments.append({"label": water["label"], "members": raster_ids,
+                            "source_members": water["members"],
+                            "pattern": water_pattern,
+                            "pattern_desc": PATTERNS[water_pattern]["desc"],
+                            "rationale": ("visible water uses the wavy pattern" if textured_water
+                                          else "white background water is intentionally unfilled"),
+                            "is_thematic": False, "is_background": not textured_water,
+                            "legend_visible": textured_water})
         gid += 1
 
     if sem.data_ordering.value == "ordered":
@@ -361,7 +617,7 @@ def run_step7(image_path: Path, model: str | None = None, runs_dir: Path = Path(
             g["pattern"] = pid
             g["texture_rationale"] = "perceived-order texture ramp (ordered data)"
     else:
-        available = ["dots", "lines", "grids", "solids"] + ([] if water else ["waves"])
+        available = ["dots", "lines", "grids", "solids"] + ([] if textured_water else ["waves"])
         assign_qualitative(groups, available, sem, model, notes)
         for g in groups:
             tg = g["texture_group"]
@@ -372,44 +628,36 @@ def run_step7(image_path: Path, model: str | None = None, runs_dir: Path = Path(
 
     for g in groups:
         candidates = tuple(g.get("pattern_candidates", (g["pattern"],)))
+        raster_ids = resolve_group_raster_indices(classes, g["members"])
         group_patterns[gid] = g["pattern"]
         pattern_candidates[gid] = candidates
-        for idx in g["members"]:
+        for idx in raster_ids:
             idx_to_group[idx] = gid
-        assignments.append({"label": g["label"], "members": g["members"], "pattern": g["pattern"],
+        assignments.append({"label": g["label"], "members": raster_ids,
+                            "source_members": g["members"], "pattern": g["pattern"],
                             "pattern_desc": PATTERNS[g["pattern"]]["desc"],
                             "rationale": g.get("texture_rationale", g.get("rationale", "")),
-                            "is_thematic": True})
+                            "is_thematic": True, "legend_visible": True})
         gid += 1
 
-    # non-thematic extras: pattern only if slots remain, else plain (still bounded)
-    remaining_slots = spec.constants.max_area_textures - len(
-        [a for a in assignments if a["pattern"] != "plain"])
-    extras = sorted(agg["non_thematic_extra"], key=lambda e: (e["priority"] is None, e["priority"]))
-    used_families = {
-        PATTERNS[assignment["pattern"]]["group"]
-        for assignment in assignments
-        if PATTERNS[assignment["pattern"]]["group"] != "none"
-    }
-    unused_groups = [t for t in ["dots", "lines", "grids", "solids"]
-                     if t not in used_families]
-    for e in extras:
-        if remaining_slots > 0 and unused_groups:
-            family = unused_groups.pop(0)
-            candidates = tuple(GROUPS[family])
-            pid = candidates[0]
-            remaining_slots -= 1
-            rationale = "spare texture slot assigned by priority"
-        else:
-            candidates = ("plain",)
-            pid = "plain"
-            rationale = "no texture slots left"
-        group_patterns[gid] = pid
-        pattern_candidates[gid] = candidates
-        idx_to_group[e["index"]] = gid
-        assignments.append({"label": e["label"], "members": [e["index"]], "pattern": pid,
-                            "pattern_desc": PATTERNS[pid]["desc"], "rationale": rationale,
-                            "is_thematic": False})
+    # Every non-thematic class other than deliberately retained water is the
+    # page/map background. It is smooth, uses no texture slot, and is hidden
+    # from the legend. Thematic ``plain`` assignments above stay legendable.
+    background_ids = [int(c["index"]) for c in classes
+                      if c["area_px"] > 0 and not c.get("is_thematic")
+                      and int(c["index"]) not in idx_to_group]
+    if background_ids:
+        group_patterns[gid] = "plain"
+        pattern_candidates[gid] = ("plain",)
+        for idx in background_ids:
+            idx_to_group[idx] = gid
+        assignments.append({"label": "background / no fill", "members": background_ids,
+                            "source_members": [int(c["index"]) for c in classes
+                                               if int(c["index"]) in background_ids],
+                            "pattern": "plain", "pattern_desc": PATTERNS["plain"]["desc"],
+                            "rationale": "non-thematic background is intentionally unfilled",
+                            "is_thematic": False, "is_background": True,
+                            "legend_visible": False})
         gid += 1
 
     # any surviving class not covered keeps its own plain region (boundaries still embossed)
@@ -420,7 +668,8 @@ def run_step7(image_path: Path, model: str | None = None, runs_dir: Path = Path(
             idx_to_group[c["index"]] = gid
             assignments.append({"label": c["label"], "members": [c["index"]], "pattern": "plain",
                                 "pattern_desc": PATTERNS["plain"]["desc"],
-                                "rationale": "uncovered class kept plain", "is_thematic": False})
+                                "rationale": "uncovered thematic class kept plain", "is_thematic": True,
+                                "legend_visible": True})
             gid += 1
 
     assignment_group_map = np.full(label_map.shape, -1, np.int32)
@@ -444,32 +693,26 @@ def run_step7(image_path: Path, model: str | None = None, runs_dir: Path = Path(
                 if base_rationale else selection_rationale
             )
 
+        assignment["transform"] = saved_transforms.get(
+            _assignment_transform_key(assignment), dict(DEFAULT_PATTERN_TRANSFORM))
+
+    color_path = out_dir / "category_colors.json"
+    saved_colors = (json.loads(color_path.read_text(encoding="utf-8")).get("colors", {})
+                    if color_path.exists() else {})
+    for assignment in assignments:
+        color = saved_colors.get(assignment.get("label"))
+        if _hex_to_bgr(color) is not None:
+            assignment["color"] = color.upper()
+
     line_styles = {k: LINE_STYLES.get(k, LINE_STYLES["line"]) for k in {ln["kind"] for ln in lines}}
-    (out_dir / "symbols.json").write_text(json.dumps({
+    symbols = {
         "area_assignments": assignments,
         "pattern_optimization": pattern_optimization,
         "line_styles": line_styles,
         "render_px_per_mm": RENDER_PX_PER_MM,
         "notes": notes,
-    }, indent=2, ensure_ascii=False), encoding="utf-8")
-
-    canvas = render_tactile(label_map, idx_to_group, group_patterns, lines,
-                            summary5["scale_mm_per_px"], spec)
-    imwrite(out_dir / "step7_tactile.png", canvas)
-    overlay_labels = write_overlay_labels(out_dir)
-
-    # debug: generalized color map | tactile render
-    recon = np.full((*label_map.shape, 3), 255, np.uint8)
-    for c in classes:
-        if c["area_px"] > 0:
-            recon[label_map == c["index"]] = np.uint8(c["rgb"][::-1])
-    recon = cv2.resize(recon, (canvas.shape[1], canvas.shape[0]), interpolation=cv2.INTER_NEAREST)
-    dbg = np.hstack([recon, cv2.cvtColor(canvas, cv2.COLOR_GRAY2BGR)])
-    if dbg.shape[1] > 2200:
-        s = 2200 / dbg.shape[1]
-        dbg = cv2.resize(dbg, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
-    imwrite(out_dir / "step7_debug.png", dbg)
+    }
+    render_result = rerender_step7_artifacts(out_dir, symbols)
 
     return {"out_dir": out_dir, "assignments": assignments, "notes": notes,
-            "canvas_px": [canvas.shape[1], canvas.shape[0]],
-            "overlay_labels": len(overlay_labels["labels"])}
+            **render_result}

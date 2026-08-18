@@ -6,8 +6,10 @@ from pathlib import Path
 import numpy as np
 
 from mapgen.boundaries import (apply_boundary_strokes, boundary_centerline,
-                               closed_pattern_centerline, run_step8,
-                               open_endpoint_count, select_boundary_pairs)
+                               closed_pattern_centerline,
+                               discard_open_centerline_branches, run_step8,
+                               open_endpoint_count, repair_tiny_centerline_gaps,
+                               select_boundary_pairs)
 from mapgen.isolate import imwrite
 
 
@@ -68,13 +70,14 @@ class BoundarySelectionTests(unittest.TestCase):
         group_map[5:10, 19:27] = 0
         group_map[8:12, 9:13] = -1  # a hole must also be closed
 
-        centerline, contour_count, closure_pairs, black_components = closed_pattern_centerline(
+        centerline, contour_count, closure_pairs, black_components, repaired = closed_pattern_centerline(
             group_map, {0: "wave_sine"}, {"wave_sine"},
         )
 
         self.assertGreaterEqual(contour_count, 2)
         self.assertEqual(closure_pairs, set())
         self.assertEqual(black_components, 0)
+        self.assertEqual(repaired, 0)
         self.assertEqual(open_endpoint_count(centerline), 0)
 
     def test_shared_active_pattern_junctions_stay_closed_after_thinning(self):
@@ -84,7 +87,7 @@ class BoundarySelectionTests(unittest.TestCase):
         group_map[20:34, 18:40] = 2
         group_map[11:16, 8:13] = -1
 
-        centerline, contour_count, _, _ = closed_pattern_centerline(
+        centerline, contour_count, _, _, _ = closed_pattern_centerline(
             group_map,
             {0: "wave_sine", 1: "dots_sparse", 2: "lines_horizontal"},
             {"wave_sine", "dots_sparse", "lines_horizontal"},
@@ -93,12 +96,26 @@ class BoundarySelectionTests(unittest.TestCase):
         self.assertGreaterEqual(contour_count, 4)
         self.assertEqual(open_endpoint_count(centerline), 0)
 
+    def test_sub_resolution_pattern_sliver_does_not_create_open_contour(self):
+        group_map = np.full((24, 36), -1, dtype=np.int16)
+        # A three-pixel-tall rasterization remnant cannot carry an embossed
+        # boundary at the render scale and previously yielded a dangling end.
+        group_map[10:13, 8:20] = 0
+
+        centerline, contour_count, _, _, _ = closed_pattern_centerline(
+            group_map, {0: "wave_sine"}, {"wave_sine"},
+        )
+
+        self.assertEqual(contour_count, 0)
+        self.assertFalse(centerline.any())
+        self.assertEqual(open_endpoint_count(centerline), 0)
+
     def test_black_component_carries_selected_boundary_around_outside(self):
         group_map = np.full((32, 42), -1, dtype=np.int16)
         group_map[8:28, 4:22] = 0
         group_map[0:21, 22:38] = 1
 
-        centerline, contour_count, closure_pairs, black_components = closed_pattern_centerline(
+        centerline, contour_count, closure_pairs, black_components, _ = closed_pattern_centerline(
             group_map,
             {0: "dots_sparse", 1: "solid_black"},
             {"dots_sparse"},
@@ -109,11 +126,70 @@ class BoundarySelectionTests(unittest.TestCase):
         self.assertIn((-1, 1), closure_pairs)
         self.assertEqual(open_endpoint_count(centerline), 0)
 
+    def test_tiny_same_contour_gap_is_repaired_without_joining_regions(self):
+        centerline = np.zeros((20, 20), dtype=np.uint8)
+        # A diagonal pinch leaves a short spur connected to an otherwise
+        # closed loop. It is one connected network, but has one endpoint.
+        centerline[5:14, 5] = 255
+        centerline[5:14, 13] = 255
+        centerline[5, 5:14] = 255
+        centerline[13, 5:14] = 255
+        centerline[2, 2] = 255
+        centerline[3, 2] = 255
+        centerline[4, 3] = 255
+        centerline[5, 4] = 255
+
+        repaired, bridges = repair_tiny_centerline_gaps(centerline)
+
+        self.assertEqual(open_endpoint_count(centerline), 1)
+        self.assertEqual(bridges, 1)
+        self.assertEqual(open_endpoint_count(repaired), 0)
+
+    def test_open_raster_spur_is_discarded_without_removing_closed_outline(self):
+        centerline = np.zeros((24, 24), dtype=np.uint8)
+        centerline[6, 6:18] = 255
+        centerline[17, 6:18] = 255
+        centerline[6:18, 6] = 255
+        centerline[6:18, 17] = 255
+        centerline[3:7, 11] = 255
+
+        cleaned, removed = discard_open_centerline_branches(centerline)
+
+        self.assertGreater(removed, 0)
+        self.assertEqual(open_endpoint_count(cleaned), 0)
+        self.assertEqual(cleaned[17, 17], 255)
+
     def test_step8_runner_writes_final_raster_and_audit(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             run_dir = root / "runs" / "sample"
             run_dir.mkdir(parents=True)
+            (run_dir / "step1_semantics.json").write_text(json.dumps({
+                "map_type": "area_class_chorochromatic",
+                "in_scope": True,
+                "data_ordering": "qualitative",
+                "map_language": "English",
+                "subject": "Synthetic map",
+                "description": "Synthetic map for boundary rendering.",
+                "title": None,
+                "legend_present": True,
+                "legend_title": "Classes",
+                "legend_entries": [{
+                    "label": "Crops", "color_hint": "green", "is_thematic": True,
+                }],
+                "water_present": True,
+                "thematic_classes": [{
+                    "label": "Crops", "priority": 1,
+                    "approx_area_share_percent": 50.0,
+                }],
+                "non_thematic": [],
+                "lines": [],
+                "overlay_text": {
+                    "has_city_labels": False, "capital_city": None,
+                    "has_region_labels": False, "has_line_labels": False,
+                    "notes": "",
+                },
+            }), encoding="utf-8")
             source_labels = np.array([
                 [1, 1, 2, 2, 3, 3],
                 [1, 1, 2, 2, 3, 3],

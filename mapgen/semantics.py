@@ -100,7 +100,7 @@ class OverlayTextExpectation(BaseModel):
 class MapSemantics(BaseModel):
     map_type: MapType
     in_scope: bool = Field(
-        description="True if area_class_chorochromatic, choropleth, or isopleth"
+        description="True only for area_class_chorochromatic or isopleth maps"
     )
     data_ordering: DataOrdering
     map_language: str = Field(
@@ -119,7 +119,12 @@ class MapSemantics(BaseModel):
         description="Heading above the legend swatches, verbatim; null if absent",
     )
     legend_entries: list[LegendEntry]
-    water_present: bool = Field(description="True if any water area (sea, lake, wide river polygon) is visible")
+    water_present: bool = Field(
+        description=(
+            "True only when water is a separately styled non-thematic area; "
+            "false when the mapped theme itself continues across seas or oceans"
+        )
+    )
     thematic_classes: list[ThematicClass]
     non_thematic: list[NonThematicFeature]
     lines: list[LineFeature]
@@ -157,10 +162,40 @@ class MapSemantics(BaseModel):
             # Scope is deterministic. Correct both old cached values and any
             # inconsistent value returned by a model.
             data["in_scope"] = data.get("map_type") in {
-                "area_class_chorochromatic", "choropleth", "isopleth",
-                "classed_sequential",
+                "area_class_chorochromatic", "isopleth", "classed_sequential",
             }
         return data
+
+
+class MissingLegendError(ValueError):
+    """Raised when the pipeline cannot continue without a source legend."""
+
+
+class OutOfScopeMapError(ValueError):
+    """Raised when a downstream step is requested for an unsupported map."""
+
+
+def require_pipeline_eligible(sem: MapSemantics, step_name: str = "The pipeline") -> MapSemantics:
+    """Reject semantics that cannot be consumed by Steps 2 and later."""
+    if not sem.in_scope:
+        raise OutOfScopeMapError(
+            f"{step_name} cannot run: Step 1 classified map type "
+            f"'{sem.map_type.value}' as out of scope. Only chorochromatic "
+            "and isopleth maps are supported."
+        )
+    if not sem.legend_present:
+        raise MissingLegendError(
+            "The tactile-map pipeline cannot continue: no legend was detected; "
+            "a visible legend is required to identify and symbolize the map classes."
+        )
+    return sem
+
+
+def load_pipeline_semantics(out_dir: Path, step_name: str = "The pipeline") -> MapSemantics:
+    """Load Step 1 semantics and enforce the global downstream gate."""
+    sem = MapSemantics.model_validate_json(
+        (out_dir / "step1_semantics.json").read_text(encoding="utf-8"))
+    return require_pipeline_eligible(sem, step_name)
 
 
 # --------------------------------------------------------------------------- prompt
@@ -179,7 +214,8 @@ fill the response schema. Rules:
   filled-contour maps where areas are ordered bins of one continuous variable
   (e.g. temperature or precipitation ranges) and the area boundaries are
   derived from that variable rather than administrative units.
-- All three supported map types above are in scope.
+- Only 'area_class_chorochromatic' and 'isopleth' maps are in scope.
+  'choropleth' and 'other' maps are out of scope.
 - data_ordering is 'ordered' exactly when the classes form a natural sequence.
 - map_language: identify the language used for the written text on the map.
   Read all visible text, especially the title, legend heading, legend labels,
@@ -192,14 +228,26 @@ fill the response schema. Rules:
   transcribed verbatim from top to bottom. Never include "Legend", the legend
   title, units, explanatory headings, or source text as entries. Mark swatch
   rows that are not the mapped theme (water, no data) as is_thematic=false.
+- A visible legend is required for this pipeline. Set legend_present=false
+  when there is no legend; Step 1 will record that result and the pipeline
+  must stop before Step 2.
 - thematic_classes: every distinct thematic class shown on the MAP (normally
   the thematic legend entries). Priorities: 1 = most important for
   understanding this map. When two classes are otherwise equal, the one
   covering LESS area gets the lower priority (larger number).
-- non_thematic: everything colored on the map that is not the theme --
-  water areas, surrounding countries, no-data regions. Water is ALWAYS
-  priority 1 when present, even if it is not in the legend. Rank the rest by
-  how much a tactile reader of this specific map needs them.
+- First decide where the thematic encoding applies. A geographic feature is
+  NOT automatically non-thematic. In particular, when the mapped variable's
+  legend colors continue across coastlines into oceans or seas, those colored
+  ocean/sea areas are thematic data. Do not list ocean/sea as non_thematic in
+  that case, and set water_present=false.
+- water_present means that water is visibly separated from the theme by its
+  own uniform/background styling (for example, a uniform blue sea omitted
+  from the thematic legend). It does not merely mean that the mapped extent
+  geographically contains an ocean, sea, lake, or river.
+- non_thematic: everything visibly styled on the map but not encoded by the
+  mapped theme -- separately styled water, surrounding countries, no-data
+  regions. Separately styled water is priority 1 when present. Rank the rest
+  by how much a tactile reader of this specific map needs them.
 - lines: report only explicit geographic linework visibly drawn with a
   distinct solid, dashed, or dotted stroke, such as administrative borders,
   rivers, roads, coastlines, or graticules. A line must be visually
@@ -356,24 +404,31 @@ def interpret_map(image_path: Path, model: str | None = None,
 
 def postprocess(sem: MapSemantics) -> MapSemantics:
     """Enforce invariants the model may get wrong; deterministic, no AI."""
-    sem.in_scope = sem.map_type in (MapType.area_class, MapType.choropleth, MapType.isopleth)
+    sem.in_scope = sem.map_type in (MapType.area_class, MapType.isopleth)
 
-    # Water: ensure a priority-1 non-thematic entry exists whenever water is visible.
+    # ``water_present`` means separately styled non-thematic water, not merely
+    # that a sea or ocean is geographically visible.  Resolve contradictory
+    # model output in favour of that explicit boolean so thematic ocean data
+    # can never be turned into a synthetic water class downstream.
     water_words = ("water", "sea", "ocean", "lake", "gulf")
     waters = [f for f in sem.non_thematic if any(w in f.name.lower() for w in water_words)]
-    if sem.water_present and not waters:
+    if not sem.water_present:
+        sem.non_thematic = [f for f in sem.non_thematic if f not in waters]
+    elif not waters:
         sem.non_thematic.insert(0, NonThematicFeature(
             name="water", color_hint="blue", priority=1,
-            reason="added by postprocess: water_present but no water entry returned",
+            reason="added by postprocess: separately styled water was reported",
         ))
-    for f in waters:
-        f.priority = 1
+    for f in sem.non_thematic:
+        if any(w in f.name.lower() for w in water_words):
+            f.priority = 1
 
     # Deterministic order; resolve duplicate priorities by area (smaller -> lower priority).
     sem.thematic_classes.sort(key=lambda c: (c.priority, -c.approx_area_share_percent))
     for i, c in enumerate(sem.thematic_classes, start=1):
         c.priority = i
     sem.non_thematic.sort(key=lambda f: f.priority)
+
     return sem
 
 
@@ -386,20 +441,22 @@ def save_semantics(sem: MapSemantics, image_path: Path, runs_dir: Path = Path("r
 
 
 def semantics_artifact_is_current(path: Path) -> bool:
-    """Return whether a cached Step 1 artifact records a detected language.
+    """Return whether Step 1 produced a complete, schema-valid artifact.
 
-    MapSemantics deliberately upgrades old artifacts to ``unknown`` so later
-    stages remain readable. That compatibility behavior must not make the UI
-    consider a legacy artifact complete: it needs one Step 1 rerun to obtain
-    the model's language assessment.
+    ``unknown`` is a valid semantic result when the source contains no readable
+    natural-language text.  Legacy artifacts that do not contain the
+    ``map_language`` field still need one rerun; check the raw JSON before
+    validation because MapSemantics upgrades those artifacts for downstream
+    compatibility.
     """
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        if not isinstance(raw, dict):
+            return False
+        language = raw.get("map_language")
+        if not isinstance(language, str) or not language.strip():
+            return False
+        sem = MapSemantics.model_validate(raw)
+    except (OSError, json.JSONDecodeError, ValidationError):
         return False
-    language = raw.get("map_language")
-    return (
-        isinstance(language, str)
-        and bool(language.strip())
-        and language.strip().lower() != "unknown"
-    )
+    return True

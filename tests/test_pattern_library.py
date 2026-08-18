@@ -6,7 +6,8 @@ import numpy as np
 
 from mapgen.patterns import (GROUPS, ORDERED_RAMPS, PATTERNS, haptic_distance,
                              haptic_embeddings, optimize_adjacent_pattern_variants,
-                             pick_pattern, render_pattern)
+                             optimize_user_pattern_change, pick_pattern,
+                             render_pattern)
 from pattern_library import PatternLibrary, mm_to_pt, pt_to_mm
 
 
@@ -171,6 +172,44 @@ class PatternLibraryTests(unittest.TestCase):
         self.assertEqual(audit["excluded_plain_or_black_adjacencies"], 4)
         excluded = [edge for edge in audit["edges"] if not edge["eligible"]]
         self.assertTrue(all(edge["distance"] is None for edge in excluded))
+
+    def test_user_choice_is_locked_and_a_conflicting_family_is_reassigned(self):
+        group_map = np.array([
+            [0, 0, 1, 1],
+            [0, 2, 2, 1],
+        ], dtype=np.int32)
+        current = {
+            0: "03_lines_vertical",
+            1: "01_noise_splash",
+            2: "02_grid_dots",
+        }
+
+        assignment, audit = optimize_user_pattern_change(
+            group_map, current, 0, "01_noise_dots",
+        )
+
+        self.assertEqual(assignment[0], "01_noise_dots")
+        self.assertEqual(PATTERNS[assignment[1]]["group"], "lines")
+        self.assertEqual(PATTERNS[assignment[2]]["group"], "grids")
+        families = [PATTERNS[pattern]["group"] for pattern in assignment.values()]
+        self.assertEqual(len(families), len(set(families)))
+        self.assertEqual(audit["user_constraint"]["pattern"], "01_noise_dots")
+        self.assertEqual(
+            audit["method"],
+            "global_exhaustive_adjacent_pattern_maximin_with_user_lock",
+        )
+
+    def test_no_fill_user_choice_can_repeat_without_consuming_a_family(self):
+        group_map = np.array([[0, 1, 2]], dtype=np.int32)
+        assignment, _ = optimize_user_pattern_change(
+            group_map,
+            {0: "plain", 1: "03_lines_vertical", 2: "01_noise_dots"},
+            1,
+            "plain",
+        )
+        self.assertEqual(assignment[0], "plain")
+        self.assertEqual(assignment[1], "plain")
+        self.assertEqual(PATTERNS[assignment[2]]["group"], "dots")
 
     def test_step7_renders_every_illustrator_pattern(self):
         for name in self.library.names:

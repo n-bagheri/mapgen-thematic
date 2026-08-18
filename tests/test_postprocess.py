@@ -2,12 +2,13 @@ import unittest
 
 import numpy as np
 
-from mapgen.alt_mapgen import (_group_area_audit, _source_to_final_transition,
-                               build_group_definitions, group_raster)
+from mapgen.postprocess import (_group_area_audit, _source_to_final_transition,
+                                build_group_definitions, group_raster,
+                                is_white_background_water)
 from mapgen.generalize import generalize_area_raster
 
 
-class AltMapGenOrderingTests(unittest.TestCase):
+class CanonicalPostprocessOrderingTests(unittest.TestCase):
     def setUp(self):
         self.classes = [
             {"index": 0, "label": "Forest", "rgb": [20, 130, 60],
@@ -44,6 +45,30 @@ class AltMapGenOrderingTests(unittest.TestCase):
             [0, 1, 1, 1],
         ], np.int16)))
         self.assertEqual(np.count_nonzero(source >= 0), np.count_nonzero(grouped >= 0))
+
+    def test_unlabelled_non_thematic_classes_share_one_background_group(self):
+        classes = self.classes + [
+            {"index": 3, "label": "unlabelled: cyan", "rgb": [100, 200, 220],
+             "is_thematic": False, "area_px": 2},
+            {"index": 4, "label": "unlabelled: red", "rgb": [220, 80, 60],
+             "is_thematic": False, "area_px": 2},
+        ]
+        aggregation = {**self.aggregation, "non_thematic_extra": [
+            {"index": 3, "label": "unlabelled: cyan", "priority": None},
+            {"index": 4, "label": "unlabelled: red", "priority": None},
+        ]}
+
+        groups = build_group_definitions(aggregation, classes)
+
+        background = next(group for group in groups if group["label"] == "background / no fill")
+        self.assertFalse(background["is_thematic"])
+        self.assertEqual(background["members"], [3, 4])
+
+    def test_white_water_is_classified_as_unprinted_background(self):
+        self.assertTrue(is_white_background_water([
+            {"rgb": [250, 249, 247]}, {"rgb": [242, 244, 241]},
+        ]))
+        self.assertFalse(is_white_background_water([{"rgb": [40, 150, 210]}]))
 
     def test_transition_report_starts_from_original_step4_categories(self):
         source = np.array([[0, 1, 2, 2]], np.int16)

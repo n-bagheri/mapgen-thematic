@@ -1,10 +1,10 @@
-"""Step 6 -- Class aggregation.
+"""Step 5 -- Class aggregation from the untouched Step 4 classification.
 
 Texture slots: 4 when a water area exists in the generalized map (water always
-claims the wavy pattern), else 5. If more thematic classes survive Step 5 than
+claims the wavy pattern), else 5. If more thematic classes survive Step 4 than
 slots exist, merge them: contiguous re-binning for ordered data (deterministic),
 Gemini-proposed semantic merges for qualitative data (Checkpoint: human reviews
-the plan in the UI / aggregation.json before Step 7 consumes it). Dropping to
+the plan in the UI / aggregation.json before Step 6 consumes it). Dropping to
 plain white is the last resort and only happens in the fallback path.
 
 Artifact: runs/<name>/aggregation.json
@@ -21,7 +21,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from .output_spec import OutputSpec
-from .semantics import DEFAULT_MODEL, MapSemantics, _ensure_api_key
+from .semantics import DEFAULT_MODEL, MapSemantics, _ensure_api_key, require_pipeline_eligible
 
 
 AGGREGATION_REVIEW_VERSION = 1
@@ -53,11 +53,11 @@ def load_aggregation_review(out_dir: Path, aggregation: dict) -> dict | None:
 
 def save_aggregation_review(out_dir: Path, aggregation: dict,
                             decisions: list[dict]) -> dict:
-    """Save the reviewed canonical Step 6 grouping."""
+    """Save the reviewed canonical Step 5 grouping."""
     source = {int(item["index"]): item["label"]
               for item in aggregation.get("source_classes", [])}
     if not source:
-        raise ValueError("aggregation proposal has no source classes; rerun Step 6")
+        raise ValueError("aggregation proposal has no source classes; rerun Step 5")
     if not isinstance(decisions, list) or not decisions:
         raise ValueError("at least one final group is required")
     if len(decisions) > int(aggregation["slots"]):
@@ -117,7 +117,7 @@ def effective_aggregation(out_dir: Path, aggregation: dict) -> dict:
     review = load_aggregation_review(out_dir, aggregation)
     if not review or not review.get("approved"):
         raise RuntimeError(
-            "Step 6 aggregation proposal requires approval before Step 7")
+            "Step 5 aggregation proposal requires approval before Step 6")
     result = dict(aggregation)
     result["groups"] = [{key: value for key, value in group.items()
                          if key != "approved"} for group in review["groups"]]
@@ -157,7 +157,17 @@ def _range_label(a: str, b: str) -> str:
     na = re.findall(r"-?\d+\.?\d*", a)
     nb = re.findall(r"-?\d+\.?\d*", b)
     if na and nb:
-        return f"{na[0]}–{nb[-1]}" + ("<" in b and "<" or "")
+        a_compact = re.sub(r"\s+", "", a)
+        b_compact = re.sub(r"\s+", "", b)
+        if a_compact.startswith(("<=", "≤")):
+            return f"≤ {nb[-1]}"
+        if a_compact.startswith("<"):
+            return f"< {nb[-1]}"
+        if b_compact.startswith((">=", "≥")):
+            return f"≥ {na[0]}"
+        if b_compact.startswith(">"):
+            return f"> {na[0]}"
+        return f"{na[0]}–{nb[-1]}"
     return f"{a} / {b}"
 
 
@@ -214,69 +224,9 @@ def fallback_merge(thematic: list[dict], slots: int) -> list[dict]:
     return groups
 
 
-def run_step6(image_path: Path, model: str | None = None, runs_dir: Path = Path("runs")) -> dict:
-    from .generalize import run_step5_presets
+def run_step5(image_path: Path, model: str | None = None,
+              runs_dir: Path = Path("runs")) -> dict:
+    """Build the reviewed aggregation proposal without changing geography."""
+    from .postprocess import run_step5 as run_aggregation_first
 
-    out_dir = runs_dir / image_path.stem
-    if not (out_dir / "classes_gen.json").exists():
-        run_step5_presets(image_path, model=model, runs_dir=runs_dir)
-
-    spec = OutputSpec.load_or_create()
-    sem = MapSemantics.model_validate_json((out_dir / "step1_semantics.json").read_text(encoding="utf-8"))
-    classes = json.loads((out_dir / "classes_gen.json").read_text(encoding="utf-8"))["classes"]
-    surviving = [c for c in classes if c["area_px"] > 0]
-
-    water = [c for c in surviving
-             if c["source"] == "water-heuristic"
-             or (not c["is_thematic"] and "water" in c["label"].lower())]
-    slots = spec.texture_slots(water_present=bool(water))
-    thematic = sorted([c for c in surviving if c["is_thematic"]], key=lambda c: c["index"])
-    extras = [c for c in surviving if not c["is_thematic"] and c not in water]
-
-    notes: list[str] = []
-    if len(thematic) <= slots:
-        # ``slots`` is a ceiling, not a target. Preserve the original class
-        # list exactly; never manufacture groups merely to consume capacity.
-        mode = "identity"
-        groups = [{"label": c["label"], "members": [c["index"]], "member_labels": [c["label"]],
-                   "rationale": ""} for c in thematic]
-    elif sem.data_ordering.value == "ordered":
-        mode = "rebin"
-        groups = rebin_ordered(thematic, slots)
-        for g in groups:
-            g.pop("area", None)
-    else:
-        mode = "semantic"
-        try:
-            plan = propose_semantic(thematic, slots, sem, model)
-            groups = validate_proposal(plan, thematic, slots)
-        except Exception as exc:  # noqa: BLE001 - proposal is best-effort
-            notes.append(f"semantic proposal failed ({exc}); using fallback")
-            groups = None
-        if groups is None:
-            if not notes:
-                notes.append("semantic proposal invalid; using priority fallback")
-            mode = "fallback"
-            groups = fallback_merge(thematic, slots)
-
-    aggregation = {
-        "mode": mode,
-        "slots": slots,
-        "water": ({"label": water[0]["label"], "members": [c["index"] for c in water]}
-                  if water else None),
-        "groups": groups,
-        "source_classes": [{"index": c["index"], "label": c["label"]}
-                           for c in thematic],
-        "review_required": any(len(group["members"]) > 1 for group in groups),
-        "non_thematic_extra": [{"index": c["index"], "label": c["label"],
-                                "priority": c["priority"]} for c in extras],
-        "notes": notes,
-    }
-    aggregation["proposal_fingerprint"] = aggregation_fingerprint(aggregation)
-    review = load_aggregation_review(out_dir, aggregation)
-    aggregation["review_status"] = (
-        review["status"] if review else
-        "needs_review" if aggregation["review_required"] else "not_required")
-    (out_dir / "aggregation.json").write_text(
-        json.dumps(aggregation, indent=2, ensure_ascii=False), encoding="utf-8")
-    return {"out_dir": out_dir, "aggregation": aggregation}
+    return run_aggregation_first(image_path, model=model, runs_dir=runs_dir)
