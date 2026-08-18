@@ -631,7 +631,10 @@ def _detect_compact_grid_swatches(
         if cv2.contourArea(contour) / (w * h) < 0.4:
             continue
         candidates.append((x, y, w, h))
-    if len(candidates) < expected - 2:
+    # A black separator can join several neighbouring cells into one contour.
+    # We only need enough markers to establish the grid; the regular grid
+    # reconstruction below will recover the cells inside joined components.
+    if len(candidates) < max(4, expected // 2):
         return None
 
     med_w = float(np.median([r[2] for r in candidates]))
@@ -660,32 +663,95 @@ def _detect_compact_grid_swatches(
     ordered: list[tuple[int, int, int, int]] = []
     for column, target in zip(columns, counts):
         column.sort(key=lambda r: r[1])
-        width = int(round(np.median([r[2] for r in column])))
-        height = int(round(np.median([r[3] for r in column])))
+        regular = [rect for rect in column
+                   if rect[3] <= 1.5 * np.median([item[3] for item in column])]
+        if not regular:
+            return None
+        width = int(round(np.median([r[2] for r in regular])))
+        height = int(round(np.median([r[3] for r in regular])))
         x = int(round(np.median([r[0] for r in column])))
         ys = [r[1] for r in column]
         pitches = np.diff(ys)
-        pitch = float(np.median(pitches[pitches > 0])) if np.any(pitches > 0) else 0.0
+        positive_pitches = pitches[pitches >= max(2.0, height * 0.8)]
+        # The smallest valid gap is the grid pitch; larger gaps indicate the
+        # missing cells inside a joined component, not a different row height.
+        pitch = float(np.min(positive_pitches)) if positive_pitches.size else 0.0
         if pitch < max(5.0, height * 0.8):
             return None
         start = ys[0]
         for row in range(target):
-            # Preserve observed row positions (small raster rounding errors
-            # accumulate across compact legends); extrapolate only missing
-            # endpoint cells.
-            if row < len(column):
-                observed = column[row]
-                x, y, cell_w, cell_h = observed
-            else:
-                x = int(round(np.median([r[0] for r in column])))
-                y = int(round(column[-1][1] + (row - len(column) + 1) * pitch))
-                cell_w, cell_h = width, height
+            # Use the inferred grid for every row.  Retaining a tall observed
+            # rectangle would otherwise consume two or more palette entries.
+            y = int(round(start + row * pitch))
+            cell_w, cell_h = width, height
             if y + cell_h > lh:
-                if row < len(column) or y - column[-1][1] > 1.5 * pitch:
+                if y - column[-1][1] > 1.5 * pitch:
                     return None
                 y = lh - cell_h
             ordered.append((x, y, cell_w, cell_h))
     return ordered if len(ordered) == expected else None
+
+
+def _detect_vertically_joined_swatches(
+    lab: np.ndarray,
+    contours: list[np.ndarray],
+    expected: int,
+    bg: np.ndarray,
+) -> list[tuple[int, int, int, int]] | None:
+    """Recover a compact vertical swatch stack whose borders touch.
+
+    In small scanned legends, the black outlines of adjacent swatches often
+    connect into one tall contour.  The generic detector rightly treats that
+    contour as too large, but then text and icon fragments can become the only
+    surviving candidates.  Split a tall, uniformly coloured stack into the
+    known number of thematic entries before considering those fragments.
+    """
+    if expected < 2:
+        return None
+    height, width = lab.shape[:2]
+    choices: list[tuple[float, list[tuple[int, int, int, int]]]] = []
+    for contour in contours:
+        x, y, swatch_w, stack_h = cv2.boundingRect(contour)
+        if (
+            swatch_w < 8
+            or swatch_w > 0.35 * width
+            or stack_h > 0.65 * height
+            or stack_h < expected * max(5.0, 0.45 * swatch_w)
+        ):
+            continue
+        rects = []
+        for index in range(expected):
+            y0 = int(round(y + index * stack_h / expected))
+            y1 = int(round(y + (index + 1) * stack_h / expected))
+            rects.append((x, y0, swatch_w, max(1, y1 - y0)))
+
+        colours = []
+        valid = True
+        for rect in rects:
+            ex, ey, ew, eh = _erode_rect(*rect)
+            patch = lab[ey:ey + eh, ex:ex + ew]
+            if not patch.size or not _uniform(patch, tol=11.0):
+                valid = False
+                break
+            colour = np.median(patch.reshape(-1, 3), axis=0)
+            if float(np.linalg.norm(colour - bg)) < 8.0:
+                valid = False
+                break
+            colours.append(colour)
+        if not valid:
+            continue
+        # A tall run of the same grey (or a text column) is not a palette.
+        separation = min(
+            float(np.linalg.norm(colours[i] - colours[j]))
+            for i in range(len(colours))
+            for j in range(i + 1, len(colours))
+        )
+        if separation < 8.0:
+            continue
+        choices.append((separation, rects))
+    if not choices:
+        return None
+    return max(choices, key=lambda item: item[0])[1]
 
 
 def detect_swatches(
@@ -709,6 +775,10 @@ def detect_swatches(
     binmask = (np.linalg.norm(lab - bg, axis=2) > 10).astype(np.uint8)
     binmask = cv2.morphologyEx(binmask, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
     contours, _ = cv2.findContours(binmask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    joined = _detect_vertically_joined_swatches(lab, contours, expected, bg)
+    if joined is not None:
+        return joined, [f"split a vertically joined {expected}-swatch legend stack"]
 
     cands, rejected_size = [], []
     for c in contours:
@@ -943,7 +1013,14 @@ def run_step2(image_path: Path, model: str | None = None, runs_dir: Path = Path(
                 f"but Step 1 identified {expected} thematic entries. The palette cannot "
                 "be aligned safely; inspect the legend crop or rerun Step 1."
             )
-        prio = {c.label: c.priority for c in sem.thematic_classes}
+        # For ordered maps, the displayed legend order is the authoritative
+        # sequence.  A semantic model may list classes by estimated area or
+        # salience (rather than numeric order), which would later let Step 5
+        # merge non-adjacent bins.  Qualitative legends retain their model
+        # supplied priorities.
+        prio = ({entry.label: index + 1 for index, entry in enumerate(thematic_entries)}
+                if sem.data_ordering.value == "ordered"
+                else {c.label: c.priority for c in sem.thematic_classes})
         thematic_rects = iter(rects)
         for entry in legend_entries:
             row = {

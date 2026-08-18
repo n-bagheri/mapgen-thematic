@@ -172,6 +172,34 @@ class LegendDetectionTests(unittest.TestCase):
         sampled = [sample_swatch(legend, rect)[0] for rect in rects]
         self.assertEqual(len({tuple(rgb) for rgb in sampled}), 3)
 
+    def test_joined_vertical_swatch_stack_beats_text_fragments(self):
+        legend = np.full((190, 180, 3), 245, np.uint8)
+        # Adjacent black borders deliberately make this a single connected
+        # component, as happens in compact scanned paper legends.
+        colors_bgr = [(61, 159, 85), (137, 161, 202), (187, 237, 239)]
+        for index, color in enumerate(colors_bgr):
+            y = 44 + index * 16
+            cv2.rectangle(legend, (36, y), (61, y + 16), color, -1)
+            cv2.rectangle(legend, (36, y), (61, y + 16), (20, 20, 20), 1)
+        # These text fragments used to win the generic contour filtering.
+        cv2.putText(legend, "Over 70", (70, 57), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45, (30, 30, 30), 1, cv2.LINE_AA)
+        cv2.putText(legend, "50 to 70", (70, 73), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45, (30, 30, 30), 1, cv2.LINE_AA)
+        cv2.putText(legend, "Under 50", (70, 89), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45, (30, 30, 30), 1, cv2.LINE_AA)
+
+        rects, warnings = detect_swatches(
+            legend, expected=3,
+            labels=["Over 70", "50 to 70", "Under 50"], ordered=True,
+        )
+
+        self.assertEqual(len(rects), 3, warnings)
+        self.assertTrue(any("vertically joined" in warning for warning in warnings))
+        sampled = [sample_swatch(legend, rect)[0] for rect in rects]
+        self.assertTrue(all(max(rgb) - min(rgb) > 20 for rgb in sampled))
+        self.assertEqual(len({tuple(rgb) for rgb in sampled}), 3)
+
     def test_closed_label_glyphs_are_not_detected_as_white_swatches(self):
         legend = np.full((250, 620, 3), 255, np.uint8)
         colors_bgr = [
@@ -216,6 +244,29 @@ class LegendDetectionTests(unittest.TestCase):
         )
 
         self.assertEqual(len(rects), 25, warnings)
+
+    def test_compact_grid_splits_joined_cells_in_each_column(self):
+        legend = np.full((130, 170, 3), 245, np.uint8)
+        colours = [
+            (10 + index * 7, 20 + index * 11, 230 - index * 9)
+            for index in range(16)
+        ]
+        for column in range(2):
+            for row in range(8):
+                x, y = 16 + column * 76, 22 + row * 12
+                colour = colours[column * 8 + row]
+                # Adjacent borders touch, producing joined saturation blobs.
+                cv2.rectangle(legend, (x, y), (x + 10, y + 10), colour, -1)
+                cv2.rectangle(legend, (x, y), (x + 10, y + 10), (20, 20, 20), 1)
+
+        rects, warnings = detect_swatches(
+            legend, expected=16, labels=[str(index) for index in range(16)], ordered=True,
+        )
+
+        self.assertEqual(len(rects), 16, warnings)
+        self.assertTrue(any("compact 16-swatch" in warning for warning in warnings))
+        sampled = [sample_swatch(legend, rect)[0] for rect in rects]
+        self.assertEqual(len({tuple(rgb) for rgb in sampled}), 16)
 
 
 if __name__ == "__main__":
