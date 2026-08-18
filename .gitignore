@@ -1,5 +1,6 @@
 # API keys and secrets
 gemini_api.txt
+api.txt
 .env
 .env.*
 !.env.example
@@ -40,3 +41,6 @@ __pycache__/
 .DS_Store
 Thumbs.db
 ~$*
+# Batch pipeline survey output (dev harness)
+batch_report.json
+/artifacts/

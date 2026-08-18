@@ -64,6 +64,29 @@ class MapMaskRefinementTests(unittest.TestCase):
         self.assertTrue(any("edge ruler/tick" in warning for warning in warnings))
 
 
+    def test_a_tight_vlm_box_cannot_clip_the_map_panel(self):
+        """The layout box is a location hint and is not reproducible between
+        runs, so the mask must grow through connected content to the panel's
+        own edge instead of stamping the box edge into the map."""
+        page = np.full((400, 600, 3), 255, np.uint8)
+        # One printed panel with varied content (sea and land bands).
+        for x in range(60, 560, 20):
+            colour = (200, 120, 40) if (x // 20) % 2 else (60, 160, 60)
+            cv2.rectangle(page, (x, 40), (x + 19, 359), colour, -1)
+        # A detached decoration that no box seeds: it must stay excluded.
+        cv2.rectangle(page, (10, 370), (40, 395), (0, 0, 200), -1)
+
+        # Deliberately narrow box covering only the left half of the panel.
+        mask, _, warnings = refine_map_mask(page, [(80, 60, 300, 340)], [])
+
+        panel = mask[40:360, 60:560]
+        self.assertGreater(float((panel > 0).mean()), 0.95,
+                           "the mask must follow the panel past the box edge")
+        self.assertTrue((mask[370:395, 10:40] == 0).all(),
+                        "detached decorations must not be pulled in")
+        self.assertTrue(any("grew" in w for w in warnings), warnings)
+
+
 class TextInputPreparationTests(unittest.TestCase):
     def test_keeps_label_that_overhangs_small_island(self):
         img = np.full((200, 300, 3), 255, np.uint8)
@@ -227,6 +250,36 @@ class LegendDetectionTests(unittest.TestCase):
         sampled = [sample_swatch(legend, rect)[0] for rect in rects]
         self.assertTrue(all(max(rgb) - min(rgb) > 20 for rgb in sampled))
         self.assertEqual(len({tuple(rgb) for rgb in sampled}), 4)
+
+    def test_vertical_colour_bar_is_split_into_its_cells(self):
+        """Hypsometric and rainfall legends stack their ramp vertically, and an
+        inset one is drawn straight onto the map with no background to
+        threshold against, so the ramp has to be found by its own shape."""
+        legend = np.zeros((260, 150, 3), np.uint8)
+        legend[:] = (90, 140, 90)                      # map showing through
+        for row in range(240):
+            shade = row / 239.0
+            colour = (int(40 + 60 * shade), int(200 - 120 * shade), int(60 + 150 * shade))
+            cv2.line(legend, (10, 10 + row), (34, 10 + row), colour, 1)
+
+        rects, warnings = detect_swatches(
+            legend, expected=6,
+            labels=["2000", "1500", "1000", "500", "200", "0"],
+            ordered=True,
+        )
+
+        self.assertEqual(len(rects), 6, warnings)
+        self.assertTrue(any("vertical colour bar" in w for w in warnings), warnings)
+        sampled = [sample_swatch(legend, rect)[0] for rect in rects]
+        self.assertEqual(len({tuple(rgb) for rgb in sampled}), 6)
+
+    def test_a_descending_scale_keeps_reading_order(self):
+        """Labels transcribed 2000..0 are already top-down, so the cells must
+        not be flipped; flipping would invert the whole palette."""
+        from mapgen.isolate import _ramp_runs_upward
+        self.assertFalse(_ramp_runs_upward(["2000", "1500", "1000", "500"]))
+        self.assertTrue(_ramp_runs_upward(["0-100 m", "100-200 m", "200-300 m"]))
+        self.assertFalse(_ramp_runs_upward(["forest", "water", "urban"]))
 
     def test_compact_three_column_grid_recovers_tiny_swatches(self):
         legend = np.full((105, 132, 3), 245, np.uint8)

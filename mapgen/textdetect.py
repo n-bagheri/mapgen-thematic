@@ -32,7 +32,8 @@ import numpy as np
 from pydantic import BaseModel, Field
 
 from .isolate import imread, imwrite, prepare_text_input, to_lab
-from .semantics import DEFAULT_MODEL, MapSemantics, _ensure_api_key, require_pipeline_eligible
+from .semantics import (API_TIMEOUT_MS, DEFAULT_MODEL, MapSemantics,
+                        _ensure_api_key, require_pipeline_eligible)
 
 # --------------------------------------------------------------------------- schema
 
@@ -128,13 +129,26 @@ def _gemini_text(tile_bgr: np.ndarray, prompt: str, model: str | None) -> TextDe
     from google.genai import types
 
     _ensure_api_key()
-    ok, buf = cv2.imencode(".png", tile_bgr)
+    # MAX_TILE decides how many pieces the map is cut into, not how big each
+    # piece is, so a large scan produces multi-megapixel tiles.  The model only
+    # returns boxes normalized to 0-1000 of whatever it is shown, and those are
+    # mapped back using the tile's original width and height, so sending a
+    # smaller copy costs no accuracy and keeps the upload from timing out.
+    sent = tile_bgr
+    longest = max(sent.shape[:2])
+    if longest > MAX_TILE:
+        scale = MAX_TILE / longest
+        sent = cv2.resize(sent, (max(1, round(sent.shape[1] * scale)),
+                                 max(1, round(sent.shape[0] * scale))),
+                          interpolation=cv2.INTER_AREA)
+    ok, buf = cv2.imencode(".jpg", sent, [cv2.IMWRITE_JPEG_QUALITY, 90])
     if not ok:
         raise ValueError("tile encode failed")
-    client = genai.Client()
+    # Same deadline as Steps 1 and 2: a stalled request must not wedge the run.
+    client = genai.Client(http_options=types.HttpOptions(timeout=API_TIMEOUT_MS))
     response = client.models.generate_content(
         model=model or os.environ.get("GEMINI_MODEL", DEFAULT_MODEL),
-        contents=[types.Part.from_bytes(data=buf.tobytes(), mime_type="image/png"), prompt],
+        contents=[types.Part.from_bytes(data=buf.tobytes(), mime_type="image/jpeg"), prompt],
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
             response_schema=TextDetections,

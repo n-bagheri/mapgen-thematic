@@ -24,7 +24,7 @@ from .boundaries import (MIN_CONTOUR_COMPONENT_SPAN_PX, apply_boundary_strokes,
                          build_group_map, discard_open_centerline_branches,
                          open_endpoint_count, repair_tiny_centerline_gaps,
                          _render_step8_base)
-from .isolate import imread, imwrite
+from .isolate import imread, imwrite, thinning
 from .semantics import load_pipeline_semantics
 from .symbols import RENDER_PX_PER_MM
 
@@ -59,9 +59,7 @@ def _owner_centerline(group_map: np.ndarray,
                 cv2.drawContours(edge, [shifted], -1, 255, 1, lineType=cv2.LINE_8)
             contour_count += len(contours)
     if edge.any():
-        edge = cv2.ximgproc.thinning(
-            edge, thinningType=cv2.ximgproc.THINNING_ZHANGSUEN,
-        )
+        edge = thinning(edge)
     return edge, contour_count
 
 

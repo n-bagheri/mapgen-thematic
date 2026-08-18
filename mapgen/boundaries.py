@@ -23,7 +23,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .isolate import imread, imwrite
+from .isolate import imread, imwrite, thinning
 from .semantics import load_pipeline_semantics
 from .symbols import RENDER_PX_PER_MM
 
@@ -233,7 +233,7 @@ def closed_pattern_centerline(group_map: np.ndarray,
             contour_count += len(contours)
     repaired_gaps = 0
     if edge.any():
-        edge = cv2.ximgproc.thinning(edge, thinningType=cv2.ximgproc.THINNING_ZHANGSUEN)
+        edge = thinning(edge)
         # OpenCV can turn a closed 8-connected raster contour into a tiny
         # dangling spur at a diagonal pinch.  Repair only within that existing
         # connected contour network; never bridge separate map regions.

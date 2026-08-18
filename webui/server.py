@@ -399,6 +399,12 @@ def index():
     return app.send_static_file("index.html")
 
 
+@app.get("/minimal")
+def minimal_index():
+    """Serve the focused UI without duplicating the pipeline application."""
+    return app.send_static_file("minimal.html")
+
+
 @app.get("/api/maps")
 def api_maps():
     with _lock:

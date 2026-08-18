@@ -22,6 +22,7 @@ Artifacts per map, under runs/<name>/:
 from __future__ import annotations
 
 import json
+import re
 import mimetypes
 import os
 from pathlib import Path
@@ -31,11 +32,15 @@ import numpy as np
 from pydantic import BaseModel, Field, model_validator
 
 from .semantics import (
+    API_TIMEOUT_MS,
+    encode_for_model,
     DEFAULT_MODEL,
     MapSemantics,
     _ensure_api_key,
     require_pipeline_eligible,
 )
+
+LAYOUT_RETRIES = 1  # a deadline or 5xx on this call is usually transient
 
 # --------------------------------------------------------------------------- layout call
 
@@ -96,22 +101,34 @@ def detect_layout(image_path: Path, model: str | None = None) -> MapLayout:
     from google.genai import types
 
     _ensure_api_key()
-    data = image_path.read_bytes()
-    mime = mimetypes.guess_type(image_path.name)[0] or "image/jpeg"
-    client = genai.Client()
-    response = client.models.generate_content(
-        model=model or os.environ.get("GEMINI_MODEL", DEFAULT_MODEL),
-        contents=[types.Part.from_bytes(data=data, mime_type=mime), LAYOUT_PROMPT],
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=MapLayout,
-            temperature=0.0,
-        ),
-    )
-    layout = response.parsed
-    if not isinstance(layout, MapLayout):
-        layout = MapLayout.model_validate_json(response.text)
-    return layout
+    # The boxes come back normalized to 0-1000 and are mapped onto the original
+    # pixels below, so showing the model a downscaled copy costs no accuracy and
+    # keeps a large scan from timing out on upload and inference.
+    data, mime = encode_for_model(image_path)
+    # Without an explicit deadline a stalled request never returns and the whole
+    # pipeline waits on it; Step 1 already uses this same budget.
+    client = genai.Client(http_options=types.HttpOptions(timeout=API_TIMEOUT_MS))
+    last_error: Exception | None = None
+    for attempt in range(LAYOUT_RETRIES + 1):
+        try:
+            response = client.models.generate_content(
+                model=model or os.environ.get("GEMINI_MODEL", DEFAULT_MODEL),
+                contents=[types.Part.from_bytes(data=data, mime_type=mime), LAYOUT_PROMPT],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=MapLayout,
+                    temperature=0.0,
+                ),
+            )
+            layout = response.parsed
+            if not isinstance(layout, MapLayout):
+                layout = MapLayout.model_validate_json(response.text)
+            return layout
+        except Exception as exc:  # transient deadline/5xx: one more try
+            last_error = exc
+            if attempt >= LAYOUT_RETRIES:
+                raise
+    raise last_error  # unreachable, kept for the type checker
 
 
 # --------------------------------------------------------------------------- cv helpers
@@ -129,6 +146,30 @@ def imwrite(path: Path, img: np.ndarray) -> None:
     if not ok:
         raise ValueError(f"cannot encode {path}")
     buf.tofile(str(path))
+
+
+def thinning(image: np.ndarray) -> np.ndarray:
+    """Zhang-Suen skeletonization, with a legible error when cv2 lacks it.
+
+    `thinning` lives in opencv-contrib-python.  Installing plain opencv-python
+    alongside it overwrites the shared native module and leaves cv2.ximgproc as
+    an empty stub, so the bare AttributeError names the symbol but not the
+    cause.  Steps 4, 7 and 7b all depend on this, so say what to fix instead.
+    """
+    ximgproc = getattr(cv2, "ximgproc", None)
+    thin = getattr(ximgproc, "thinning", None)
+    if thin is None:
+        raise RuntimeError(
+            "cv2.ximgproc.thinning is unavailable, so this build of OpenCV is "
+            "missing the contrib modules. This usually means opencv-python is "
+            "installed alongside opencv-contrib-python and has overwritten it. "
+            "Reinstall with: pip uninstall -y opencv-python opencv-python-headless "
+            "opencv-contrib-python && pip install opencv-contrib-python "
+            f"(current cv2 {cv2.__version__} at {cv2.__file__})"
+        )
+    # Resolved after the guard: on a stubbed ximgproc the constant is missing
+    # too, and reading it first would raise the same opaque AttributeError.
+    return thin(image, thinningType=ximgproc.THINNING_ZHANGSUEN)
 
 
 def to_lab(img_bgr: np.ndarray) -> np.ndarray:
@@ -272,9 +313,16 @@ def refine_map_mask(
     img: np.ndarray,
     map_boxes: list[tuple[int, int, int, int]],
     exclude_boxes: list[tuple[int, int, int, int]],
-    bg_delta: float = 12.0,
+    bg_delta: float = 8.0,
 ) -> tuple[np.ndarray, tuple[int, int, int, int], list[str]]:
     """Pixel-tight content mask seeded by the (padded) VLM map box.
+
+    `bg_delta` separates the printed map from the page it sits on.  A map often
+    has more than one background: the sea in its own colour, and neighbouring
+    territory in a light grey that is only about 11 dE from white paper.  At the
+    old 12.0 the grey fell on the paper side, so whole countries were cut out of
+    the mask -- France on the Spain sheet, the surrounding states on the China
+    sheet.  8.0 keeps that grey while leaving paper and its anti-aliasing out.
 
     A VLM box is a spatial prior, not an absolute geographic boundary.  For a
     broad, landscape map panel (notably a world map), search the full width of
@@ -306,9 +354,34 @@ def refine_map_mask(
     for ex0, ey0, ex1, ey1 in exclude_boxes:
         inside[ey0:ey1, ex0:ex1] = 0
 
+    warnings: list[str] = []
+
+    # A VLM box says where the map is, not exactly what it covers, and the
+    # box is not reproducible run to run: the same sheet can come back with
+    # x1=783 on one call and x1=642 on the next, and clipping content to the
+    # rectangle stamps that accident into the mask as a dead-straight edge.
+    # Grow the seeded mask through connected content instead (binary
+    # reconstruction): every content component that touches a seed is kept
+    # whole, so the mask ends where the printed panel ends.  Furniture stays
+    # carved out of the growth medium, and anything detached from the seeded
+    # panel (titles, decorations, other panels) is still excluded.
+    reachable = content.copy()
+    for ex0, ey0, ex1, ey1 in exclude_boxes:
+        reachable[ey0:ey1, ex0:ex1] = 0
+    _, reach_cc = cv2.connectedComponents(reachable, connectivity=8)
+    seeded_labels = np.unique(reach_cc[inside > 0])
+    seeded_labels = seeded_labels[seeded_labels != 0]
+    if seeded_labels.size:
+        grown = np.isin(reach_cc, seeded_labels).astype(np.uint8)
+        added = int(grown.sum()) - int(inside.sum())
+        if added > 0.15 * max(1, int(inside.sum())):
+            warnings.append(
+                f"map content continued past the VLM map box; the mask grew by "
+                f"{added} px to follow it")
+        inside = grown
+
     n, cc, stats, _ = cv2.connectedComponentsWithStats(inside, connectivity=8)
     min_area = max(MIN_COMPONENT_PX, int(2e-5 * w * h))
-    warnings: list[str] = []
     keep: list[int] = []
     rejected_neatlines = 0
     rejected_edge_furniture = 0
@@ -610,6 +683,148 @@ def detect_horizontal_colorbar(
     ]
 
 
+def _leading_number(label: str) -> float | None:
+    """First number in a legend label, e.g. '100-200 m a.s.l.' -> 100.0."""
+    match = re.search(r"-?\d+(?:[.,]\d+)?", label.replace(",", ""))
+    return float(match.group()) if match else None
+
+
+def _ramp_runs_upward(labels: list[str]) -> bool:
+    """True when the first transcribed label sits at the BOTTOM of the bar.
+
+    A vertical scale is drawn with its largest value at the top, so a legend
+    transcribed in ascending order starts at the bottom and the cells have to be
+    emitted upward to stay paired with it.  Unparseable labels keep plain
+    reading order, which is what the horizontal bar assumes too.
+    """
+    values = [_leading_number(label) for label in labels]
+    if any(value is None for value in values) or len(values) < 2:
+        return False
+    ascending = all(b > a for a, b in zip(values, values[1:]))
+    return ascending
+
+
+def _find_vertical_ramp(lab: np.ndarray) -> tuple[int, int, int, int] | None:
+    """Locate a colour ramp as a column strip, without needing a background.
+
+    An inset legend is drawn straight onto the map, so there is no paper colour
+    to threshold against.  A ramp has its own signature instead: a narrow column
+    that stays flat across its width while changing steadily down its height.
+    """
+    height, width = lab.shape[:2]
+    best = None
+    for x0 in range(0, max(1, width - 8)):
+        for strip_w in (10, 14, 18, 24, 30):
+            if x0 + strip_w > width:
+                continue
+            strip = lab[:, x0:x0 + strip_w]
+            flat = np.linalg.norm(strip.std(axis=1), axis=1) < 3.0
+            longest = run = 0
+            end_row = 0
+            for row, is_flat in enumerate(flat):
+                run = run + 1 if is_flat else 0
+                if run > longest:
+                    longest, end_row = run, row
+            if longest < 0.45 * height:
+                continue
+            top = end_row - longest + 1
+            column = strip[top:end_row + 1].reshape(longest, -1, 3).mean(axis=1)
+            # Plain background above and below the bar is flat too, so the run
+            # can reach past both ends of the ramp.  Trim the constant stretches
+            # at each end; what is left is the part that actually changes.
+            moving = np.linalg.norm(np.diff(column, axis=0), axis=1) > 0.4
+            if not moving.any():
+                continue
+            # `moving[i]` compares row i with row i+1, so the first changing
+            # row is first+1 and the last one is `last`; taking the transition
+            # rows themselves would keep a background row at each end and make
+            # the ramp look like it returns to where it started.
+            first = int(np.argmax(moving)) + 1
+            last = len(moving) - int(np.argmax(moving[::-1]))
+            if last - first < 0.45 * height:
+                continue
+            top += first
+            longest = last - first
+            column = column[first:last]
+            span = float(np.linalg.norm(column.max(axis=0) - column.min(axis=0)))
+            if span < 12:            # a plain rule or axis line, not a ramp
+                continue
+            # A ramp walks through colour space and keeps going.  A column that
+            # crosses stacked swatches separated by paper keeps returning to the
+            # same background, so its path is far longer than the distance
+            # between its ends; that tells the two apart without needing to know
+            # what the background is.
+            steps = np.linalg.norm(np.diff(column, axis=0), axis=1).sum()
+            ends = float(np.linalg.norm(column[-1] - column[0]))
+            # Measured: a curved but genuine ramp runs about 5-7; a column
+            # crossing stacked swatches returns to its starting colour, so
+            # its ends nearly coincide and the ratio explodes.
+            if steps > 20.0 * max(ends, 1e-6):
+                continue
+            score = longest * span
+            if best is None or score > best[0]:
+                best = (score, x0, strip_w, top, longest)
+    if best is None:
+        return None
+    _, x0, strip_w, top, longest = best
+    return x0, top, strip_w, longest
+
+
+def detect_vertical_colorbar(
+    legend_bgr: np.ndarray,
+    expected: int,
+    labels: list[str],
+) -> tuple[list[tuple[int, int, int, int]], list[str]] | None:
+    """Recover an ordered, segmented vertical colour bar.
+
+    The mirror of detect_horizontal_colorbar, for the stacked ramps that
+    hypsometric, temperature and rainfall legends use.  The bar carries no
+    swatch edges for the generic contour pass to find, and an inset legend has
+    no background to threshold against, so the ramp is located by its own shape.
+    """
+    if expected < 3 or len(labels) != expected:
+        return None
+    lab = to_lab(legend_bgr)
+    ramp = _find_vertical_ramp(lab)
+    if ramp is None:
+        return None
+    rx, ry, rw, rh = ramp
+
+    cell_h = rh / expected
+    if cell_h < 4:
+        return None
+    cells = []
+    for index in range(expected):
+        y0 = int(round(ry + index * cell_h))
+        y1 = int(round(ry + (index + 1) * cell_h))
+        cells.append((rx, y0, rw, max(1, y1 - y0)))
+
+    # Confirm the cells really differ; a flat strip is a rule, not a ramp.
+    medians = []
+    for rect in cells:
+        ex, ey, ew, eh = _erode_rect(*rect, frac=0.28)
+        patch = lab[ey:ey + eh, ex:ex + ew]
+        if not patch.size:
+            return None
+        medians.append(np.median(patch.reshape(-1, 3), axis=0))
+    span = max(
+        float(np.linalg.norm(medians[i] - medians[j]))
+        for i in range(len(medians))
+        for j in range(i + 1, len(medians))
+    )
+    if span < 8:
+        return None
+
+    upward = _ramp_runs_upward(labels)
+    if upward:
+        cells.reverse()
+    direction = "bottom-up" if upward else "top-down"
+    return cells, [
+        f"detected ordered vertical colour bar and split it into {expected} "
+        f"cell(s), read {direction}"
+    ]
+
+
 def _detect_compact_grid_swatches(
     legend_bgr: np.ndarray, expected: int,
 ) -> list[tuple[int, int, int, int]] | None:
@@ -765,6 +980,9 @@ def detect_swatches(
         colorbar = detect_horizontal_colorbar(legend_bgr, expected, labels)
         if colorbar is not None:
             return colorbar
+        colorbar = detect_vertical_colorbar(legend_bgr, expected, labels)
+        if colorbar is not None:
+            return colorbar
         compact = _detect_compact_grid_swatches(legend_bgr, expected)
         if compact is not None:
             return compact, [f"reconstructed compact {len(compact)}-swatch legend grid"]
@@ -772,28 +990,40 @@ def detect_swatches(
     lh, lw = legend_bgr.shape[:2]
     lab = to_lab(legend_bgr)
     bg = border_median_lab(lab, strip=max(2, min(lh, lw) // 50))
-    binmask = (np.linalg.norm(lab - bg, axis=2) > 10).astype(np.uint8)
-    binmask = cv2.morphologyEx(binmask, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
-    contours, _ = cv2.findContours(binmask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    raw = (np.linalg.norm(lab - bg, axis=2) > 10).astype(np.uint8)
+
+    # Closing bridges the anti-aliasing gap inside a swatch, but on a tight
+    # legend it also bridges the gap between a swatch and the label beside it,
+    # fusing the pair into one blob that then fails every uniformity test.  Read
+    # the untouched mask first and only close when that finds nothing.
+    def _candidates(binmask):
+        contours, _ = cv2.findContours(binmask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        found, rejected = [], []
+        for c in contours:
+            x, y, w, h = cv2.boundingRect(c)
+            if w < 8 or h < 6 or w > 0.6 * lw or h > 0.35 * lh:
+                rejected.append((x, y, w, h))
+                continue
+            if not 0.5 <= w / h <= 10:
+                continue
+            if cv2.contourArea(c) / (w * h) < 0.55:  # text/blobs are not filled rectangles
+                rejected.append((x, y, w, h))
+                continue
+            rect = (x, y, w, h)
+            if _swatch_ok(lab, rect, bg) or _textured_swatch_ok(lab, rect, bg):
+                found.append(rect)
+        return contours, found, rejected
+
+    closed = cv2.morphologyEx(raw, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+    contours, cands, rejected_size = _candidates(raw)
+    binmask = raw
+    if not cands:
+        contours, cands, rejected_size = _candidates(closed)
+        binmask = closed
 
     joined = _detect_vertically_joined_swatches(lab, contours, expected, bg)
     if joined is not None:
         return joined, [f"split a vertically joined {expected}-swatch legend stack"]
-
-    cands, rejected_size = [], []
-    for c in contours:
-        x, y, w, h = cv2.boundingRect(c)
-        if w < 8 or h < 6 or w > 0.6 * lw or h > 0.35 * lh:
-            rejected_size.append((x, y, w, h))
-            continue
-        if not 0.5 <= w / h <= 10:
-            continue
-        if cv2.contourArea(c) / (w * h) < 0.55:  # text/blobs are not filled rectangles
-            rejected_size.append((x, y, w, h))
-            continue
-        rect = (x, y, w, h)
-        if _swatch_ok(lab, rect, bg) or _textured_swatch_ok(lab, rect, bg):
-            cands.append(rect)
 
     warnings: list[str] = []
     if not cands:
@@ -1007,6 +1237,22 @@ def run_step2(image_path: Path, model: str | None = None, runs_dir: Path = Path(
             ordered=sem.data_ordering.value == "ordered",
         )
         warnings += sw_warn
+        if len(rects) > expected:
+            # A legend usually shows its thematic classes first and then the
+            # non-thematic fills -- water, urban, no-data -- so those carry real
+            # swatches too.  Dropping the surplus is only safe when Step 1 read
+            # the thematic entries as one unbroken block at the start and the
+            # surplus is no larger than the trailing non-thematic entries;
+            # otherwise the extra swatch could sit anywhere and every label
+            # after it would pair with the wrong colour.
+            trailing = len(legend_entries) - len(thematic_entries)
+            leading_block = all(entry.is_thematic for entry in legend_entries[:expected])
+            surplus = len(rects) - expected
+            if leading_block and trailing >= surplus:
+                warnings.append(
+                    f"kept the first {expected} legend swatches and set aside {surplus} "
+                    f"trailing non-thematic swatch(es)")
+                rects = rects[:expected]
         if len(rects) != expected:
             raise LegendSwatchDetectionError(
                 f"Step 2 cannot continue: detected {len(rects)} legend swatches "
@@ -1051,7 +1297,14 @@ def run_step2(image_path: Path, model: str | None = None, runs_dir: Path = Path(
                         f"'{sampled[i][0]}' and '{sampled[j][0]}' -- Step 4 may conflate them"
                     )
     elif sem.legend_present:
-        warnings.append("Step 1 says a legend exists but the layout call returned no legend box")
+        # Continuing here would hand Step 4 an empty palette and fail later with
+        # a message about missing seeds, far from the actual cause.  The legend
+        # is what names and colours every class, so stop where it went missing.
+        raise LegendSwatchDetectionError(
+            "Step 2 cannot continue: Step 1 read a legend on this map but the layout "
+            "call returned no legend box, so no palette could be sampled. Rerun Step 2, "
+            "or correct the map area in the Step 2 review."
+        )
 
     (out_dir / "classes.json").write_text(
         json.dumps({"classes": classes, "warnings": warnings}, indent=2), encoding="utf-8")

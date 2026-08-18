@@ -28,7 +28,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .isolate import imread, imwrite, to_lab, NAMED_COLORS, _NAMED_LAB
+from .isolate import imread, imwrite, thinning, to_lab, NAMED_COLORS, _NAMED_LAB
 from .semantics import MapSemantics, require_pipeline_eligible
 
 UNSEEDED_DELTA = 16.0   # pixel farther than this from every seed -> needs a new cluster
@@ -229,7 +229,7 @@ def _thin_component(component: np.ndarray) -> np.ndarray:
     padded = cv2.copyMakeBorder(
         (component > 0).astype(np.uint8) * 255, 1, 1, 1, 1,
         cv2.BORDER_CONSTANT, value=0)
-    return cv2.ximgproc.thinning(padded)[1:-1, 1:-1]
+    return thinning(padded)[1:-1, 1:-1]
 
 
 def _component_half_width(component: np.ndarray) -> float:

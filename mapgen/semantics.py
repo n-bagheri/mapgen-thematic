@@ -7,12 +7,13 @@ bounding boxes come from CV in Steps 2-5 (color *names* here are hints for
 pairing legend swatches to labels, never authoritative values).
 
 The API key is taken from GEMINI_API_KEY / GOOGLE_API_KEY if set, else from
-gemini_api.txt in the project root. Model defaults to Gemma 4 (26B A4B);
-override with GEMINI_MODEL or the CLI --model flag.
+api.txt or gemini_api.txt in the project root. Model defaults to Gemma 4
+(26B A4B); override with GEMINI_MODEL or the CLI --model flag.
 """
 
 from __future__ import annotations
 
+import io
 import json
 import mimetypes
 import os
@@ -32,7 +33,10 @@ AVAILABLE_MODELS = (
     ("gemma-4-31b-it", "Gemma 4 31B"),
 )
 DEFAULT_MODEL = "gemma-4-26b-a4b-it"
-KEY_FILE = Path(__file__).resolve().parent.parent / "gemini_api.txt"
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+# Both names are accepted so an existing checkout keeps working; the first one
+# that exists wins.  Every candidate is gitignored.
+KEY_FILES = (_PROJECT_ROOT / "api.txt", _PROJECT_ROOT / "gemini_api.txt")
 
 
 # --------------------------------------------------------------------------- schema
@@ -284,10 +288,18 @@ API_TIMEOUT_MS = 360_000  # Gemma image/schema requests can take about five minu
 def _ensure_api_key() -> None:
     if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
         return
-    if KEY_FILE.exists():
-        os.environ["GEMINI_API_KEY"] = KEY_FILE.read_text(encoding="utf-8").strip()
+    for path in KEY_FILES:
+        if not path.exists():
+            continue
+        key = path.read_text(encoding="utf-8").strip()
+        if not key:
+            raise RuntimeError(f"{path} is empty; put the API key in it")
+        os.environ["GEMINI_API_KEY"] = key
         return
-    raise RuntimeError(f"GEMINI_API_KEY is not set and {KEY_FILE} does not exist")
+    names = " or ".join(path.name for path in KEY_FILES)
+    raise RuntimeError(
+        f"GEMINI_API_KEY is not set and no key file was found "
+        f"({names} in {KEY_FILES[0].parent})")
 
 
 def generate_json(contents, schema, model: str | None = None, temperature: float = 0.2,
@@ -386,15 +398,43 @@ def generate_json(contents, schema, model: str | None = None, temperature: float
     raise RuntimeError(f"{resolved} returned no response")
 
 
+# Vision models tile an image internally at a few hundred pixels a side, so a
+# multi-megapixel scan costs upload time and inference latency without telling
+# the model anything more.  Both callers below read only resolution-independent
+# answers from it -- Step 1 returns semantics, Step 2 returns boxes normalized
+# to 0-1000 -- so the model can be shown a smaller copy safely.  Colour sampling
+# and every measurement still run against the untouched original.
+MODEL_IMAGE_MAX_SIDE = 1600
+
+
+def encode_for_model(image_path: Path) -> tuple[bytes, str]:
+    """Return (bytes, mime) for one map, downscaled if it is larger than needed."""
+    from PIL import Image
+
+    data = image_path.read_bytes()
+    mime = mimetypes.guess_type(image_path.name)[0] or "image/jpeg"
+    try:
+        with Image.open(image_path) as image:
+            if max(image.size) <= MODEL_IMAGE_MAX_SIDE:
+                return data, mime
+            scale = MODEL_IMAGE_MAX_SIDE / max(image.size)
+            size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
+            resized = image.convert("RGB").resize(size, Image.LANCZOS)
+            buffer = io.BytesIO()
+            resized.save(buffer, format="JPEG", quality=90)
+    except OSError:
+        return data, mime           # unreadable by PIL: let the API judge it
+    return buffer.getvalue(), "image/jpeg"
+
+
 def interpret_map(image_path: Path, model: str | None = None,
                   status: Callable[[str], None] | None = None) -> MapSemantics:
     """Run Step 1 on one map image and return validated semantics."""
     from google.genai import types
 
-    data = image_path.read_bytes()
+    data, mime = encode_for_model(image_path)
     if len(data) > MAX_IMAGE_BYTES:
         raise ValueError(f"{image_path.name} is {len(data)/1e6:.1f} MB; downscale it below 19 MB first")
-    mime = mimetypes.guess_type(image_path.name)[0] or "image/jpeg"
 
     semantics = generate_json(
         [types.Part.from_bytes(data=data, mime_type=mime), PROMPT],
