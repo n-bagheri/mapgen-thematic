@@ -113,8 +113,9 @@ async function applyPreset(onApproved) {
     state.activeStep = 6;
     renderWorkspace(true);
     if (decisionGate) {
-      state.autorun = true;
-      toast(`Level set to ${DETAIL_NAMES[level]}. Continuing the run.`);
+      toast(state.individualRun
+        ? `Level set to ${DETAIL_NAMES[level]}.`
+        : `Level set to ${DETAIL_NAMES[level]}. Continuing the run.`);
       await onApproved?.();
     } else {
       toast(result.invalidated?.length

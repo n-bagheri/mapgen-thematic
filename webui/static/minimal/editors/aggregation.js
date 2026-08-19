@@ -3,7 +3,7 @@
 import { $, esc, previewAggregation, saveAggregationReview } from "../api.js";
 import { state, toast, withBusy } from "../state.js";
 import { loadMaps } from "../workspace.js";
-import { continuePipeline, renderControls } from "../controls.js";
+import { renderControls } from "../controls.js";
 
 let previewTimer = null;
 let previewGeneration = 0;
@@ -160,7 +160,7 @@ export function aggregationGateHtml() {
     </section>`;
 }
 
-export function bindAggregationEditor() {
+export function bindAggregationEditor(onApproved) {
   document.querySelectorAll(".group-label").forEach((input) => {
     input.addEventListener("input", () => {
       state.groupLabels[Number(input.dataset.groupSlot)] = input.value;
@@ -218,7 +218,7 @@ export function bindAggregationEditor() {
     renderControls();
     queueAggregationPreview();
   });
-  $("approve-groups")?.addEventListener("click", approveAggregation);
+  $("approve-groups")?.addEventListener("click", () => approveAggregation(onApproved));
 }
 
 function moveLayerToGroup(classIndex, slotIndex) {
@@ -285,7 +285,7 @@ function clearAggregationPreviewUrl() {
   state.aggregationPreviewUrl = null;
 }
 
-async function approveAggregation() {
+async function approveAggregation(onApproved) {
   const groups = reviewedGroups();
   if (!groups.length) return;
   cancelAggregationPreview();
@@ -295,9 +295,10 @@ async function approveAggregation() {
     state.groupEdit = null;
     state.groupLabels = {};
     state.visibleGroupSlots = null;
-    state.autorun = true;
     await loadMaps();
-    await continuePipeline();
-    toast("Categories approved. Building the simplified map and the tactile result.");
+    toast(state.individualRun
+      ? "Categories approved."
+      : "Categories approved. Building the simplified map and the tactile result.");
+    await onApproved?.();
   });
 }

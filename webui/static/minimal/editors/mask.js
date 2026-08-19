@@ -228,7 +228,7 @@ async function approveMaskAndContinue(onApproved) {
     state.maskBrush.active = false;
     await loadMaps();
     await refreshSelectedData();
-    toast("Mask approved. Continuing the run.");
+    toast(state.individualRun ? "Mask approved." : "Mask approved. Continuing the run.");
     await onApproved?.();
   });
 }

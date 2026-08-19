@@ -9,7 +9,7 @@ import {
 } from "./api.js";
 import { blockingReason } from "./steps.js";
 import {
-  individualModeFor, isRunning, navCoversWorkspace, rememberIndividualMode,
+  currentStepKey, individualModeFor, isRunning, navCoversWorkspace, rememberIndividualMode,
   selectedMap, setNav, state, toast,
 } from "./state.js";
 import { renderProjectList } from "./library.js";
@@ -177,6 +177,7 @@ export async function startJob(steps) {
   await runSteps(state.selected, steps, state.model || state.defaultModel);
   state.job = { status: "running", steps, current: null, log: [] };
   state.viewStep = null;  // a fresh run follows itself again
+  state.activeStep = Number(steps[0]);
   renderWorkspace(true);
   state.pollVisualSignature = pollingVisualSignature(selectedMap());
   state.pollControlSignature = pollingControlSignature(selectedMap());
@@ -194,6 +195,7 @@ function pollingVisualSignature(map) {
   return [
     map?.stem || "",
     completedSignature(map),
+    currentStepKey(map) || "",
     state.previewLevel || "",
     String(state.colourView),
   ].join("|");
@@ -224,6 +226,10 @@ function pollingControlSignature(map) {
  *  scroll position and the disclosure they left open. */
 function renderPollingState(map) {
   if (!map) return;
+  if (state.job.status === "running" && !state.viewStep) {
+    const current = currentStepKey(map);
+    if (current) state.activeStep = Number(current);
+  }
   const visualSignature = pollingVisualSignature(map);
   const controlSignature = pollingControlSignature(map);
   const visualChanged = visualSignature !== state.pollVisualSignature;
@@ -316,7 +322,7 @@ function startPolling(immediate = false) {
         return;
       }
       if (map?.steps?.["9"]) {
-        state.autorun = false;
+        state.autorun = !map.step9_review_ready;
         state.activeStep = 9;
         toast(map.step9_review_ready
           ? "Your tactile map and its legend are ready to export."

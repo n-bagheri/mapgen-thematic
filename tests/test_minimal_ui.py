@@ -212,8 +212,8 @@ class EditorCoverageTests(unittest.TestCase):
 
     def test_each_step_has_an_editor(self):
         for name in ("readingEditorHtml", "maskDecisionHtml", "textEditorHtml", "lineEditorHtml",
-                     "aggregationGateHtml", "simplificationEditorHtml", "patternDecisionHtml",
-                     "brailleDecisionHtml", "legendEditorHtml", "exportEditorHtml"):
+                     "aggregationGateHtml", "simplificationDecisionHtml", "patternDecisionHtml",
+                     "brailleDecisionHtml", "legendDecisionHtml", "exportEditorHtml"):
             self.assertIn(name, self.controls)
 
     def test_every_editor_belongs_to_a_step(self):
@@ -230,10 +230,10 @@ class EditorCoverageTests(unittest.TestCase):
             3: ["textEditorHtml"],
             4: ["lineEditorHtml"],
             5: ["aggregationGateHtml"],
-            6: ["simplificationEditorHtml"],
+            6: ["simplificationDecisionHtml"],
             7: ["patternDecisionHtml"],
             8: ["brailleDecisionHtml"],
-            9: ["legendEditorHtml"],
+            9: ["legendDecisionHtml"],
         })
 
     def test_an_open_step_insets_its_contents(self):
@@ -279,20 +279,46 @@ class EditorCoverageTests(unittest.TestCase):
     def test_individual_mode_keeps_its_step_list_while_a_step_runs(self):
         render = self.controls[self.controls.index("export function renderControls()"):
                                self.controls.index("export function editorDetails")]
-        self.assertIn("state.individualRun ? individualRunHtml(map) : stepPanelHtml(map)", render)
+        self.assertIn("started ? individualRunHtml(map) : setupHtml(true, true)", render)
+        self.assertNotIn("stepPanelHtml(map)", render)
         individual = self.controls[self.controls.index("function individualStepDotsHtml(map)"):
                                    self.controls.index("/** Re-rendering mid-edit")]
         self.assertIn("STEP_DEFS.map((step)", individual)
         self.assertIn('data-individual-step="${step.key}"', individual)
-        self.assertIn("${!live && next ?", individual)
+        self.assertIn("const nextAction = !live && next", individual)
         self.assertIn("Run step ${esc(next.number)}</button>", individual)
         self.assertNotIn("${esc(next.title)}</button>", individual)
+        self.assertIn('state.individualRun ? "Individual run" : "Run all"', individual)
+        self.assertIn('id="continue-run"', individual)
+        self.assertIn('candidate?.key === "3" && !state.data.mask?.approved', individual)
         self.assertIn('candidate?.key === "6" && !map.step5_review_ready', individual)
         stylesheet = (STATIC / "minimal.css").read_text(encoding="utf-8")
         dots = re.search(r"\.individual-step-dots \{([^}]*)\}", stylesheet).group(1)
         self.assertIn("margin: 0", dots)
         heading = re.search(r"\.individual-run-heading \{([^}]*)\}", stylesheet).group(1)
         self.assertIn("gap: 0", heading)
+
+    def test_run_all_and_individual_runs_share_the_same_step_ui(self):
+        render = self.controls[self.controls.index("export function renderControls()"):
+                               self.controls.index("export function editorDetails")]
+        self.assertIn("started ? individualRunHtml(map) : setupHtml(true, true)", render)
+        self.assertNotIn("state.individualRun ? individualRunHtml", render)
+        flow = self.controls[self.controls.index("function individualRunHtml(map)"):
+                             self.controls.index("/** Re-rendering mid-edit")]
+        self.assertIn('state.individualRun ? "Individual run" : "Run all"', flow)
+        self.assertIn("stepStackHtml(map, true)", flow)
+        approval = self.controls[self.controls.index("async function continueAfterApproval()"):
+                                 self.controls.index("async function continueAfterLegendApproval()")]
+        self.assertIn("if (!state.individualRun)", approval)
+        self.assertIn("state.autorun = true", approval)
+        self.assertIn("await continuePipeline()", approval)
+
+    def test_run_all_follows_each_live_step_until_the_user_pins_one(self):
+        workspace = (MINIMAL_DIR / "workspace.js").read_text(encoding="utf-8")
+        self.assertIn('state.job.status === "running" && !state.viewStep', workspace)
+        self.assertIn("state.activeStep = Number(current)", workspace)
+        self.assertIn("currentStepKey(map) ||", workspace)
+        self.assertIn("state.viewStep = dot.dataset.individualStep", self.controls)
 
     def test_entering_individual_mode_saves_setup_and_runs_only_step_one(self):
         block = self.controls[self.controls.index("async function showIndividualSteps"):]
@@ -370,10 +396,8 @@ class EditorCoverageTests(unittest.TestCase):
                        "add-group", "reset-groups"):
             self.assertIn(marker, aggregation)
         self.assertNotIn("aggregationEditorHtml", aggregation)
-        step5_branch = self.controls[
-            self.controls.index('} else if (map.steps?.["5"] && !map.step5_review_ready) {'):
-            self.controls.index("} else if (simplificationDecision) {")]
-        self.assertIn("body = stepStackHtml(map, true)", step5_branch)
+        self.assertIn("5: [aggregationGateHtml]", self.controls)
+        self.assertIn("bindAggregationEditor(continueAfterApproval)", self.controls)
 
     def test_step_5_colours_come_from_step_4_classes(self):
         """classes_gen.json only exists after Step 6, so the Step 5 review has
@@ -424,9 +448,7 @@ class EditorCoverageTests(unittest.TestCase):
         stylesheet = (STATIC / "minimal.css").read_text(encoding="utf-8")
         self.assertIn("patternDecisionHtml", self.controls)
         self.assertNotIn("patternEditorHtml", patterns)
-        pattern_branch = self.controls[self.controls.index("} else if (patternDecision) {"):
-                                       self.controls.index("} else if (brailleDecision) {")]
-        self.assertIn("body = stepStackHtml(map, true)", pattern_branch)
+        self.assertIn("7: [patternDecisionHtml]", self.controls)
         for control_id in ("preserve-haptic-distances", "create-hybrid-map"):
             self.assertIn(f'modeButton("{control_id}"', patterns)
         self.assertIn('id="approve-patterns"', patterns)
@@ -454,12 +476,10 @@ class EditorCoverageTests(unittest.TestCase):
         stylesheet = (STATIC / "minimal.css").read_text(encoding="utf-8")
         self.assertIn("brailleDecisionHtml", self.controls)
         self.assertNotIn("brailleEditorHtml", braille)
-        braille_branch = self.controls[self.controls.index("} else if (brailleDecision) {"):
-                                       self.controls.index("} else if (legendDecision) {")]
-        self.assertIn("body = stepStackHtml(map, true)", braille_branch)
-        self.assertIn("bindBrailleEditor(continueAfterBrailleApproval)", self.controls)
-        approval = self.controls[self.controls.index("async function continueAfterBrailleApproval()"):
-                                 self.controls.index("function bindControlEvents()")]
+        self.assertIn("8: [brailleDecisionHtml]", self.controls)
+        self.assertIn("bindBrailleEditor(continueAfterApproval)", self.controls)
+        approval = self.controls[self.controls.index("async function continueAfterApproval()"):
+                                 self.controls.index("async function continueAfterLegendApproval()")]
         self.assertIn("renderWorkspace(true)", approval)
         self.assertNotIn('startJob(["9"])', approval)
         decision = braille[braille.index("export function brailleDecisionHtml()"):
@@ -558,18 +578,17 @@ class EditorCoverageTests(unittest.TestCase):
         self.assertIn("approveMaskAndContinue", mask)
 
     def test_individual_step2_uses_the_full_mask_decision_panel(self):
-        decision = self.controls.index("} else if (maskDecision) {")
-        individual = self.controls.index("} else if (state.individualRun) {")
-        self.assertLess(decision, individual)
-        condition_start = self.controls.index("const maskDecision =")
-        condition = self.controls[condition_start:self.controls.index(";", condition_start)]
-        self.assertNotIn("!state.individualRun", condition)
+        self.assertIn("2: [maskDecisionHtml]", self.controls)
+        render = self.controls[self.controls.index("export function renderControls()"):
+                               self.controls.index("export function editorDetails")]
+        self.assertIn("individualRunHtml(map)", render)
         visual = (MINIMAL_DIR / "visual.js").read_text(encoding="utf-8")
         self.assertIn("state.maskBrush.active = step === 2", visual)
-        self.assertIn("bindMaskEditor(continueAfterMaskApproval)", self.controls)
-        callback = self.controls[self.controls.index("async function continueAfterMaskApproval()"):
-                                 self.controls.index("function bindControlEvents()")]
-        self.assertIn('await startJob(["3"])', callback)
+        self.assertIn("bindMaskEditor(continueAfterApproval)", self.controls)
+        callback = self.controls[self.controls.index("async function continueAfterApproval()"):
+                                 self.controls.index("async function continueAfterLegendApproval()")]
+        self.assertIn("await continuePipeline()", callback)
+        self.assertNotIn('await startJob(["3"])', callback)
         mask = (MINIMAL_DIR / "editors" / "mask.js").read_text(encoding="utf-8")
         self.assertIn('class="mask-mode-icon"', mask)
         self.assertIn('src="/images/brush.png"', mask)

@@ -18,13 +18,13 @@ import { bindMaskEditor, maskDecisionHtml } from "./editors/mask.js";
 import { bindTextEditor, textEditorHtml } from "./editors/text.js";
 import { bindLineEditor, lineEditorHtml } from "./editors/lines.js";
 import {
-  bindSimplificationEditor, simplificationDecisionHtml, simplificationEditorHtml,
+  bindSimplificationEditor, simplificationDecisionHtml,
 } from "./editors/simplification.js";
 import {
   bindPatternEditor, patternDecisionHtml,
 } from "./editors/patterns.js";
 import { bindBrailleEditor, brailleDecisionHtml } from "./editors/braille.js";
-import { bindLegendEditor, legendDecisionHtml, legendEditorHtml } from "./editors/legend.js";
+import { bindLegendEditor, legendDecisionHtml } from "./editors/legend.js";
 import { bindExportEditor, exportEditorHtml } from "./editors/exportpdf.js";
 import { activeStep, setActiveStep } from "./visual.js";
 
@@ -38,58 +38,17 @@ export function renderControls() {
   const failed = state.job.status === "failed";
   const live = state.job.status === "running" || isRunning(map);
   const blocked = blockingReason(map);
-  // A paused part-way run shows the same step panel as a live one, so the
-  // results already produced stay readable while the run is stopped.
-  const paused = !live && !failed && !state.individualRun
-    && !map.steps?.["6"] && completedCount(map) > 0;
-  const maskDecision = !live && !failed && !blocked
-    && map.steps?.["2"] && !map.steps?.["3"] && !state.data.mask?.approved;
-  const simplificationDecision = !live && !failed && !blocked && !state.individualRun
-    && map.steps?.["6"] && !map.steps?.["7"] && !map.step6_review_ready;
-  const patternDecision = !live && !failed && !blocked && !state.individualRun
-    && map.steps?.["7"] && !map.steps?.["8"] && !map.step7_review_ready;
-  const brailleDecision = !live && !failed && !blocked && !state.individualRun
-    && map.steps?.["8"] && !map.steps?.["9"] && !map.step8_review_ready;
-  const legendDecision = !live && !failed && !blocked && !state.individualRun
-    && map.steps?.["9"] && !map.step9_review_ready;
-  const preflight = !live && !failed && !blocked && !paused
-    && !map.steps?.["6"] && !map.steps?.["5"] && !state.individualRun;
-  let body = "";
-  if (live) {
-    body = state.individualRun ? individualRunHtml(map) : stepPanelHtml(map);
-  } else if (blocked) {
-    body = scopeBlockHtml(map, blocked);
-  } else if (maskDecision) {
-    body = maskDecisionHtml();
-  } else if (state.individualRun) {
-    body = individualRunHtml(map);
-  } else if (map.steps?.["5"] && !map.step5_review_ready) {
-    body = stepStackHtml(map, true);
-  } else if (simplificationDecision) {
-    body = simplificationDecisionHtml();
-  } else if (patternDecision) {
-    body = stepStackHtml(map, true);
-  } else if (brailleDecision) {
-    body = stepStackHtml(map, true);
-  } else if (legendDecision) {
-    body = legendDecisionHtml();
-  } else if (!map.steps?.["6"]) {
-    body = paused
-      ? setupHtml(false) + stepPanelHtml(map) + stepStackHtml(map)
-      : setupHtml(true, true);
-  } else {
-    body = resultActionHtml(map) + stepStackHtml(map);
-  }
-  if (failed) body = state.individualRun
-    ? individualRunHtml(map) + failurePanelHtml(map)
-    : stepPanelHtml(map) + failurePanelHtml(map);
+  const started = live || failed || Boolean(blocked) || completedCount(map) > 0
+    || state.individualRun;
+  const preflight = !started;
+  let body = started ? individualRunHtml(map) : setupHtml(true, true);
+  if (blocked) body += scopeBlockHtml(map, blocked);
+  if (failed) body += failurePanelHtml(map);
   $("control-content").innerHTML = `
     <div class="control-shell${preflight ? " is-preflight" : ""}">
       <header class="control-header">
         <div><h2>${esc(map.name)}</h2></div>
       </header>
-      ${live || failed || paused || blocked || maskDecision || state.individualRun || simplificationDecision || patternDecision || brailleDecision || legendDecision
-        ? "" : progressHtml(map)}
       ${body}
       ${resetRowHtml(map, live)}
     </div>`;
@@ -165,10 +124,10 @@ const STEP_EDITORS = {
   3: [textEditorHtml],
   4: [lineEditorHtml],
   5: [aggregationGateHtml],
-  6: [simplificationEditorHtml],
+  6: [simplificationDecisionHtml],
   7: [patternDecisionHtml],
   8: [brailleDecisionHtml],
-  9: [legendEditorHtml],
+  9: [legendDecisionHtml],
 };
 
 /** The right pane mirrors the detailed page: one row per pipeline step, in
@@ -459,26 +418,37 @@ function individualStepDotsHtml(map) {
 function individualRunHtml(map) {
   const completed = completedCount(map);
   const candidate = STEP_DEFS.find((step) => !map.steps?.[step.key]);
-  const waitingForApproval = candidate?.key === "6" && !map.step5_review_ready
+  const waitingForApproval = candidate?.key === "3" && !state.data.mask?.approved
+    || candidate?.key === "6" && !map.step5_review_ready
     || candidate?.key === "7" && !map.step6_review_ready
     || candidate?.key === "8" && !map.step7_review_ready
     || candidate?.key === "9" && !map.step8_review_ready;
   const next = waitingForApproval ? null : candidate;
   const live = state.job.status === "running";
+  const modeLabel = state.individualRun ? "Individual run" : "Run all";
+  const nextAction = !live && next
+    ? state.individualRun
+      ? `<div class="action-row end individual-next-step">
+          <button class="button primary" data-run-step="${next.key}" type="button">
+            Run step ${esc(next.number)}</button>
+        </div>`
+      : !state.autorun
+        ? `<div class="action-row end individual-next-step">
+            <button class="button primary" id="continue-run" type="button">Continue run</button>
+          </div>`
+        : ""
+    : "";
   return `
     <section class="individual-run-heading">
       ${individualStepDotsHtml(map)}
-      <div><span class="section-kicker">Individual run</span>
+      <div><span class="section-kicker">${modeLabel}</span>
         <h3>${completed ? `${completed} completed step${completed === 1 ? "" : "s"}` : "No steps completed yet"}</h3></div>
     </section>
     ${completed ? stepStackHtml(map, true)
       : `<div class="empty-editor individual-empty">${live
         ? "The first step is running. Completed steps will appear here."
         : "Run Step 1 to begin. Completed steps will appear here."}</div>`}
-    ${!live && next ? `<div class="action-row end individual-next-step">
-      <button class="button primary" data-run-step="${next.key}" type="button">
-        Run step ${esc(next.number)}</button>
-    </div>` : ""}`;
+    ${nextAction}`;
 }
 
 /** Re-rendering mid-edit would replace the inputs the user is still typing in,
@@ -797,7 +767,7 @@ export async function continuePipeline() {
       state.autorun = true;
       await startJob(missing);
     } else {
-      state.autorun = false;
+      state.autorun = !map.step9_review_ready;
       state.activeStep = 9;
       await refreshSelectedData();
       renderWorkspace(true);
@@ -826,23 +796,11 @@ async function rerunStep1() {
   });
 }
 
-/** Approval advances one stage in an individual run, while an automatic run
- * resumes its normal grouped batches. */
-async function continueAfterMaskApproval() {
+/** Every decision panel has the same post-approval behavior: Run all resumes
+ * automatically, while an individual run exposes its next numbered button. */
+async function continueAfterApproval() {
   if (!state.individualRun) {
-    await continuePipeline();
-    return;
-  }
-  state.autorun = false;
-  state.viewStep = null;
-  setActiveStep(3);
-  await startJob(["3"]);
-}
-
-/** Step 8 approval unlocks Step 9. In an individual run the reader starts it
- * with the normal next-step button; an automatic run continues immediately. */
-async function continueAfterBrailleApproval() {
-  if (!state.individualRun) {
+    state.autorun = true;
     await continuePipeline();
     return;
   }
@@ -851,10 +809,16 @@ async function continueAfterBrailleApproval() {
   renderWorkspace(true);
 }
 
+async function continueAfterLegendApproval() {
+  state.autorun = false;
+  state.viewStep = null;
+  renderWorkspace(true);
+}
+
 function bindControlEvents() {
   document.querySelectorAll("[data-individual-step]").forEach((dot) => {
     dot.addEventListener("click", () => {
-      state.viewStep = null;
+      state.viewStep = dot.dataset.individualStep;
       setActiveStep(dot.dataset.individualStep, true);
       renderControls();
     });
@@ -874,6 +838,7 @@ function bindControlEvents() {
       document.querySelectorAll(".step-section").forEach((other) => {
         if (other !== details) other.open = false;
       });
+      state.viewStep = details.dataset.step;
       setActiveStep(details.dataset.step);
     });
   });
@@ -889,14 +854,14 @@ function bindControlEvents() {
   $("rerun-step1")?.addEventListener("click", rerunStep1);
   $("reset-map")?.addEventListener("click", resetMap);
   bindPageSetup();
-  bindAggregationEditor();
-  bindMaskEditor(continueAfterMaskApproval);
+  bindAggregationEditor(continueAfterApproval);
+  bindMaskEditor(continueAfterApproval);
   bindTextEditor();
   bindLineEditor();
-  bindSimplificationEditor(continuePipeline);
-  bindPatternEditor(continuePipeline);
-  bindBrailleEditor(continueAfterBrailleApproval);
-  bindLegendEditor(() => renderWorkspace(true));
+  bindSimplificationEditor(continueAfterApproval);
+  bindPatternEditor(continueAfterApproval);
+  bindBrailleEditor(continueAfterApproval);
+  bindLegendEditor(continueAfterLegendApproval);
   bindExportEditor(() => setActiveStep(9, true));
 }
 
