@@ -798,5 +798,98 @@ class ViewerToolTests(unittest.TestCase):
         self.assertEqual(len(re.findall(r"hybrid:", block)), 3)  # steps 7, 8 and 9
 
 
+class VersionSkewTests(unittest.TestCase):
+    """Updating the checkout does not reload a running server.
+
+    Every symptom of that skew used to surface as a refusal about the map --
+    an unsupported mask action, a review gate that never opens, "the method is
+    not allowed" -- so these pin the parts that name the real cause instead.
+    """
+
+    def setUp(self):
+        self.client = server.app.test_client()
+
+    def test_the_page_and_the_server_agree_on_one_contract_number(self):
+        source = (MINIMAL_DIR / "api.js").read_text(encoding="utf-8")
+        declared = re.search(r"export const UI_CONTRACT = (\d+);", source)
+        self.assertIsNotNone(declared, "api.js must declare UI_CONTRACT")
+        self.assertEqual(int(declared.group(1)), server.UI_CONTRACT)
+
+    def test_the_map_list_states_the_contract_it_implements(self):
+        response = self.client.get("/api/maps")
+        try:
+            payload = response.get_json()
+            self.assertEqual(payload["contract"], server.UI_CONTRACT)
+            self.assertIn("restart_required", payload)
+        finally:
+            response.close()
+
+    def test_a_server_older_than_the_page_reports_no_contract(self):
+        """Which is what makes an old server recognisable: the focused view
+        reads a missing contract as 0 and refuses to blame the map."""
+        source = (MINIMAL_DIR / "api.js").read_text(encoding="utf-8")
+        self.assertIn("serverContract = Number(payload?.contract) || 0", source)
+        self.assertIn("serverContract < UI_CONTRACT", source)
+        self.assertIn("staleServerAdvice()", source)
+
+    def test_the_notice_stays_up_instead_of_passing_like_a_toast(self):
+        state = (MINIMAL_DIR / "state.js").read_text(encoding="utf-8")
+        workspace = (MINIMAL_DIR / "workspace.js").read_text(encoding="utf-8")
+        self.assertIn("export function serverNotice(message)", state)
+        self.assertNotIn("setTimeout", state[state.index("export function serverNotice"):])
+        self.assertEqual(workspace.count("serverNotice(staleServerAdvice())"), 2)
+
+    def test_an_endpoint_this_build_lacks_is_a_named_404_not_a_405(self):
+        """Static files are served from the root, so an unknown /api/ path also
+        matches the static rule -- for GET only.  A POST to an endpoint the
+        server predates must not come back as "method not allowed"."""
+        for method in ("get", "post", "put", "patch", "delete"):
+            response = getattr(self.client, method)("/api/no-such-endpoint/x")
+            try:
+                self.assertEqual(response.status_code, 404)
+                self.assertIn("no /api/no-such-endpoint/x endpoint",
+                              response.get_json()["error"])
+            finally:
+                response.close()
+
+    def test_the_catch_all_shadows_no_real_endpoint(self):
+        adapter = server.app.url_map.bind("127.0.0.1")
+        for rule in server.app.url_map.iter_rules():
+            if not rule.rule.startswith("/api/") or rule.endpoint == "api_unknown":
+                continue
+            sample = rule.rule
+            for argument in rule.arguments:
+                sample = sample.replace(f"<{argument}>", "x")
+                sample = sample.replace(f"<int:{argument}>", "1")
+                sample = sample.replace(f"<path:{argument}>", "x/y")
+            for method in sorted(rule.methods - {"HEAD", "OPTIONS"}):
+                self.assertEqual(adapter.match(sample, method=method)[0], rule.endpoint,
+                                 f"{method} {sample} no longer reaches {rule.endpoint}")
+
+    def test_the_application_itself_is_never_served_from_cache(self):
+        """Only the entry module carries a version query and an ES import
+        inherits the importing URL without it, so a cached module would pair
+        old JavaScript with a current server."""
+        for path in ("/", "/minimal", "/minimal.css", "/minimal/main.js",
+                     "/minimal/editors/mask.js"):
+            response = self.client.get(path)
+            try:
+                self.assertIn("no-store", response.headers.get("Cache-Control", ""))
+            finally:
+                response.close()
+
+    def test_the_running_server_notices_its_own_sources_moving(self):
+        original = server._STARTED_FINGERPRINT
+        server._stale_source_check = (0.0, False)
+        try:
+            self.assertFalse(server.restart_required())
+            server._STARTED_FINGERPRINT = (("server.py", 0, 0),)
+            server._stale_source_check = (0.0, False)
+            self.assertTrue(server.restart_required())
+        finally:
+            server._STARTED_FINGERPRINT = original
+            server._stale_source_check = (0.0, False)
+
+
 if __name__ == "__main__":
     unittest.main()

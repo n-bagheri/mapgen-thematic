@@ -5,12 +5,12 @@ import {
   getJob, getLabelReview, getLegendLayout, getLineReview, getMaps, getMaskReview,
   getModels, getPageLayout, getPatternData, getSpec, getStep6Params, getStep6Presets,
   getStep7Review, getStep8Review, getStep9Review,
-  runSteps, saveStep6Params, uploadFile,
+  runSteps, saveStep6Params, staleServerAdvice, uploadFile,
 } from "./api.js";
 import { blockingReason } from "./steps.js";
 import {
   currentStepKey, individualModeFor, isRunning, navCoversWorkspace, rememberIndividualMode,
-  selectedMap, setNav, state, toast,
+  selectedMap, serverNotice, setNav, state, toast,
 } from "./state.js";
 import { renderProjectList } from "./library.js";
 import { continuePipeline, renderControls } from "./controls.js";
@@ -22,6 +22,9 @@ import { renderVisual } from "./visual.js";
 export async function loadMaps() {
   const payload = await getMaps();
   state.maps = payload.maps || [];
+  // Every list answer re-states the server's vintage, so the bar appears the
+  // moment the checkout moves underneath a server that is still running.
+  serverNotice(staleServerAdvice());
   renderProjectList();
 }
 
@@ -264,6 +267,7 @@ function startPolling(immediate = false) {
       state.pollFailures = 0;
       state.job = job || { status: "idle" };
       state.maps = mapsPayload.maps || [];
+      serverNotice(staleServerAdvice());
       renderPollingState(selectedMap());
       if (state.job.status === "running") {
         state.pollTimer = window.setTimeout(tick, 1200);

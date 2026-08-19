@@ -705,6 +705,21 @@ input[type="range"] { width: 100%; accent-color: var(--forest); }
 .toast.error { border-color: #e1b2ae; color: var(--danger); background: var(--danger-soft); }
 .toast.warning { border-color: #e4c28e; color: #754811; background: var(--amber-soft); }
 
+/* A server older than the page it served: nothing on screen can be trusted to
+   work, so this sits above everything and stays until the process restarts. */
+.server-notice {
+  position: fixed;
+  z-index: 120;
+  inset: 0 0 auto 0;
+  padding: 11px 18px;
+  border-bottom: 1px solid #e1b2ae;
+  color: var(--danger);
+  background: var(--danger-soft);
+  box-shadow: var(--shadow);
+  font-size: 12px;
+  text-align: center;
+}
+
 /* ------------------------------------------------------------------------
    Everything below serves the steps the older focused view never had:
    the Step 2 mask brush, Step 7 transforms/colours/page furniture, and the

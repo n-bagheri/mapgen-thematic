@@ -136,6 +136,25 @@ export function toast(message, type = "") {
   window.setTimeout(() => node.remove(), 4200);
 }
 
+/** A version mismatch is not about the map and is not fixed by trying again, so
+ *  it outlives a toast: the bar stays until the server has been restarted.
+ *  Passing an empty message takes it back down. */
+export function serverNotice(message) {
+  const existing = $("server-notice");
+  if (!message) {
+    existing?.remove();
+    return;
+  }
+  const node = existing || document.createElement("div");
+  if (!existing) {
+    node.id = "server-notice";
+    node.className = "server-notice";
+    node.setAttribute("role", "alert");
+    document.body.appendChild(node);
+  }
+  node.textContent = message;
+}
+
 export function setNav(open, returnFocus = false) {
   document.body.classList.toggle("nav-open", open);
   const toggle = $("nav-toggle");

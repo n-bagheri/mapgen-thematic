@@ -17,6 +17,7 @@ import re
 import shutil
 import sys
 import threading
+import time
 import traceback
 from pathlib import Path
 
@@ -45,6 +46,54 @@ app = Flask(__name__, static_folder=str(Path(__file__).parent / "static"), stati
 
 _lock = threading.Lock()
 _jobs: dict[str, dict] = {}  # stem -> job record
+
+# The focused view in webui/static/minimal and this file are one contract: the
+# page posts actions and reads review flags that only a server of the same
+# vintage implements.  Bump this whenever an endpoint the focused view depends
+# on gains or changes a field, so a page served from a newer checkout can name
+# the mismatch instead of failing later with an "unsupported field" refusal.
+UI_CONTRACT = 2
+
+# Every source file this process was started from.  `app.run` deliberately runs
+# without the reloader, so a pipeline job is never killed mid-step -- which also
+# means updating the checkout while the server is up leaves the browser on the
+# new static files and this process on the old Python.  That skew is the one
+# failure the focused view cannot diagnose from its own side.
+_SOURCE_FILES = (Path(__file__).resolve(), *sorted((ROOT / "mapgen").glob("*.py")))
+_STALE_CHECK_SECONDS = 2.0
+
+
+def _source_fingerprint() -> tuple:
+    marks = []
+    for path in _SOURCE_FILES:
+        try:
+            stat = path.stat()
+        except OSError:
+            marks.append((path.name, None, None))
+        else:
+            marks.append((path.name, stat.st_mtime_ns, stat.st_size))
+    return tuple(marks)
+
+
+_STARTED_FINGERPRINT = _source_fingerprint()
+_stale_source_check: tuple[float, bool] = (0.0, False)
+
+
+def restart_required() -> bool:
+    """True once the files this process was started from have changed on disk.
+
+    Nothing reloads them, so the answer only ever goes from False to True; the
+    check is throttled because /api/maps is polled about once a second while a
+    job runs.
+    """
+    global _stale_source_check
+    checked_at, stale = _stale_source_check
+    now = time.monotonic()
+    if stale or now - checked_at < _STALE_CHECK_SECONDS:
+        return stale
+    stale = _source_fingerprint() != _STARTED_FINGERPRINT
+    _stale_source_check = (now, stale)
+    return stale
 
 STEP_ARTIFACTS = {
     1: ("step1_semantics.json",),
@@ -518,6 +567,33 @@ def minimal_index():
     return app.send_static_file("minimal.html")
 
 
+@app.get("/api/version")
+def api_version():
+    """What this process implements, and whether its own sources moved under it."""
+    return jsonify({"contract": UI_CONTRACT, "restart_required": restart_required()})
+
+
+@app.route("/api/<path:endpoint>",
+           methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+def api_unknown(endpoint: str):
+    """Answer for an endpoint this build of the server has never had.
+
+    Static files are served from the root (`static_url_path=""`), so without
+    this the static rule matches an unknown /api/... path as well -- for GET
+    only.  A POST to a missing endpoint then reports "the method is not allowed
+    for the requested URL", which is true and names the wrong problem.  Say what
+    is actually wrong, and say it as JSON so the focused view can show it.
+    """
+    detail = (" This page was served by a newer checkout than the running"
+              " server; stop webui/server.py and start it again."
+              if restart_required() else "")
+    return jsonify({
+        "error": f"this server has no /api/{endpoint} endpoint.{detail}",
+        "contract": UI_CONTRACT,
+        "restart_required": restart_required(),
+    }), 404
+
+
 @app.get("/api/maps")
 def api_maps():
     with _lock:
@@ -543,7 +619,10 @@ def api_maps():
             "step9_review_ready": step9_review_ready(p.stem),
             "job": snapshot.get(p.stem),
         })
-    return jsonify({"maps": maps})
+    # The focused view checks these two on every poll: they are how a page from
+    # a newer checkout recognises a server that has not been restarted yet.
+    return jsonify({"maps": maps, "contract": UI_CONTRACT,
+                    "restart_required": restart_required()})
 
 
 @app.post("/api/upload")
@@ -2047,7 +2126,26 @@ def api_spec_post():
     return jsonify({"ok": True})
 
 
+@app.after_request
+def _never_cache_the_application(response):
+    """Serve the pages and their modules fresh.
+
+    Only the entry module carries a version query, and an ES module's imports
+    inherit the importing URL without it, so every other module would be cached
+    under a bare path.  These files are read from local disk; there is nothing
+    to gain by letting a browser hold an older copy of one of them.
+    """
+    path = request.path
+    if path in ("/", "/minimal") or path.endswith((".js", ".css", ".html")):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("MAPGEN_PORT", "5001"))
     print(f"MapGen UI on http://127.0.0.1:{port}  (project root: {ROOT})")
+    print(f"UI contract {UI_CONTRACT}. Updating the checkout does not reload a "
+          f"running server -- stop and start this process after a git pull.")
     app.run(host="127.0.0.1", port=port, threaded=True)

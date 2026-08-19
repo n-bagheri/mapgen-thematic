@@ -54,17 +54,41 @@ async function apiBlob(path, options = {}) {
   throw new Error(errorMessage(payload, response.status));
 }
 
+/* This view and webui/server.py ship together: the page posts actions and reads
+   review flags that a server from an earlier checkout does not have.  Keep this
+   equal to UI_CONTRACT in webui/server.py. */
+export const UI_CONTRACT = 2;
+
+const RESTART_ADVICE = "The server is running an older version of this project than "
+  + "this page. Stop webui/server.py and start it again.";
+
+let serverContract = null;
+let serverRestartRequired = false;
+
+/** The advice a version mismatch calls for, or "" while the two sides agree.
+ *  A server older than this contract reports no contract at all, which reads as
+ *  0 -- so the very first /api/maps answer is enough to recognise one. */
+export function staleServerAdvice() {
+  if (serverRestartRequired) return RESTART_ADVICE;
+  return serverContract !== null && serverContract < UI_CONTRACT ? RESTART_ADVICE : "";
+}
+
 /** Endpoints report a refusal either as {error} or, when the server aborts,
  *  as one of Flask's HTML pages.  Both have to read as a plain sentence,
  *  because these messages are shown to the reader verbatim. */
 function errorMessage(payload, status) {
-  if (payload && typeof payload === "object" && payload.error) return String(payload.error);
-  if (typeof payload === "string" && payload) {
+  let text = "";
+  if (payload && typeof payload === "object" && payload.error) {
+    text = String(payload.error);
+  } else if (typeof payload === "string" && payload) {
     const paragraph = payload.match(/<p>([\s\S]*?)<\/p>/i);
-    const text = (paragraph ? paragraph[1] : payload).replace(/<[^>]*>/g, "").trim();
-    if (text) return text;
+    text = (paragraph ? paragraph[1] : payload).replace(/<[^>]*>/g, "").trim();
   }
-  return `Request failed (${status})`;
+  if (!text) text = `Request failed (${status})`;
+  // An outdated server refuses in terms of the actions it knows, so its own
+  // wording never points at the real fix.
+  const advice = staleServerAdvice();
+  return advice ? `${text} — ${advice}` : text;
 }
 
 export async function artifactJson(stem, name) {
@@ -82,7 +106,12 @@ const json = (method, body) => ({
 });
 
 /* -- projects ---------------------------------------------------------- */
-export const getMaps = () => api("/api/maps");
+export const getMaps = async () => {
+  const payload = await api("/api/maps");
+  serverContract = Number(payload?.contract) || 0;
+  serverRestartRequired = Boolean(payload?.restart_required);
+  return payload;
+};
 export const getModels = () => api("/api/models");
 export const getSpec = () => api("/api/spec");
 export const saveSpecText = (spec) => api("/api/spec", json("POST", { spec: JSON.stringify(spec) }));
