@@ -20,7 +20,7 @@ import { bindPageEditor, pageEditorHtml } from "./editors/page.js";
 import { bindBrailleEditor, brailleEditorHtml } from "./editors/braille.js";
 import { bindLegendEditor, legendEditorHtml } from "./editors/legend.js";
 import { bindExportEditor, exportEditorHtml } from "./editors/exportpdf.js";
-import { activeStep, setActiveStep } from "./visual.js";
+import { activeStep, renderVisual, setActiveStep } from "./visual.js";
 
 /* The control pane shows exactly one body at a time — a run, a decision, the
    setup, or the editors — with the progress summary above and the reset row
@@ -35,6 +35,9 @@ export function renderControls() {
   // A paused part-way run shows the same step panel as a live one, so the
   // results already produced stay readable while the run is stopped.
   const paused = !live && !failed && !map.steps?.["6"] && completedCount(map) > 0;
+  const preflight = !live && !failed && !blocked && !paused
+    && !map.steps?.["6"] && !map.steps?.["5"] && !state.individualRun;
+  document.body.classList.toggle("preflight-layout", preflight);
   let body = "";
   if (live) {
     body = stepPanelHtml(map);
@@ -43,13 +46,15 @@ export function renderControls() {
   } else if (map.steps?.["5"] && !map.step5_review_ready) {
     body = aggregationGateHtml() + stepStackHtml(map);
   } else if (!map.steps?.["6"]) {
-    body = setupHtml(!paused) + (paused ? stepPanelHtml(map) : "") + stepStackHtml(map);
+    body = paused
+      ? setupHtml(false) + stepPanelHtml(map) + stepStackHtml(map)
+      : state.individualRun ? individualRunHtml(map) : setupHtml(true, true);
   } else {
     body = resultActionHtml(map) + stepStackHtml(map);
   }
   if (failed) body = stepPanelHtml(map) + failurePanelHtml(map);
   $("control-content").innerHTML = `
-    <div class="control-shell">
+    <div class="control-shell${preflight ? " is-preflight" : ""}">
       <header class="control-header">
         <div><h2>${esc(map.name)}</h2></div>
       </header>
@@ -189,6 +194,7 @@ async function resetMap() {
     state.job = { status: "idle" };
     state.viewStep = null;
     state.activeStep = 1;
+    state.individualRun = false;
     state.previewLevel = null;
     state.maskBrush.strokes = [];
     state.maskBrush.active = false;
@@ -224,7 +230,7 @@ function modelOptions() {
     ${model.id === (state.model || state.defaultModel) ? "selected" : ""}>${esc(model.label)}</option>`).join("");
 }
 
-function setupHtml(showRun = true) {
+function setupHtml(showRun = true, showIndividual = false) {
   const spec = state.spec;
   const size = state.customPage ? "custom" : pageSizeKey(spec);
   const orientation = spec?.orientation || "auto";
@@ -267,10 +273,22 @@ function setupHtml(showRun = true) {
           </div>
         </div>` : ""}
       </div>
-      ${showRun ? `<div class="action-row end">
+      ${showRun ? `<div class="action-row end${showIndividual ? " preflight-actions" : ""}">
+        ${showIndividual ? `<button class="button primary" id="show-step-controls" type="button">
+          Run each step individually</button>` : ""}
         <button class="button primary run-button" id="run-all" type="button">Run all</button>
       </div>` : ""}
     </section>`;
+}
+
+function individualRunHtml(map) {
+  return `
+    <section class="individual-run-heading">
+      <div><span class="section-kicker">Individual run</span>
+        <h3>Choose the step you want to run.</h3></div>
+      <button class="button subtle small" id="show-run-setup" type="button">Back to run setup</button>
+    </section>
+    ${stepStackHtml(map)}`;
 }
 
 /** Re-rendering mid-edit would replace the inputs the user is still typing in,
@@ -449,6 +467,21 @@ async function runAll() {
   });
 }
 
+function showIndividualSteps() {
+  state.individualRun = true;
+  state.activeStep = 1;
+  renderControls();
+  renderVisual();
+  $("control-pane")?.scrollTo({ top: 0 });
+}
+
+function showRunSetup() {
+  state.individualRun = false;
+  renderControls();
+  renderVisual();
+  $("control-pane")?.scrollTo({ top: 0 });
+}
+
 /** Resume a paused run, saving the settings still on screen first. */
 async function resumeRun() {
   await withBusy($("continue-run"), "Starting…", async () => {
@@ -535,6 +568,8 @@ function bindControlEvents() {
   document.querySelectorAll("[data-run-step]").forEach((button) => {
     button.addEventListener("click", () => runSingleStep(button.dataset.runStep, button));
   });
+  $("show-step-controls")?.addEventListener("click", showIndividualSteps);
+  $("show-run-setup")?.addEventListener("click", showRunSetup);
   $("model-select")?.addEventListener("change", (event) => { state.model = event.target.value; });
   $("run-all")?.addEventListener("click", runAll);
   $("continue-run")?.addEventListener("click", resumeRun);

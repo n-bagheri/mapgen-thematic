@@ -7,7 +7,7 @@ import {
   runSteps, saveStep6Params, uploadFile,
 } from "./api.js";
 import { blockingReason } from "./steps.js";
-import { isRunning, selectedMap, setNav, state, toast } from "./state.js";
+import { isRunning, navCoversWorkspace, selectedMap, setNav, state, toast } from "./state.js";
 import { renderProjectList } from "./library.js";
 import { continuePipeline, renderControls } from "./controls.js";
 import { renderVisual } from "./visual.js";
@@ -74,11 +74,12 @@ export async function selectMap(stem) {
   state.groupLabels = {};
   state.visibleGroupSlots = null;
   state.autorun = false;
-  state.renaming = false;
+  state.renaming = null;
+  state.individualRun = false;
   state.patternGroup = 0;
   state.maskBrush = { active: false, mode: "erase", radius: 12, strokes: [] };
   state.activeStep = null;   // follow the run until the reader opens a step
-  setNav(false);
+  if (navCoversWorkspace()) setNav(false);   // otherwise the library stays open
   renderProjectList();
   await refreshSelectedData();
   renderWorkspace(true);
@@ -131,9 +132,14 @@ export function renderWorkspace(revealActive = false) {
   $("visual-content").hidden = !map;
   $("control-content").hidden = !map;
   renderProjectList();
-  if (!map) return;
-  renderVisual();
+  if (!map) {
+    document.body.classList.remove("preflight-layout");
+    return;
+  }
+  // Controls decide whether this is the compact preflight layout. Render them
+  // first so the page viewer measures the height it will actually receive.
   renderControls();
+  renderVisual();
   if (revealActive) {
     window.requestAnimationFrame(() => $("visual-pane")?.scrollTo({ top: 0 }));
   }

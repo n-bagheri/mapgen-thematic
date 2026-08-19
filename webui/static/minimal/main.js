@@ -2,7 +2,6 @@
 
 import { $ } from "./api.js";
 import { setNav, state, toast } from "./state.js";
-import { bindLibraryTools } from "./library.js";
 import { closePatternPickers } from "./editors/patterns.js";
 import { loadMaps, loadModels, loadSpec, renderWorkspace, uploadMap } from "./workspace.js";
 
@@ -15,7 +14,6 @@ function bindStaticEvents() {
   $("nav-backdrop").addEventListener("click", () => setNav(false, true));
   $("nav-add-map").addEventListener("click", () => $("upload-input").click());
   $("upload-input").addEventListener("change", (event) => uploadMap(event.target.files?.[0]));
-  bindLibraryTools();
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && document.body.classList.contains("nav-open")) setNav(false, true);
   });

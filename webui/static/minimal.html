@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>MapGen Focus</title>
-  <link rel="stylesheet" href="/minimal.css?v=focus-9">
+  <link rel="stylesheet" href="/minimal.css?v=focus-11">
 </head>
 <body class="nav-open">
   <a class="skip-link" href="#control-pane">Skip to map controls</a>
@@ -19,16 +19,12 @@
   <aside class="project-nav" id="project-nav" aria-label="Map library">
     <div class="nav-heading">
       <h1>Maps</h1>
-      <button class="button primary small" id="nav-add-map" type="button">New map</button>
+      <button class="button primary small" id="nav-add-map" type="button"><span class="button-plus" aria-hidden="true">+</span>Add map</button>
     </div>
     <nav class="project-list" id="project-list" aria-label="Available maps"></nav>
     <div class="nav-empty" id="nav-empty" hidden>
       <span aria-hidden="true">+</span>
       <p>Add a PNG or JPG map to begin.</p>
-    </div>
-    <div class="project-tools" id="project-tools" hidden>
-      <button class="button subtle small" id="rename-project" type="button">Rename</button>
-      <button class="button danger small" id="delete-project" type="button">Delete</button>
     </div>
     <footer class="nav-footer">
       <a href="/">Open all steps</a>
@@ -51,6 +47,6 @@
   <input class="visually-hidden" id="upload-input" type="file" accept=".png,.jpg,.jpeg">
   <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
 
-  <script type="module" src="/minimal/main.js?v=focus-9"></script>
+  <script type="module" src="/minimal/main.js?v=focus-11"></script>
 </body>
 </html>

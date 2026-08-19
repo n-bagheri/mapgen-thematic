@@ -35,7 +35,8 @@ export const state = {
   pollControlSignature: "",
   maskBrush: { active: false, mode: "erase", radius: 12, strokes: [] },
   patternGroup: 0,     // which Step 7 area the transform box is editing
-  renaming: false,
+  renaming: null,     // stem of the project whose name is being edited in place
+  individualRun: false,
 };
 
 export function selectedMap() {
@@ -91,6 +92,13 @@ export function setNav(open, returnFocus = false) {
   nav.setAttribute("aria-hidden", String(!open));
   nav.inert = !open;
   if (returnFocus) toggle.focus();
+}
+
+/** Wide enough and the drawer sits beside the workspace, so choosing a map can
+ *  leave it open; narrower, minimal.css floats it over the workspace and a
+ *  chosen map would stay hidden behind it. */
+export function navCoversWorkspace() {
+  return window.matchMedia("(max-width: 1180px)").matches;
 }
 
 /** The universal async wrapper: one global busy lock, a button that says what

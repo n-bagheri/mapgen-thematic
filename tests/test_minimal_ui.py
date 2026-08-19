@@ -240,6 +240,14 @@ class EditorCoverageTests(unittest.TestCase):
         self.assertIn("data-run-step=", self.controls)
         self.assertIn("runSingleStep", self.controls)
 
+    def test_fresh_setup_keeps_individual_steps_out_of_the_initial_view(self):
+        self.assertIn('id="show-step-controls"', self.controls)
+        self.assertIn("state.individualRun ? individualRunHtml(map) : setupHtml(true, true)",
+                      self.controls)
+        stylesheet = (STATIC / "minimal.css").read_text(encoding="utf-8")
+        self.assertIn(".control-shell.is-preflight", stylesheet)
+        self.assertIn(".preflight-layout .map-stage .map-frame", stylesheet)
+
     def test_an_out_of_scope_map_offers_only_step_1(self):
         self.assertIn("scopeBlockHtml", self.controls)
         self.assertIn("rerun-step1", self.controls)

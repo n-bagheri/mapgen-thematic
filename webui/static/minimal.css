@@ -134,6 +134,7 @@ img { max-width: 100%; }
 .button.danger { border-color: #e3b5b0; color: var(--danger); background: var(--danger-soft); }
 .button.small { min-height: 32px; padding: 7px 10px; border-radius: 9px; font-size: 12px; }
 .button.full { width: 100%; }
+.button-plus { margin-right: -2px; font-size: 15px; font-weight: 650; line-height: 1; }
 
 .project-nav {
   position: fixed;
@@ -169,22 +170,39 @@ img { max-width: 100%; }
   scrollbar-color: #c3cad4 transparent;
 }
 
+/* A row carries the project's own controls, so the thing that opens it is a
+   button inside the row rather than the row itself. */
 .project-item {
+  position: relative;
   display: grid;
-  grid-template-columns: 48px minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
-  gap: 11px;
+  gap: 8px;
   width: 100%;
-  padding: 9px;
+  padding: 8px 9px;
   border: 1px solid transparent;
   border-radius: 13px;
   text-align: left;
   background: transparent;
 }
 
+.project-open {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  text-align: left;
+  background: transparent;
+  user-select: none;   /* a drag from the name reorders, it does not select text */
+}
+
 .project-item:hover { border-color: #d7dbe2; background: rgba(255, 255, 255, .62); }
-.project-item[aria-current="true"] { border-color: #bfc8d6; background: #fff; box-shadow: var(--shadow-soft); }
-.project-thumb { width: 48px; height: 48px; overflow: hidden; border: 1px solid #dde0e6; border-radius: 10px; background: #fff; }
+.project-item.is-selected { border-color: #bfc8d6; background: #fff; box-shadow: var(--shadow-soft); }
+.project-item.is-busy { opacity: .5; pointer-events: none; }
+.project-thumb { width: 44px; height: 44px; overflow: hidden; border: 1px solid #dde0e6; border-radius: 10px; background: #fff; }
 .project-thumb img { width: 100%; height: 100%; object-fit: cover; }
 .project-copy { min-width: 0; }
 .project-copy strong { display: block; overflow: hidden; font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
@@ -201,7 +219,7 @@ img { max-width: 100%; }
 }
 
 .mini-progress::after { content: ""; width: 19px; height: 19px; border-radius: 50%; background: #eef1f6; }
-.project-item[aria-current="true"] .mini-progress::after { background: #fff; }
+.project-item.is-selected .mini-progress::after { background: #fff; }
 .project-item.is-running .mini-progress { background: conic-gradient(var(--coral) var(--progress), #cfdcf7 0); animation: turn 1.6s linear infinite; }
 
 .nav-empty { margin: auto 8px; color: var(--ink-soft); text-align: center; }
@@ -238,6 +256,7 @@ img { max-width: 100%; }
 }
 
 .control-pane { background: var(--panel); border-left: 1px solid var(--line); scrollbar-width: thin; scrollbar-color: #c3cad4 transparent; }
+#control-content { height: 100%; }
 
 /* No map chosen yet: one column, one instruction, nothing else. */
 .no-map .workspace { grid-template-columns: 1fr; }
@@ -417,6 +436,8 @@ input[type="range"] { width: 100%; accent-color: var(--forest); }
 
 .action-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
 .action-row.end { justify-content: flex-end; }
+.preflight-actions { justify-content: space-between; }
+.preflight-actions .button { min-width: 152px; }
 .status-copy { color: var(--ink-soft); font-size: 10.5px; }
 .status-copy.success { color: var(--forest); }
 .status-copy.warning { color: var(--amber); }
@@ -424,6 +445,39 @@ input[type="range"] { width: 100%; accent-color: var(--forest); }
 
 .run-button { min-width: 152px; }
 .run-button::after { content: "→"; font-size: 16px; }
+
+/* The untouched map opens as a single, viewport-sized setup screen. The step
+   list is reached through its own action instead of beginning below the fold. */
+.control-shell.is-preflight {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  padding-bottom: 12px;
+}
+.control-shell.is-preflight .control-header,
+.control-shell.is-preflight .progress-disclosure { flex: none; }
+.control-shell.is-preflight .setup-card {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  margin-bottom: 0;
+}
+.control-shell.is-preflight .preflight-actions { margin-top: auto; }
+
+.individual-run-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 15px;
+  padding: 14px 15px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--mint-2);
+}
+.individual-run-heading h3 { margin: 0; font-size: 15px; }
 
 /* One panel per run: the step circles, what is happening in words, and the
    result of the step being viewed.  Each finished step replaces the last. */
@@ -663,12 +717,56 @@ input[type="range"] { width: 100%; accent-color: var(--forest); }
 .scope-block { border-color: #e1b2ae; background: var(--danger-soft); }
 .scope-block h3 { color: var(--danger); }
 
-/* Map library — rename, reorder, delete ---------------------------------- */
-.project-item.is-drag-over { outline: 2px solid var(--forest); outline-offset: -2px; }
+/* Map library — rename, reorder, delete ----------------------------------
+   The two row controls stay out of the way until the row is pointed at, so a
+   quiet list still reads as a list of maps rather than a list of buttons. */
+.project-actions { display: grid; gap: 3px; }
+
+.row-icon {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  visibility: hidden;
+  opacity: 0;
+  background: transparent;
+  color: var(--ink-soft);
+  transition: opacity .16s ease, color .16s ease, background-color .16s ease, border-color .16s ease;
+}
+
+.row-icon svg { width: 13px; height: 13px; }
+.project-item:hover .row-icon,
+.project-item:focus-within .row-icon,
+.project-item.is-selected .row-icon { visibility: visible; opacity: 1; }
+.row-icon.is-danger { color: #c26a66; }
+.row-icon:hover:not(:disabled) { border-color: var(--line-strong); background: #fff; color: var(--forest); }
+.row-icon.is-danger:hover:not(:disabled) { border-color: #e3b5b0; background: var(--danger-soft); color: var(--danger); }
+/* After the reveal rules, so a control the server would refuse still reads as
+   unavailable while the row is hovered. */
+.project-item .row-icon:disabled { opacity: .3; }
+@media (hover: none) { .row-icon { visibility: visible; opacity: 1; } }
+
+/* Drop marker: a line in the gap on the side the project would land. */
 .project-item.is-dragging { opacity: .45; }
-.project-tools { display: flex; gap: 4px; padding: 0 12px 10px; }
-.project-tools .button { flex: 1; }
-.project-rename { width: 100%; padding: 6px 8px; border: 1px solid var(--line-strong); border-radius: 8px; font: inherit; font-size: 11px; }
+.project-item.drop-before::before,
+.project-item.drop-after::after {
+  content: "";
+  position: absolute;
+  right: 5px;
+  left: 5px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--forest);
+}
+
+.project-item.drop-before::before { top: -5px; }
+.project-item.drop-after::after { bottom: -5px; }
+
+.project-item.is-renaming { grid-template-columns: 44px minmax(0, 1fr) auto; gap: 10px; border-color: var(--line-strong); background: #fff; }
+.project-rename { width: 100%; padding: 5px 7px; border: 1px solid var(--forest); border-radius: 8px; font: inherit; font-size: 12.5px; font-weight: 650; }
 
 /* Step list -------------------------------------------------------------
    The right pane is the pipeline itself: one row per step, in order.  Opening
@@ -710,6 +808,31 @@ input[type="range"] { width: 100%; accent-color: var(--forest); }
 .page-grid-toggle { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; white-space: nowrap; }
 .page-full-size { margin-left: auto; }
 
+/* On the initial setup screen the preview is also a viewport-sized region.
+   The old 64px top clearance made its lower border fall below the fold. */
+@media (min-width: 821px) {
+  .preflight-layout .visual-pane { overflow: hidden; padding: 6px 18px 12px; }
+  .preflight-layout .visual-content {
+    grid-template-rows: auto minmax(0, 1fr);
+    height: 100%;
+    max-width: none;
+    gap: 8px;
+    padding-bottom: 0;
+  }
+  .preflight-layout .visual-header { padding-left: 42px; }
+  .preflight-layout .map-stage {
+    display: flex;
+    min-height: 0;
+    flex-direction: column;
+    padding: 12px;
+  }
+  .preflight-layout .map-stage .map-frame {
+    min-height: 0;
+    max-height: none;
+    flex: 1;
+  }
+}
+
 
 @keyframes state-pulse { to { transform: scale(1.45); opacity: .55; } }
 @keyframes turn { to { transform: rotate(360deg); } }
@@ -746,6 +869,9 @@ input[type="range"] { width: 100%; accent-color: var(--forest); }
   .pattern-row { grid-template-columns: 56px minmax(0, 1fr); }
   .pattern-picker-trigger { width: 56px; height: 56px; }
   .pattern-picker-menu { grid-template-columns: repeat(5, minmax(40px, 1fr)); }
+  .preflight-actions { align-items: stretch; flex-direction: column-reverse; }
+  .preflight-actions .button { width: 100%; }
+  .individual-run-heading { align-items: stretch; flex-direction: column; }
 }
 
 @media (prefers-reduced-motion: reduce) {
