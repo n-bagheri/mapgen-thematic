@@ -447,8 +447,9 @@ def save_pattern_transforms(out_dir: Path, assignments: list[dict]) -> dict:
 
 
 def reassign_step7_pattern(out_dir: Path, symbols: dict, group_id: int,
-                           pattern_id: str) -> dict:
-    """Lock one user's pattern choice and re-optimize every other area."""
+                           pattern_id: str,
+                           preserve_haptic_distances: bool = True) -> dict:
+    """Apply one user choice, optionally re-optimizing every other area."""
 
     assignments = symbols.get("area_assignments", [])
     if group_id < 0 or group_id >= len(assignments):
@@ -466,9 +467,18 @@ def reassign_step7_pattern(out_dir: Path, symbols: dict, group_id: int,
         assignment_id: assignment["pattern"]
         for assignment_id, assignment in enumerate(assignments)
     }
-    optimized, audit = optimize_user_pattern_change(
-        assignment_group_map, current, group_id, pattern_id,
-    )
+    if preserve_haptic_distances:
+        optimized, audit = optimize_user_pattern_change(
+            assignment_group_map, current, group_id, pattern_id,
+        )
+    else:
+        optimized = dict(current)
+        optimized[group_id] = pattern_id
+        audit = {
+            "method": "independent_user_pattern_assignment",
+            "preserve_haptic_distances": False,
+            "user_constraint": {"group_id": group_id, "pattern": pattern_id},
+        }
     for assignment_id, assignment in enumerate(assignments):
         old_pattern = assignment["pattern"]
         chosen_pattern = optimized[assignment_id]
@@ -479,15 +489,18 @@ def reassign_step7_pattern(out_dir: Path, symbols: dict, group_id: int,
         assignment["pattern_family"] = family
         assignment["pattern_candidates"] = (
             [chosen_pattern] if assignment_id == group_id else
-            list(GROUPS[family]) if family != "none" else ["plain"]
+            list(GROUPS[family]) if preserve_haptic_distances and family != "none"
+            else [chosen_pattern]
         )
-        assignment["user_locked"] = assignment_id == group_id
+        assignment["user_locked"] = bool(
+            assignment.get("user_locked") and not preserve_haptic_distances
+        ) or assignment_id == group_id
         if assignment_id == group_id:
-            assignment["rationale"] = (
-                "user-selected pattern; all remaining pattern variants were "
-                "globally reoptimized for adjacent-area haptic distance"
-            )
-        elif chosen_pattern != old_pattern:
+            assignment["rationale"] = ("user-selected pattern; all remaining pattern variants "
+                "were globally reoptimized for adjacent-area haptic distance"
+                if preserve_haptic_distances else
+                "user-selected pattern; other category patterns were left unchanged")
+        elif preserve_haptic_distances and chosen_pattern != old_pattern:
             assignment["rationale"] = (
                 "reassigned after a user pattern change to preserve unique "
                 "pattern families and maximize adjacent-area haptic distance"
@@ -499,6 +512,7 @@ def reassign_step7_pattern(out_dir: Path, symbols: dict, group_id: int,
     symbols["last_user_pattern_change"] = {
         "group_id": group_id,
         "pattern": pattern_id,
+        "preserve_haptic_distances": preserve_haptic_distances,
     }
     return symbols
 

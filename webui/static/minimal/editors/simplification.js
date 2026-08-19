@@ -11,7 +11,7 @@ import { simplifiedArtifactName } from "../visual.js";
    is a preview rather than a re-run.  Applying a level swaps the active
    artifacts; rebuilding is only needed when the advanced inputs change. */
 
-export function simplificationEditorHtml() {
+function simplificationControlsHtml(decision = false) {
   const presets = state.data.presets;
   const paramsData = state.data.step6 || {};
   const params = paramsData.params || {};
@@ -34,7 +34,8 @@ export function simplificationEditorHtml() {
         <div class="preset-stat"><strong id="stat-islands">${summary.islands?.dropped ?? "—"}</strong><span>tiny islands removed</span></div>
       </div>
       <div class="action-row"><span class="status-copy">Previews and generated tactile results are cached per level during this session.</span>
-        <button class="button primary small" id="apply-preset" type="button">Use this level</button></div>
+        <button class="button primary small" id="apply-preset" type="button">${decision
+          ? "Use this level &amp; continue" : "Use this level"}</button></div>
     </div>
     <details class="advanced-box">
       <summary>Advanced simplification controls</summary>
@@ -52,10 +53,29 @@ export function simplificationEditorHtml() {
       <div class="action-row end"><button class="button secondary small" id="rebuild-simplification" type="button">Rebuild five levels</button></div>
     </details>`
     : '<div class="empty-editor">Step 6 previews are not available yet.</div>';
-  return editorDetails("simplification", "5", "Simplification", "Detail, lines, and protected categories", body);
+  return body;
 }
 
-export function bindSimplificationEditor() {
+export function simplificationEditorHtml() {
+  return editorDetails("simplification", "5", "Simplification",
+                       "Detail, lines, and protected categories",
+                       simplificationControlsHtml());
+}
+
+export function simplificationDecisionHtml() {
+  return `
+    <section class="review-gate simplification-decision" id="simplification-decision"
+             aria-labelledby="simplification-decision-title">
+      <span class="section-kicker">One decision needed</span>
+      <h3 id="simplification-decision-title">Choose the simplification level.</h3>
+      <p class="section-intro">Move the slider to compare the five prepared versions in the
+        middle panel. Choose the amount of geographic detail that remains clear to touch,
+        then continue to tactile patterns.</p>
+      ${simplificationControlsHtml(true)}
+    </section>`;
+}
+
+export function bindSimplificationEditor(onApproved) {
   $("preset-slider")?.addEventListener("input", (event) => {
     const level = Number(event.target.value);
     state.previewLevel = level;
@@ -64,10 +84,13 @@ export function bindSimplificationEditor() {
     const image = $("simplified-image");
     if (image) {
       image.dataset.overlayDisabled = "";
-      image.src = artifactUrl(state.selected, simplifiedArtifactName());
+      const source = artifactUrl(state.selected, simplifiedArtifactName());
+      image.src = source;
+      const fullSize = image.closest(".map-stage")?.querySelector("[data-full-size]");
+      if (fullSize) fullSize.href = source;
     }
   });
-  $("apply-preset")?.addEventListener("click", applyPreset);
+  $("apply-preset")?.addEventListener("click", () => applyPreset(onApproved));
   $("rebuild-simplification")?.addEventListener("click", rebuildSimplification);
 }
 
@@ -79,8 +102,9 @@ function updatePresetStats(level) {
   $("stat-islands").textContent = variant.summary?.islands?.dropped ?? "—";
 }
 
-async function applyPreset() {
+async function applyPreset(onApproved) {
   const level = Number($("preset-slider")?.value || state.previewLevel || 3);
+  const decisionGate = Boolean($("simplification-decision"));
   await withBusy($("apply-preset"), "Applying…", async () => {
     const result = await activateStep6Preset(state.selected, level);
     await loadMaps();
@@ -88,10 +112,16 @@ async function applyPreset() {
     state.previewLevel = level;
     state.activeStep = 6;
     renderWorkspace(true);
-    toast(result.invalidated?.length
-      ? `Level set to ${DETAIL_NAMES[level]}. Later steps were cleared; continue to rebuild them.`
-      : `Level set to ${DETAIL_NAMES[level]}.`,
-    result.invalidated?.length ? "warning" : "");
+    if (decisionGate) {
+      state.autorun = true;
+      toast(`Level set to ${DETAIL_NAMES[level]}. Continuing the run.`);
+      await onApproved?.();
+    } else {
+      toast(result.invalidated?.length
+        ? `Level set to ${DETAIL_NAMES[level]}. Later steps were cleared; continue to rebuild them.`
+        : `Level set to ${DETAIL_NAMES[level]}.`,
+      result.invalidated?.length ? "warning" : "");
+    }
   });
 }
 

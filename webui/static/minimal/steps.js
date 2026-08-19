@@ -37,10 +37,17 @@ export const STEP_DEFS = [
     blurb: "The legend moves to a page of its own: one tactile sample per category beside its Braille name, so a reader can learn the textures before meeting them on the map." },
 ];
 
-/* The run pauses between the two batches so the category proposal at Step 5
-   can be reviewed before anything downstream is built from it. */
-export const FIRST_BATCH = ["1", "2", "3", "4", "5"];
-export const FINAL_BATCH = ["6", "7", "8", "9"];
+/* Run all has five human gates: the geographic mask after Step 2, the
+   category proposal after Step 5, the simplification level after Step 6,
+   the tactile pattern assignment after Step 7, and the Braille/page toolbox
+   after Step 8.
+   Nothing consumes a decision before the reader has explicitly approved it. */
+export const INITIAL_BATCH = ["1", "2"];
+export const ANALYSIS_BATCH = ["3", "4", "5"];
+export const SIMPLIFICATION_BATCH = ["6"];
+export const PATTERN_BATCH = ["7"];
+export const LABEL_BATCH = ["8"];
+export const FINAL_BATCH = ["9"];
 
 export const LINE_KINDS = [
   { id: "river", label: "Rivers" },
@@ -68,7 +75,7 @@ export function completedCount(map) {
 }
 
 export function allDone(map) {
-  return Boolean(map?.steps?.["9"]);
+  return Boolean(map?.steps?.["9"] && map?.step9_review_ready);
 }
 
 /** The message the server will refuse a run with, or null when it will accept
@@ -107,43 +114,39 @@ export const STEP_VIEWS = {
     { artifact: "map_area.png", caption: "Map area — paint here to correct the mask",
       overlay: "mask" },
     { artifact: "step2_layout_debug.png", caption: "Raw AI layout, before any refinement",
-      optional: true },
-    { artifact: "step2_debug.png", caption: "Refined map area, legend, and captions" },
-    { artifact: "legend.png", caption: "Extracted legend", optional: true },
+      optional: true, intermediate: true },
+    { artifact: "step2_debug.png", caption: "Refined map area, legend, and captions",
+      intermediate: true },
+    { artifact: "map_text_input.png", caption: "Extracted map",
+      optional: true, intermediate: true },
+    { artifact: "legend.png", caption: "Extracted legend",
+      optional: true, intermediate: true },
   ],
   3: [
-    { artifact: "map_text_input.png", caption: "Input: the furniture-blanked map" },
     { artifact: "step3_debug.png", caption: "Detected text on the map" },
   ],
   4: [
-    { artifact: "step4_text_removed_input.png", caption: "Input: the map with its lettering lifted off",
-      optional: true },
-    { artifact: "step4_debug.png", caption: "Source map beside the rebuilt regions" },
-    { artifact: "step4_lines_preview.png", caption: "Extracted linework", optional: true },
+    { artifact: "label_map_preview.png", caption: "Segmented map", overlay: "segmented-lines" },
   ],
   5: [
-    { artifact: "label_map_preview.png", caption: "Input: the classified regions", optional: true },
     { artifact: "step5_aggregation_preview.png", caption: "Categories after fitting to the texture limit" },
   ],
   6: [
-    { artifact: "group_map_source.png", caption: "Input: the approved categories", optional: true },
-    { dynamic: "simplified", caption: "Simplified map — the editable geographic result",
-      overlay: "layers" },
+    { dynamic: "simplified", caption: "Simplified map", overlay: "layers" },
   ],
   7: [
-    { artifact: "label_map_gen_preview.png", caption: "Input: the simplified geography", optional: true },
-    { artifact: "step7_tactile.png", caption: "Categories rendered as tactile patterns", optional: true },
-    { artifact: "step8_boundaries.png", caption: "Boundaries between tactile areas", optional: true },
     { artifact: "step8a_cleanup.png", hybrid: "step8a_hybrid.png",
-      caption: "The finished tactile master" },
+      caption: "The finished tactile master", pageLayout: true, originalCompare: true },
   ],
   8: [
-    { artifact: "step8_braille.png", hybrid: "step8_hybrid.png",
-      caption: "The tactile page with its Braille labels", overlay: "braille" },
+    { artifact: "step8_braille_base.png", hybrid: "step8_hybrid_base.png",
+      caption: "The tactile page with its Braille labels", overlay: "braille",
+      pageRender: true, originalCompare: true },
   ],
   9: [
     { artifact: "step9_legend.png", hybrid: "step9_legend_hybrid.png",
-      caption: "The separate legend page", overlay: "legend" },
+      caption: "The separate legend page", overlay: "legend",
+      legendPage: true, mapLegendCompare: true },
   ],
 };
 

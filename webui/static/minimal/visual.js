@@ -2,7 +2,7 @@
 
 import { $, artifactUrl, esc, mapUrl } from "./api.js";
 import { STEP_DEFS, STEP_VIEWS, viewedStep } from "./steps.js";
-import { currentStepKey, state } from "./state.js";
+import { state } from "./state.js";
 import { bindMaskCanvas } from "./editors/mask.js";
 import { bindBrailleOverlay } from "./editors/braille.js";
 import { bindLegendOverlay } from "./editors/legend.js";
@@ -20,13 +20,6 @@ export function activeStep(map) {
   return viewedStep(map, state.activeStep);
 }
 
-function stepStatus(map, step) {
-  const key = String(step);
-  if (currentStepKey(map) === key) return { label: "Building", className: "running" };
-  if (map.steps?.[key]) return { label: "Ready", className: "" };
-  return { label: "Waiting", className: "waiting" };
-}
-
 /** Step 6 caches a preview per level, so the slider can show a level that has
  *  not been applied yet.  The presets payload names the file for us. */
 export function simplifiedArtifactName() {
@@ -38,12 +31,121 @@ export function simplifiedArtifactName() {
 /** Resolve one STEP_VIEWS entry to the file the browser should request. */
 function viewSource(map, view) {
   if (view.source) return { url: mapUrl(map.name), name: map.name };
+  if (view.artifact === "step5_aggregation_preview.png" && state.aggregationPreviewUrl) {
+    return { url: state.aggregationPreviewUrl, name: view.artifact };
+  }
   if (view.dynamic === "simplified") {
     const name = simplifiedArtifactName();
     return { url: artifactUrl(map.stem, name), name, fallback: artifactUrl(map.stem, "step6_debug.png") };
   }
-  const name = state.colourView && view.hybrid ? view.hybrid : view.artifact;
+  const hybridEnabled = state.data.step7Review?.create_hybrid_map === true;
+  const name = state.colourView && hybridEnabled && view.hybrid ? view.hybrid : view.artifact;
   return { url: artifactUrl(map.stem, name), name };
+}
+
+function tactilePageCanvasHtml(map, view, source, imageId, canvasId) {
+  const layout = state.data.pageLayout;
+  if (!layout?.canvas_px || !layout?.map_size_px || !layout?.map_origin_px) return "";
+  const [pageW, pageH] = layout.canvas_px.map(Number);
+  const [mapW, mapH] = layout.map_size_px.map(Number);
+  const [originX, originY] = layout.map_origin_px.map(Number);
+  if (![pageW, pageH, mapW, mapH, originX, originY].every(Number.isFinite)) return "";
+  const position = `--map-left:${originX / pageW * 100}%;--map-top:${originY / pageH * 100}%;`
+    + `--map-width:${mapW / pageW * 100}%;--map-height:${mapH / pageH * 100}%`;
+  const tactile = `<img id="${imageId}" class="step7-map-image" src="${source.url}"
+      alt="${esc(view.caption)} for ${esc(map.name)}" data-viewer-image
+      data-artifact="${esc(source.name)}" style="${position}">`;
+  if (state.showOriginalMap) {
+    const gap = Math.max(30, Math.round(pageW * .04));
+    return `<div class="map-canvas step7-comparison-canvas"${canvasId}
+        data-natural-width="${pageW * 2 + gap}" data-natural-height="${pageH}"
+        style="aspect-ratio:${pageW * 2 + gap} / ${pageH};--compare-gap:${gap}px">
+      <div class="step7-original-sheet">
+        <img src="${mapUrl(map.name)}" alt="Original map for ${esc(map.name)}">
+      </div>
+      <div class="step7-output-sheet" style="aspect-ratio:${pageW} / ${pageH}">${tactile}</div>
+      <div class="page-grid" aria-hidden="true"></div>
+    </div>`;
+  }
+  return `<div class="map-canvas step7-page-canvas"${canvasId}
+      data-natural-width="${pageW}" data-natural-height="${pageH}"
+      style="aspect-ratio:${pageW} / ${pageH}">
+    ${tactile}<div class="page-grid" aria-hidden="true"></div>
+  </div>`;
+}
+
+/** Step 8 is already a full paper-sized render. Keep its editable SVG inside
+ *  the output sheet while the optional original occupies a separate sheet. */
+function renderedPageCanvasHtml(map, view, source, imageId, canvasId) {
+  const page = state.data.braille?.page;
+  const [pageW, pageH] = (page?.canvas_px || []).map(Number);
+  if (![pageW, pageH].every(Number.isFinite) || !pageW || !pageH) return "";
+  const hybridEnabled = state.data.step7Review?.create_hybrid_map === true;
+  const finalName = state.colourView && hybridEnabled ? "step8_hybrid.png" : "step8_braille.png";
+  const output = `<img id="${imageId}" src="${source.url}"
+      alt="${esc(view.caption)} for ${esc(map.name)}" data-viewer-image
+      data-artifact="${esc(source.name)}" data-full-size-url="${artifactUrl(map.stem, finalName)}">${overlayMarkup(view)}`;
+  if (state.showOriginalMap) {
+    const gap = Math.max(30, Math.round(pageW * .04));
+    return `<div class="map-canvas step7-comparison-canvas step8-comparison-canvas"${canvasId}
+        data-natural-width="${pageW * 2 + gap}" data-natural-height="${pageH}"
+        style="aspect-ratio:${pageW * 2 + gap} / ${pageH};--compare-gap:${gap}px">
+      <div class="step7-original-sheet">
+        <img src="${mapUrl(map.name)}" alt="Original map for ${esc(map.name)}">
+      </div>
+      <div class="step7-output-sheet step8-output-sheet"
+           style="aspect-ratio:${pageW} / ${pageH}">${output}</div>
+      <div class="page-grid" aria-hidden="true"></div>
+    </div>`;
+  }
+  return `<div class="map-canvas step8-page-canvas"${canvasId}
+      data-natural-width="${pageW}" data-natural-height="${pageH}"
+      style="aspect-ratio:${pageW} / ${pageH}">
+    ${output}<div class="page-grid" aria-hidden="true"></div>
+  </div>`;
+}
+
+/** Step 9 is a second, independent page. Its comparison keeps both complete
+ * sheets visible instead of stretching either one to the other's aspect ratio. */
+function legendPageCanvasHtml(map, view, source, imageId, canvasId) {
+  const legendPage = state.data.legend?.page;
+  const [legendW, legendH] = (legendPage?.canvas_px || []).map(Number);
+  if (![legendW, legendH].every(Number.isFinite) || !legendW || !legendH) return "";
+  const legend = `<img id="${imageId}" src="${source.url}"
+      alt="${esc(view.caption)} for ${esc(map.name)}" data-viewer-image
+      data-artifact="${esc(source.name)}">${overlayMarkup(view)}`;
+  if (state.showFinalMap) {
+    const [mapW, mapH] = (state.data.braille?.page?.canvas_px || []).map(Number);
+    if ([mapW, mapH].every(Number.isFinite) && mapW && mapH) {
+      const displayH = Math.max(mapH, legendH);
+      const displayMapW = mapW * displayH / mapH;
+      const displayLegendW = legendW * displayH / legendH;
+      const gap = Math.max(30, Math.round(displayH * .04));
+      const inputWidth = state.showOriginalMap ? displayMapW : 0;
+      const sheetCount = state.showOriginalMap ? 3 : 2;
+      const displayW = inputWidth + displayMapW + displayLegendW + gap * (sheetCount - 1);
+      const hybridEnabled = state.data.step7Review?.create_hybrid_map === true;
+      const finalName = state.colourView && hybridEnabled ? "step8_hybrid.png" : "step8_braille.png";
+      return `<div class="map-canvas step7-comparison-canvas step9-comparison-canvas"${canvasId}
+          data-natural-width="${displayW}" data-natural-height="${displayH}"
+          style="aspect-ratio:${displayW} / ${displayH};--compare-gap:${gap}px;
+                 grid-template-columns:${state.showOriginalMap ? `${displayMapW}fr ` : ""}${displayMapW}fr ${displayLegendW}fr">
+        ${state.showOriginalMap ? `<div class="step9-input-sheet" style="aspect-ratio:${mapW} / ${mapH}">
+          <img src="${mapUrl(map.name)}" alt="Input map for ${esc(map.name)}">
+        </div>` : ""}
+        <div class="step9-map-sheet" style="aspect-ratio:${mapW} / ${mapH}">
+          <img src="${artifactUrl(map.stem, finalName)}" alt="Final tactile map for ${esc(map.name)}">
+        </div>
+        <div class="step9-legend-sheet" style="aspect-ratio:${legendW} / ${legendH}">${legend}</div>
+        <div class="page-grid" aria-hidden="true"></div>
+      </div>`;
+    }
+  }
+  return `<div class="map-canvas step9-page-canvas"${canvasId}
+      data-natural-width="${legendW}" data-natural-height="${legendH}"
+      style="aspect-ratio:${legendW} / ${legendH}">
+    ${legend}<div class="page-grid" aria-hidden="true"></div>
+  </div>`;
 }
 
 function overlayMarkup(view) {
@@ -56,6 +158,9 @@ function overlayMarkup(view) {
   if (view.overlay === "legend") {
     return '<svg class="map-overlay braille-overlay" id="legend-overlay" aria-label="Legend entry layer"></svg>';
   }
+  if (view.overlay === "segmented-lines") {
+    return '<svg class="map-overlay segmented-lines-overlay" id="segmented-lines-overlay" aria-label="Detected line layer"></svg>';
+  }
   return "";
 }
 
@@ -66,6 +171,11 @@ function layerButton(layer, label) {
 
 /** The layer switches only exist where there is an editable vector overlay. */
 function layerToolbar(view) {
+  if (view.overlay === "segmented-lines") {
+    return `<div class="layer-toolbar" aria-label="Segmented map layers">
+      <span>Map overlay</span>${layerButton("segmentedLines", "Display lines")}
+    </div>`;
+  }
   if (view.overlay !== "layers") return "";
   return `<div class="layer-toolbar" aria-label="Simplified map layers">
       <span>Layers</span>
@@ -80,32 +190,48 @@ export function renderVisual() {
   const map = selectedFromState();
   if (!map) return;
   const step = activeStep(map);
+  // Step 2 now always uses the decision card, which intentionally has no
+  // separate "start painting" button. Selecting it activates its brush.
+  state.maskBrush.active = step === 2 && Boolean(state.data.mask);
   const definition = STEP_DEFS.find((item) => item.key === String(step));
   const views = STEP_VIEWS[step] || [];
-  const status = stepStatus(map, step);
   const ready = Boolean(map.steps?.[String(step)]) || step === 1;
 
-  const panels = ready ? views.map((view, index) => {
+  const renderedViews = ready ? views.map((view, index) => {
     const source = viewSource(map, view);
-    const frameId = view.overlay === "layers" ? ' id="simplified-frame"' : "";
+    const frameId = view.overlay === "layers" ? ' id="simplified-frame"'
+      : view.overlay === "segmented-lines" ? ' id="segmented-frame"' : "";
     const canvasId = view.overlay ? ` id="${view.overlay}-target"` : "";
-    const imageId = view.overlay === "layers" ? "simplified-image" : `step-image-${index}`;
-    return `
-      <article class="map-stage" data-view="${index}"${view.optional ? ' data-optional="1"' : ""}>
-        <header class="stage-heading">
-          <div><span class="stage-index">${String(index + 1).padStart(2, "0")}</span>
-            <h2>${esc(view.caption)}</h2></div>
-        </header>
-        ${viewerToolbarHtml(view, index)}
-        <div class="map-frame"${frameId}><div class="map-canvas"${canvasId}>
+    const imageId = view.overlay === "layers" ? "simplified-image"
+      : view.overlay === "segmented-lines" ? "segmented-image" : `step-image-${index}`;
+    const pageCanvas = view.pageLayout
+      ? tactilePageCanvasHtml(map, view, source, imageId, canvasId)
+      : view.pageRender ? renderedPageCanvasHtml(map, view, source, imageId, canvasId)
+        : view.legendPage ? legendPageCanvasHtml(map, view, source, imageId, canvasId) : "";
+    const canvas = pageCanvas || `<div class="map-canvas"${canvasId}>
           <img id="${imageId}" src="${source.url}" alt="${esc(view.caption)} for ${esc(map.name)}"
+               data-viewer-image data-artifact="${esc(source.name)}"
                ${source.fallback ? `data-fallback="${source.fallback}"` : ""}>
           ${overlayMarkup(view)}
           <div class="page-grid" aria-hidden="true"></div>
-        </div></div>
+        </div>`;
+    return { intermediate: view.intermediate === true, html: `
+      <article class="map-stage" data-view="${index}"${view.optional ? ' data-optional="1"' : ""}>
+        <header class="stage-heading">
+          <h2>${esc(view.caption)}</h2>
+        </header>
+        ${viewerToolbarHtml(view, index)}
+        <div class="map-frame"${frameId}>${canvas}</div>
         ${layerToolbar(view)}
-      </article>`;
-  }).join("") : `
+      </article>` };
+  }) : [];
+  const primaryPanels = renderedViews.filter((item) => !item.intermediate).map((item) => item.html).join("");
+  const intermediatePanels = renderedViews.filter((item) => item.intermediate).map((item) => item.html).join("");
+  const panels = ready ? `${primaryPanels}${intermediatePanels ? `
+      <details class="intermediate-results">
+        <summary>See all intermediate steps</summary>
+        <div class="intermediate-results-body">${intermediatePanels}</div>
+      </details>` : ""}` : `
       <article class="map-stage is-locked">
         <div class="locked-preview">
           <div><span aria-hidden="true">${esc(definition?.number || "")}</span>
@@ -113,19 +239,16 @@ export function renderVisual() {
         </div>
       </article>`;
 
-  $("visual-content").innerHTML = `
-    <div class="visual-header">
-      <p class="minimal-eyebrow">Step ${esc(definition?.number || step)}</p>
-      <h2>${esc(definition?.title || "")}</h2>
-      <span class="stage-badge ${status.className}">${status.label}</span>
-    </div>
-    ${panels}`;
+  $("visual-content").innerHTML = panels;
   bindVisualEvents();
 }
 
 function lockedMessage(map, step) {
   if (step === 6 && map.steps?.["5"] && !map.step5_review_ready) {
     return "Approve the suggested tactile categories to continue.";
+  }
+  if (step === 9 && map.steps?.["8"] && !map.step8_review_ready) {
+    return "Approve the Braille labels and page layout to continue.";
   }
   const previous = STEP_DEFS.find((item) => Number(item.key) === step - 1);
   return previous && !map.steps?.[previous.key]
@@ -146,6 +269,7 @@ function bindVisualEvents() {
       state.layers[layer] = !state.layers[layer];
       button.setAttribute("aria-pressed", String(state.layers[layer]));
       updateLayerVisibility();
+      updateSegmentedLinesVisibility();
     });
   });
   const simplifiedImage = $("simplified-image");
@@ -159,6 +283,11 @@ function bindVisualEvents() {
       simplifiedImage.dataset.overlayDisabled = "true";
     }, { once: true });
     if (simplifiedImage.complete && simplifiedImage.naturalWidth) renderMapOverlay();
+  }
+  const segmentedImage = $("segmented-image");
+  if (segmentedImage) {
+    segmentedImage.addEventListener("load", renderSegmentedLinesOverlay);
+    if (segmentedImage.complete && segmentedImage.naturalWidth) renderSegmentedLinesOverlay();
   }
   document.querySelectorAll(".page-view-toolbar").forEach((bar) => {
     bindViewer(Number(bar.dataset.viewer), renderVisual);
@@ -176,7 +305,8 @@ export async function refreshStepImages() {
   const views = STEP_VIEWS[activeStep(map)] || [];
   let refreshed = false;
   await Promise.all(views.map(async (view, index) => {
-    const id = view.overlay === "layers" ? "simplified-image" : `step-image-${index}`;
+    const id = view.overlay === "layers" ? "simplified-image"
+      : view.overlay === "segmented-lines" ? "segmented-image" : `step-image-${index}`;
     const image = $(id);
     if (!image) return;
     const next = viewSource(map, view).url;
@@ -270,6 +400,29 @@ export function renderMapOverlay() {
   updateLayerVisibility();
 }
 
+/** Step 4 keeps the segmented colours as its sole image. The reviewed rivers
+ * sit on a separately switchable overlay so the source map is not duplicated. */
+export function renderSegmentedLinesOverlay() {
+  const image = $("segmented-image");
+  const overlay = $("segmented-lines-overlay");
+  if (!image || !overlay) return;
+  const review = state.data.lines;
+  const width = Number(review?.width) || image.naturalWidth;
+  const height = Number(review?.height) || image.naturalHeight;
+  if (!width || !height) return;
+  overlay.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  overlay.setAttribute("preserveAspectRatio", "none");
+  const includeLines = review?.include_rivers !== false;
+  const automatic = (review?.automatic_rivers || []).map((line) => `
+    <path class="line-path${includeLines && line.include ? "" : " is-excluded"}"
+      d="${linePath(line.points)}"></path>`).join("");
+  const manual = (review?.manual_rivers || []).map((line) => `
+    <path class="line-path${includeLines ? "" : " is-excluded"}"
+      d="${linePath(line.points)}"></path>`).join("");
+  overlay.innerHTML = `<g class="line-layer">${automatic}${manual}</g>`;
+  updateSegmentedLinesVisibility();
+}
+
 function updateLayerVisibility() {
   const overlay = $("map-overlay");
   const frame = $("simplified-frame");
@@ -278,4 +431,9 @@ function updateLayerVisibility() {
   overlay.classList.toggle("hide-labels", !state.layers.labels);
   overlay.classList.toggle("hide-lines", !state.layers.lines);
   overlay.classList.toggle("hide-boundaries", !state.layers.boundaries);
+}
+
+function updateSegmentedLinesVisibility() {
+  const overlay = $("segmented-lines-overlay");
+  if (overlay) overlay.hidden = !state.layers.segmentedLines;
 }

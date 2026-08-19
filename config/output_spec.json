@@ -1,17 +1,17 @@
 {
   "medium": "swell_paper",
-  "page_width_mm": 210.0,
-  "page_height_mm": 297.0,
+  "page_width_mm": 210,
+  "page_height_mm": 297,
   "orientation": "portrait",
-  "margin_mm": 15.0,
+  "margin_mm": 15,
   "braille_standard": "unified-english-grade1",
   "constants": {
     "braille_cell_width_mm": 6.2,
-    "braille_cell_height_mm": 10.0,
-    "min_texture_area_side_mm": 13.0,
-    "min_element_gap_mm": 3.0,
-    "min_line_width_mm": 1.0,
-    "min_line_length_mm": 13.0,
+    "braille_cell_height_mm": 10,
+    "min_texture_area_side_mm": 13,
+    "min_element_gap_mm": 3,
+    "min_line_width_mm": 1,
+    "min_line_length_mm": 13,
     "max_area_textures": 5
   }
 }

@@ -51,9 +51,8 @@ def load_aggregation_review(out_dir: Path, aggregation: dict) -> dict | None:
     return review
 
 
-def save_aggregation_review(out_dir: Path, aggregation: dict,
-                            decisions: list[dict]) -> dict:
-    """Save the reviewed canonical Step 5 grouping."""
+def build_aggregation_review(aggregation: dict, decisions: list[dict]) -> dict:
+    """Validate category decisions and return their canonical review payload."""
     source = {int(item["index"]): item["label"]
               for item in aggregation.get("source_classes", [])}
     if not source:
@@ -98,7 +97,7 @@ def save_aggregation_review(out_dir: Path, aggregation: dict,
     rejected = [group["label"] for group in groups
                 if len(group["members"]) > 1 and not group["approved"]]
     status = "rejected" if rejected else "approved"
-    review = {
+    return {
         "version": AGGREGATION_REVIEW_VERSION,
         "proposal_fingerprint": aggregation_fingerprint(aggregation),
         "status": status,
@@ -106,6 +105,12 @@ def save_aggregation_review(out_dir: Path, aggregation: dict,
         "groups": groups,
         "rejected_groups": rejected,
     }
+
+
+def save_aggregation_review(out_dir: Path, aggregation: dict,
+                            decisions: list[dict]) -> dict:
+    """Save the reviewed canonical Step 5 grouping."""
+    review = build_aggregation_review(aggregation, decisions)
     (out_dir / AGGREGATION_REVIEW_ARTIFACT).write_text(
         json.dumps(review, indent=2, ensure_ascii=False), encoding="utf-8")
     return review

@@ -58,6 +58,13 @@ class MaskReviewApiTests(unittest.TestCase):
                 reset_mask = cv2.imread(str(run_dir / "map_mask.png"), cv2.IMREAD_GRAYSCALE)
                 self.assertEqual(reset_mask[20, 20], 255)
 
+                approved = client.post("/api/maskreview/sample", json={"approve": True})
+                self.assertEqual(approved.status_code, 200, approved.get_data(as_text=True))
+                self.assertTrue(approved.get_json()["approved"])
+                status = client.get("/api/maskreview/sample").get_json()
+                self.assertTrue(status["approved"])
+                self.assertFalse(status["reviewed"])
+
 
 if __name__ == "__main__":
     unittest.main()

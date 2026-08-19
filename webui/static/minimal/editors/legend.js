@@ -1,10 +1,12 @@
 "use strict";
 
-import { $, esc, legendSwatchUrl, saveLegendItem, saveLegendOrientation } from "../api.js";
+import {
+  $, esc, legendSwatchUrl, saveLegendItem, saveLegendOrientation, saveStep9Review,
+} from "../api.js";
 import { state, statusLine, toast, withBusy } from "../state.js";
 import { editorDetails, renderControls } from "../controls.js";
-import { loadMaps, refreshSelectedData } from "../workspace.js";
-import { refreshStepImages } from "../visual.js";
+import { loadMaps, refreshSelectedData, renderWorkspace } from "../workspace.js";
+import { refreshStepImages, renderVisual } from "../visual.js";
 import { snapToGrid } from "../viewer.js";
 
 /* Step 9 gives the legend a page of its own: one tactile sample per category
@@ -14,22 +16,24 @@ import { snapToGrid } from "../viewer.js";
 const TITLE_ALIGNS = ["left", "center", "right"];
 let saveChain = Promise.resolve();
 const textTimers = new Map();
+const pendingTextValues = new Map();
 
 function queued(task) {
   saveChain = saveChain.then(task, task);
   return saveChain;
 }
 
-export function legendEditorHtml() {
+function legendToolboxBody(includeApproval = false) {
   const layout = state.data.legend;
-  if (!layout) {
-    return editorDetails("legend", "9", "Legend page", "Samples and their Braille names",
-      '<div class="empty-editor">Run Step 9 to build the legend page.</div>');
-  }
+  if (!layout) return '<div class="empty-editor">Run Step 9 to build the legend page.</div>';
   const entries = layout.entries || [];
   const title = layout.title || {};
   const orientation = layout.page?.orientation || "portrait";
-  const body = `
+  const review = state.data.step9Review || {};
+  return `
+    <button class="button secondary full" id="legend-compare" type="button"
+      aria-pressed="${state.showFinalMap}">${state.showFinalMap
+        ? "Hide tactile map" : "Display tactile map next to legend"}</button>
     <p class="section-intro">Drag an entry on the legend page above to move it. Rename it here or hide
       it from the sheet.</p>
     <div class="form-grid">
@@ -70,17 +74,42 @@ export function legendEditorHtml() {
         </span>
         <span class="braille-preview">${esc(title.braille_text || "")}</span>
       </div>
-    </section>`;
-  return editorDetails("legend", "9", "Legend page", "Samples and their Braille names", body);
+    </section>
+    <p class="status-copy" id="legend-review-status">${review.approved
+      ? "This legend page is approved." : "Review the legend entries and page arrangement."}</p>
+    ${includeApproval ? `<button class="button primary full" id="approve-legend" type="button">
+      Approve legend &amp; enable export</button>` : ""}`;
 }
 
-export function bindLegendEditor() {
+export function legendDecisionHtml() {
+  if (!state.data.legend) return "";
+  return `<section class="review-gate legend-decision" id="legend-decision"
+      aria-labelledby="legend-decision-title">
+    <span class="section-kicker">One final decision needed</span>
+    <h3 id="legend-decision-title">Review the separate legend page.</h3>
+    <p class="section-intro">Check the tactile samples, Braille names, title, and page orientation.
+      You can display the finished tactile map beside it before enabling export.</p>
+    ${legendToolboxBody(true)}
+  </section>`;
+}
+
+export function legendEditorHtml() {
+  return editorDetails("legend", "9", "Legend page", "Samples and their Braille names",
+    legendToolboxBody(true));
+}
+
+export function bindLegendEditor(onApproved) {
   document.querySelectorAll("[data-legend-row]").forEach((row) => {
     const id = row.dataset.legendRow;
     const field = row.querySelector('input[type="text"]');
     field?.addEventListener("input", () => {
       window.clearTimeout(textTimers.get(id));
-      textTimers.set(id, window.setTimeout(() => patchItem(id, { text: field.value }), 500));
+      pendingTextValues.set(id, field.value);
+      textTimers.set(id, window.setTimeout(() => {
+        const value = pendingTextValues.get(id);
+        pendingTextValues.delete(id);
+        patchItem(id, { text: value });
+      }, 500));
     });
     row.querySelector(".legend-enabled")?.addEventListener("change", (event) => {
       row.classList.toggle("is-hidden", !event.target.checked);
@@ -91,8 +120,12 @@ export function bindLegendEditor() {
   const titleText = $("legend-title-text");
   titleText?.addEventListener("input", () => {
     window.clearTimeout(textTimers.get("title"));
-    textTimers.set("title", window.setTimeout(
-      () => patchItem(state.data.legend?.title?.id || "legend-title", { text: titleText.value }), 500));
+    pendingTextValues.set("title", titleText.value);
+    textTimers.set("title", window.setTimeout(() => {
+      const value = pendingTextValues.get("title");
+      pendingTextValues.delete("title");
+      patchItem(state.data.legend?.title?.id || "legend-title", { text: value });
+    }, 500));
   });
   $("legend-title-enabled")?.addEventListener("change", (event) =>
     patchItem(state.data.legend?.title?.id || "legend-title", { enabled: event.target.checked }));
@@ -104,12 +137,51 @@ export function bindLegendEditor() {
       statusLine("legend-status", "Rebuilding the legend page…");
       const result = await saveLegendOrientation(state.selected, event.target.value);
       state.data.legend = result.layout;
+      markReviewDirty();
       await loadMaps();
       await refreshStepImages();
       renderControls();
       toast("Legend page orientation changed.");
     });
   });
+  $("legend-compare")?.addEventListener("click", (event) => {
+    state.showFinalMap = !state.showFinalMap;
+    event.currentTarget.setAttribute("aria-pressed", String(state.showFinalMap));
+    event.currentTarget.textContent = state.showFinalMap
+      ? "Hide tactile map" : "Display tactile map next to legend";
+    renderVisual();
+  });
+  $("approve-legend")?.addEventListener("click", async () => {
+    await withBusy($("approve-legend"), "Approving…", async () => {
+      await flushPendingText();
+      await saveChain;
+      state.data.step9Review = await saveStep9Review(state.selected, true);
+      await loadMaps();
+      await refreshSelectedData();
+      toast("Legend page approved. Export is now available.");
+      if (onApproved) await onApproved();
+      else renderWorkspace(true);
+    });
+  });
+}
+
+async function flushPendingText() {
+  const pending = [...pendingTextValues.entries()];
+  pendingTextValues.clear();
+  const saves = [];
+  pending.forEach(([id, value]) => {
+    window.clearTimeout(textTimers.get(id));
+    textTimers.delete(id);
+    const target = id === "title" ? state.data.legend?.title?.id || "legend-title" : id;
+    saves.push(patchItem(target, { text: value }));
+  });
+  await Promise.all(saves);
+}
+
+function markReviewDirty() {
+  if (state.data.step9Review) state.data.step9Review.approved = false;
+  const map = state.maps.find((item) => item.stem === state.selected);
+  if (map) map.step9_review_ready = false;
 }
 
 function patchItem(target, patch) {
@@ -118,6 +190,7 @@ function patchItem(target, patch) {
     try {
       const result = await saveLegendItem(state.selected, target, patch);
       applyItem(result.item);
+      markReviewDirty();
       await refreshStepImages();
       bindLegendOverlay();
       statusLine("legend-status", `${result.entries} entries on the page.`, "success");

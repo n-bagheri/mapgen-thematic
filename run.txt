@@ -1,0 +1,2 @@
+cd D:\IP2\Thematic\mapgen-thematic\mapgen-thematic
+..\.venv\Scripts\python.exe webui\server.py

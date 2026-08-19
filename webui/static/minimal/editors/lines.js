@@ -4,7 +4,7 @@ import { $, esc, saveLineReview } from "../api.js";
 import { state, statusLine, toast, withBusy } from "../state.js";
 import { editorDetails } from "../controls.js";
 import { loadMaps, refreshSelectedData, renderWorkspace } from "../workspace.js";
-import { renderMapOverlay } from "../visual.js";
+import { renderMapOverlay, renderSegmentedLinesOverlay } from "../visual.js";
 
 /* Step 4 pulled rivers, roads and borders out as separate paths.  Drawing and
    joining paths by hand stays in the detailed view; here they are kept or
@@ -30,7 +30,7 @@ export function lineEditorHtml() {
       <span><span class="status-copy" id="line-save-status"></span>
       <button class="button secondary small" id="save-lines" type="button">Save lines</button></span></div>`
     : '<div class="empty-editor">Run through Step 4 to edit the extracted lines.</div>';
-  return editorDetails("lines", "3", "Lines", "Extracted linework", body);
+  return editorDetails("lines", "4", "Lines", "Approve or edit extracted linework", body);
 }
 
 export function bindLineEditor() {
@@ -44,6 +44,7 @@ export function bindLineEditor() {
     });
     statusLine("line-save-status", "Unsaved changes");
     renderMapOverlay();
+    renderSegmentedLinesOverlay();
   };
   master?.addEventListener("change", update);
   document.querySelectorAll(".line-include").forEach((checkbox) => checkbox.addEventListener("change", update));

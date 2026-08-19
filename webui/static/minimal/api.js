@@ -45,6 +45,15 @@ async function api(path, options = {}) {
   return payload;
 }
 
+async function apiBlob(path, options = {}) {
+  const response = await fetch(path, { cache: "no-store", ...options });
+  if (response.ok) return response.blob();
+  const text = await response.text();
+  let payload = text;
+  try { payload = JSON.parse(text); } catch { /* Flask errors may be HTML. */ }
+  throw new Error(errorMessage(payload, response.status));
+}
+
 /** Endpoints report a refusal either as {error} or, when the server aborts,
  *  as one of Flask's HTML pages.  Both have to read as a plain sentence,
  *  because these messages are shown to the reader verbatim. */
@@ -94,6 +103,7 @@ export const getMaskReview = (stem) => api(`/api/maskreview/${enc(stem)}`);
 export const saveMaskStrokes = (stem, strokes) =>
   api(`/api/maskreview/${enc(stem)}`, json("POST", { strokes }));
 export const resetMask = (stem) => api(`/api/maskreview/${enc(stem)}`, json("POST", { reset: true }));
+export const approveMask = (stem) => api(`/api/maskreview/${enc(stem)}`, json("POST", { approve: true }));
 
 /* -- Step 3: overlay text ---------------------------------------------- */
 export const getLabelReview = (stem) => api(`/api/labelreview/${enc(stem)}`);
@@ -109,6 +119,8 @@ export const saveLineReview = (stem, payload) =>
 
 /* -- Step 5: category aggregation (was Step 6 in the older pipeline) ---- */
 export const getAggregationReview = (stem) => api(`/api/aggregation-review/${enc(stem)}`);
+export const previewAggregation = (stem, groups) =>
+  apiBlob(`/api/aggregation-preview/${enc(stem)}`, json("POST", { groups }));
 export const saveAggregationReview = (stem, groups) =>
   api(`/api/aggregation-review/${enc(stem)}`, json("POST", { groups }));
 
@@ -120,10 +132,15 @@ export const getStep6Presets = (stem) => api(`/api/step6presets/${enc(stem)}`);
 export const activateStep6Preset = (stem, level) =>
   api(`/api/step6preset/${enc(stem)}`, json("POST", { level: Number(level) }));
 
-/* -- Step 7: patterns, transforms, colours, page layout ---------------- */
+/* -- Step 7: pattern decision, transforms, colours, page layout -------- */
+export const getStep7Review = (stem) => api(`/api/step7-review/${enc(stem)}`);
+export const saveStep7Review = (stem, patch) =>
+  api(`/api/step7-review/${enc(stem)}`, json("POST", patch));
 export const getPatternData = (stem) => api(`/api/pattern-transforms/${enc(stem)}`);
-export const assignPattern = (stem, groupId, pattern) =>
-  api(`/api/pattern-assignments/${enc(stem)}/${Number(groupId)}`, json("POST", { pattern }));
+export const assignPattern = (stem, groupId, pattern, preserveHapticDistances = true) =>
+  api(`/api/pattern-assignments/${enc(stem)}/${Number(groupId)}`, json("POST", {
+    pattern, preserve_haptic_distances: Boolean(preserveHapticDistances),
+  }));
 export const savePatternTransform = (stem, groupId, transform) =>
   api(`/api/pattern-transforms/${enc(stem)}/${Number(groupId)}`, json("POST", transform));
 export const patternLibraryPreviewUrl = (patternId) =>
@@ -140,15 +157,25 @@ export const NORTH_MARKER_URL = "/api/north-marker.svg";
 
 /* -- Step 8: Braille labels -------------------------------------------- */
 export const getBrailleLayout = (stem) => api(`/api/braille-labels/${enc(stem)}`);
+export const getStep8Review = (stem) => api(`/api/step8-review/${enc(stem)}`);
+export const saveStep8Review = (stem, approve) =>
+  api(`/api/step8-review/${enc(stem)}`, json("POST", { approve: Boolean(approve) }));
 export const addBrailleLabel = (stem, text) =>
   api(`/api/braille-labels/${enc(stem)}`, json("POST", text ? { text } : {}));
 export const saveBrailleLabel = (stem, labelId, patch) =>
   api(`/api/braille-labels/${enc(stem)}/${enc(labelId)}`, json("POST", patch));
+export const deleteBrailleLabel = (stem, labelId) =>
+  api(`/api/braille-labels/${enc(stem)}/${enc(labelId)}`, { method: "DELETE" });
 export const saveBrailleTitle = (stem, patch) =>
   api(`/api/braille-labels/${enc(stem)}/title`, json("POST", patch));
+export const saveBrailleLayout = (stem, patch) =>
+  api(`/api/braille-layout/${enc(stem)}`, json("POST", patch));
 
 /* -- Step 9: Braille legend page --------------------------------------- */
 export const getLegendLayout = (stem) => api(`/api/legend/${enc(stem)}`);
+export const getStep9Review = (stem) => api(`/api/step9-review/${enc(stem)}`);
+export const saveStep9Review = (stem, approve) =>
+  api(`/api/step9-review/${enc(stem)}`, json("POST", { approve: Boolean(approve) }));
 export const saveLegendItem = (stem, target, patch) =>
   api(`/api/legend/${enc(stem)}/${enc(target)}`, json("POST", patch));
 export const saveLegendOrientation = (stem, orientation) =>

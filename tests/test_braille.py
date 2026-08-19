@@ -8,7 +8,8 @@ from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 from mapgen.braille import (build_braille_layout, render_braille_layout,
                             to_grade1_font_text, update_braille_label,
-                            add_braille_label, update_braille_title,
+                            add_braille_label, delete_braille_label,
+                            update_braille_title, update_braille_toolbox,
                             _draw_title, braille_font_path,
                             load_step7_page_layout, update_step7_page_layout)
 from webui import server
@@ -179,9 +180,10 @@ class BrailleConversionTests(unittest.TestCase):
             self.assertTrue((out_dir / "braille_labels.json").exists())
             saved = json.loads((out_dir / "braille_labels.json").read_text(encoding="utf-8"))
             metrics = saved["labels"][0]["render_metrics"]
-            self.assertEqual(metrics["pin_outer_radius_px"], 25.0)  # 6 mm black + 2 mm ring
-            self.assertEqual(metrics["pin_black_radius_px"], 15.0)
-            self.assertLess(metrics["box_offset_px"][0], -25.0)  # pin is right of its box
+            self.assertEqual(metrics["pin_outer_radius_px"], 20.0)  # requested 8 mm footprint
+            self.assertEqual(metrics["pin_black_radius_px"], 10.0)
+            self.assertFalse(metrics["callout"])
+            self.assertEqual(metrics["box_offset_px"][0], -metrics["box_size_px"][0] / 2)
             self.assertEqual(saved["geometry"]["padding_mm"], 3.0)
 
     def test_landscape_step6_orientation_uses_landscape_a4_page(self):
@@ -213,6 +215,7 @@ class BrailleConversionTests(unittest.TestCase):
 
     def test_each_side_places_the_box_outside_the_pin(self):
         layout = build_braille_layout(overlay_fixture())
+        layout["labels"][0]["callout"] = True
         with TemporaryDirectory() as directory:
             out_dir = Path(directory)
             Image.new("L", (240, 160), 255).save(out_dir / "step8a_cleanup.png")
@@ -223,13 +226,13 @@ class BrailleConversionTests(unittest.TestCase):
                 metrics = saved["labels"][0]["render_metrics"]
                 self.assertEqual(metrics["side"], side)
                 if side == "left":
-                    self.assertEqual(metrics["box_offset_px"][0], 25)
+                    self.assertEqual(metrics["box_offset_px"][0], 20)
                 elif side == "right":
-                    self.assertLess(metrics["box_offset_px"][0], -25)
+                    self.assertLess(metrics["box_offset_px"][0], -20)
                 elif side == "top":
-                    self.assertEqual(metrics["box_offset_px"][1], 25)
+                    self.assertEqual(metrics["box_offset_px"][1], 20)
                 else:
-                    self.assertLess(metrics["box_offset_px"][1], -25)
+                    self.assertLess(metrics["box_offset_px"][1], -20)
 
     def test_title_is_centered_five_mm_below_the_page_margin(self):
         with TemporaryDirectory() as directory:
@@ -291,6 +294,64 @@ class BrailleConversionTests(unittest.TestCase):
             self.assertEqual(refreshed["labels"][0]["id"], manual["id"])
             self.assertEqual(refreshed["title"]["text"], "My map")
 
+    def test_callout_is_optional_and_supports_all_three_eight_mm_pin_shapes(self):
+        with TemporaryDirectory() as directory:
+            out_dir = Path(directory)
+            Image.new("L", (240, 160), 255).save(out_dir / "step8a_cleanup.png")
+            render_braille_layout(out_dir, build_braille_layout(overlay_fixture()))
+            label_id = json.loads((out_dir / "braille_labels.json").read_text(
+                encoding="utf-8"))["labels"][0]["id"]
+            for shape in ("circle", "triangle", "square"):
+                label, _ = update_braille_label(
+                    out_dir, label_id, {"callout": True, "pin_shape": shape})
+                self.assertTrue(label["callout"])
+                self.assertEqual(label["pin_shape"], shape)
+                self.assertEqual(label["render_metrics"]["pin_outer_radius_px"], 20.0)
+
+    def test_deleted_detected_text_stays_deleted_after_a_step8_refresh(self):
+        with TemporaryDirectory() as directory:
+            out_dir = Path(directory)
+            Image.new("L", (240, 160), 255).save(out_dir / "step8a_cleanup.png")
+            render_braille_layout(out_dir, build_braille_layout(overlay_fixture()))
+            saved = json.loads((out_dir / "braille_labels.json").read_text(encoding="utf-8"))
+            label_id = saved["labels"][0]["id"]
+            delete_braille_label(out_dir, label_id)
+            deleted = json.loads((out_dir / "braille_labels.json").read_text(encoding="utf-8"))
+            refreshed = build_braille_layout(overlay_fixture(), deleted)
+            self.assertEqual(refreshed["labels"], [])
+            self.assertIn(label_id, refreshed["deleted_label_ids"])
+
+    def test_map_move_respects_fixed_text_and_grouped_furniture_modes(self):
+        with TemporaryDirectory() as directory:
+            out_dir = Path(directory)
+            Image.new("L", (240, 160), 255).save(out_dir / "step8a_cleanup.png")
+            layout = build_braille_layout(overlay_fixture())
+            render_braille_layout(out_dir, layout)
+            first_origin = layout["page"]["map_origin_px"]
+            first_label = layout["labels"][0]["position_px"]
+            moved, _ = update_braille_toolbox(out_dir, {
+                "map_origin_px": [first_origin[0] + 10, first_origin[1] + 15],
+            })
+            self.assertEqual(moved["labels"][0]["position_px"],
+                             [first_label[0] - 10, first_label[1] - 15])
+            page_position = [moved["page"]["map_origin_px"][0] + moved["labels"][0]["position_px"][0],
+                             moved["page"]["map_origin_px"][1] + moved["labels"][0]["position_px"][1]]
+            self.assertEqual(page_position,
+                             [first_origin[0] + first_label[0], first_origin[1] + first_label[1]])
+
+            border = {"border": {"enabled": True, "rect_page_px": [20, 30, 260, 190]}}
+            grouped, _ = update_braille_toolbox(out_dir, {
+                "fix_text_to_map": True, "group_map_elements": True, "furniture": border,
+            })
+            origin = grouped["page"]["map_origin_px"]
+            label_position = grouped["labels"][0]["position_px"]
+            shifted, _ = update_braille_toolbox(out_dir, {
+                "map_origin_px": [origin[0] + 8, origin[1] + 6],
+            })
+            self.assertEqual(shifted["labels"][0]["position_px"], label_position)
+            self.assertEqual(shifted["page"]["furniture"]["border"]["rect_page_px"],
+                             [28.0, 36.0, 268.0, 196.0])
+
 
 class BrailleApiTests(unittest.TestCase):
     def test_download_combines_map_and_legend_into_a_pdf(self):
@@ -303,11 +364,66 @@ class BrailleApiTests(unittest.TestCase):
             Image.new("L", (100, 140), 255).save(run_dir / "step8_braille.png", dpi=(127, 127))
             Image.new("L", (100, 140), 255).save(run_dir / "step9_legend.png", dpi=(127, 127))
             with patch.object(server, "MAPS_DIR", maps_dir), \
-                    patch.object(server, "RUNS_DIR", root / "runs"):
+                    patch.object(server, "RUNS_DIR", root / "runs"), \
+                    patch.object(server, "step9_review_ready", return_value=True):
                 response = server.app.test_client().get("/api/download/sample")
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.mimetype, "application/pdf")
             self.assertTrue(response.data.startswith(b"%PDF"))
+
+    def test_download_waits_for_step9_approval(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            maps_dir = root / "maps"
+            run_dir = root / "runs" / "sample"
+            maps_dir.mkdir(); run_dir.mkdir(parents=True)
+            Image.new("RGB", (4, 4), "white").save(maps_dir / "sample.png")
+            Image.new("L", (100, 140), 255).save(run_dir / "step8_braille.png")
+            Image.new("L", (100, 140), 255).save(run_dir / "step9_legend.png")
+            with patch.object(server, "MAPS_DIR", maps_dir), \
+                    patch.object(server, "RUNS_DIR", root / "runs"):
+                response = server.app.test_client().get("/api/download/sample")
+            self.assertEqual(response.status_code, 409)
+
+    def test_step9_review_endpoint_persists_the_final_decision(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            maps_dir = root / "maps"
+            maps_dir.mkdir()
+            (maps_dir / "sample.png").write_bytes(b"map")
+            run_dir = root / "runs" / "sample"
+            run_dir.mkdir(parents=True)
+            (run_dir / "legend_labels.json").write_text("{}", encoding="utf-8")
+            with patch.object(server, "MAPS_DIR", maps_dir), \
+                    patch.object(server, "RUNS_DIR", root / "runs"), \
+                    patch.object(server, "step_done", return_value=True):
+                client = server.app.test_client()
+                response = client.post("/api/step9-review/sample", json={"approve": True})
+                current = client.get("/api/step9-review/sample")
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(response.get_json()["approved"])
+            self.assertTrue(current.get_json()["approved"])
+
+    def test_legend_edits_invalidate_step9_approval(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            maps_dir = root / "maps"
+            run_dir = root / "runs" / "sample"
+            maps_dir.mkdir(); run_dir.mkdir(parents=True)
+            (maps_dir / "sample.png").write_bytes(b"map")
+            (run_dir / "legend_labels.json").write_text(
+                json.dumps({"title": {"id": "title"}, "entries": []}), encoding="utf-8")
+            with patch.object(server, "MAPS_DIR", maps_dir), \
+                    patch.object(server, "RUNS_DIR", root / "runs"), \
+                    patch.object(server, "step_done", return_value=True), \
+                    patch("mapgen.legend.update_legend",
+                          return_value=({"id": "title", "text": "Updated"}, {"entries": 0})):
+                client = server.app.test_client()
+                client.post("/api/step9-review/sample", json={"approve": True})
+                edited = client.post("/api/legend/sample/title", json={"text": "Updated"})
+                review = client.get("/api/step9-review/sample")
+            self.assertEqual(edited.status_code, 200)
+            self.assertFalse(review.get_json()["approved"])
 
     def test_api_edits_text_visibility_and_pin_position(self):
         with TemporaryDirectory() as directory:
@@ -356,6 +472,58 @@ class BrailleApiTests(unittest.TestCase):
             self.assertTrue(added.get_json()["label"]["id"].startswith("manual-"))
             self.assertEqual(titled.status_code, 200)
             self.assertEqual(titled.get_json()["title"]["text"], "My map")
+
+    def test_api_deletes_text_and_updates_the_step8_toolbox(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            maps_dir = root / "maps"
+            run_dir = root / "runs" / "sample"
+            maps_dir.mkdir(); run_dir.mkdir(parents=True)
+            (maps_dir / "sample.png").write_bytes(b"map")
+            Image.new("L", (240, 160), 255).save(run_dir / "step8a_cleanup.png")
+            render_braille_layout(run_dir, build_braille_layout(overlay_fixture()))
+            label_id = json.loads((run_dir / "braille_labels.json").read_text(
+                encoding="utf-8"))["labels"][0]["id"]
+            with patch.object(server, "MAPS_DIR", maps_dir), patch.object(server, "RUNS_DIR", root / "runs"):
+                client = server.app.test_client()
+                toolbox = client.post("/api/braille-layout/sample", json={
+                    "all_text_enabled": False,
+                    "fix_text_to_map": True,
+                    "group_map_elements": True,
+                })
+                deleted = client.delete(f"/api/braille-labels/sample/{label_id}")
+            self.assertEqual(toolbox.status_code, 200)
+            layout = toolbox.get_json()["layout"]
+            self.assertTrue(layout["toolbox"]["fix_text_to_map"])
+            self.assertTrue(layout["toolbox"]["group_map_elements"])
+            self.assertFalse(layout["title"]["enabled"])
+            self.assertFalse(layout["labels"][0]["enabled"])
+            self.assertEqual(deleted.status_code, 200)
+            self.assertEqual(deleted.get_json()["deleted"]["id"], label_id)
+
+    def test_step8_approval_is_invalidated_by_a_later_label_edit(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            maps_dir = root / "maps"
+            run_dir = root / "runs" / "sample"
+            maps_dir.mkdir(); run_dir.mkdir(parents=True)
+            (maps_dir / "sample.png").write_bytes(b"map")
+            Image.new("L", (240, 160), 255).save(run_dir / "step8a_cleanup.png")
+            render_braille_layout(run_dir, build_braille_layout(overlay_fixture()))
+            label_id = json.loads((run_dir / "braille_labels.json").read_text(
+                encoding="utf-8"))["labels"][0]["id"]
+            with patch.object(server, "MAPS_DIR", maps_dir), \
+                    patch.object(server, "RUNS_DIR", root / "runs"), \
+                    patch.object(server, "step_done", return_value=True):
+                client = server.app.test_client()
+                approved = client.post("/api/step8-review/sample", json={"approve": True})
+                edited = client.post(f"/api/braille-labels/sample/{label_id}",
+                                     json={"pin_shape": "triangle", "callout": True})
+                review = client.get("/api/step8-review/sample")
+            self.assertEqual(approved.status_code, 200)
+            self.assertTrue(approved.get_json()["approved"])
+            self.assertEqual(edited.status_code, 200)
+            self.assertFalse(review.get_json()["approved"])
 
 
 if __name__ == "__main__":

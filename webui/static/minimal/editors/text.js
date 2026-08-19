@@ -6,14 +6,14 @@ import { editorDetails } from "../controls.js";
 import { loadMaps, refreshSelectedData, renderWorkspace } from "../workspace.js";
 import { renderMapOverlay } from "../visual.js";
 
-/* Step 3 found the words printed over the map.  Here the reader fixes the
-   wording, hides an entry, or decides whether its ink is lifted off before the
-   colours underneath are read. */
+/* Step 3 found the words printed over the map. The only user decision is
+   whether the corrected label is carried forward; source ink is always
+   cleaned before segmentation so there are not two switches for one choice. */
 
 export function textEditorHtml() {
   const occurrences = state.data.labels?.occurrences || [];
   const body = occurrences.length ? `
-    <p class="section-intro">Edit the final wording, hide labels, or decide whether the printed text is removed before segmentation.</p>
+    <p class="section-intro">Edit the detected wording or turn off entries you do not want carried into the tactile map. Detected source ink is cleaned automatically before segmentation.</p>
     <div class="label-list">
       ${occurrences.map((item) => `
         <div class="label-row${item.include === false ? " is-excluded" : ""}" data-label-id="${esc(item.id)}">
@@ -21,15 +21,14 @@ export function textEditorHtml() {
           <input class="label-text" type="text" value="${esc(item.review_text || item.original_text)}"
                  maxlength="200" aria-label="Overlay text for ${esc(item.original_text)}">
           <span class="row-options">
-            <label class="tiny-check"><input class="label-include" type="checkbox" ${item.include !== false ? "checked" : ""}> show</label>
-            <label class="tiny-check"><input class="label-remove" type="checkbox" ${item.remove !== false ? "checked" : ""}> remove ink</label>
+            <label class="tiny-check"><input class="label-include" type="checkbox" ${item.include !== false ? "checked" : ""}> use this text</label>
           </span>
         </div>`).join("")}
     </div>
     <div class="action-row end"><span class="status-copy" id="text-save-status"></span>
       <button class="button secondary small" id="save-text" type="button">Save text</button></div>`
     : '<div class="empty-editor">No overlay text was detected on this map.</div>';
-  return editorDetails("text", "2", "Text", "Wording and visibility overlays", body);
+  return editorDetails("text", "3", "Detected text", "Edit wording or turn an entry off", body);
 }
 
 export function bindTextEditor() {
@@ -41,14 +40,13 @@ export function bindTextEditor() {
       if (!item) return;
       item.review_text = row.querySelector(".label-text").value;
       item.include = row.querySelector(".label-include").checked;
-      item.remove = row.querySelector(".label-remove").checked;
+      item.remove = true;
       row.classList.toggle("is-excluded", !item.include);
       statusLine("text-save-status", "Unsaved changes");
       renderMapOverlay();
     };
     row.querySelector(".label-text")?.addEventListener("input", update);
     row.querySelector(".label-include")?.addEventListener("change", update);
-    row.querySelector(".label-remove")?.addEventListener("change", update);
   });
   $("save-text")?.addEventListener("click", saveText);
 }
@@ -59,7 +57,7 @@ async function saveText() {
   const decisions = occurrences.map((item) => ({
     id: item.id,
     include: item.include !== false,
-    remove: item.remove !== false,
+    remove: true,
     text: String(item.review_text || item.original_text || "").trim(),
   }));
   await withBusy($("save-text"), "Saving…", async () => {

@@ -57,6 +57,7 @@ class Step5AggregationReviewApiTests(unittest.TestCase):
             }
             (run_dir / "aggregation.json").write_text(
                 json.dumps(aggregation), encoding="utf-8")
+            proposal_bytes = (run_dir / "aggregation.json").read_bytes()
             for step in (6, 7):
                 for name in server.STEP_ARTIFACTS[step]:
                     (run_dir / name).write_bytes(b"stale")
@@ -67,6 +68,19 @@ class Step5AggregationReviewApiTests(unittest.TestCase):
                 pending = client.get("/api/aggregation-review/sample")
                 self.assertEqual(pending.status_code, 200)
                 self.assertIsNone(pending.get_json()["review"])
+
+                preview = client.post("/api/aggregation-preview/sample", json={"groups": [
+                    {"label": "Wooded fields", "members": [0, 1], "approved": True},
+                    {"label": "Other crops", "members": [2], "approved": True},
+                ]})
+                self.assertEqual(preview.status_code, 200, preview.status)
+                rendered = cv2.imdecode(np.frombuffer(preview.data, np.uint8), cv2.IMREAD_COLOR)
+                self.assertEqual(rendered.shape[:2], source.shape)
+                np.testing.assert_array_equal(rendered[0, 0], rendered[0, 4])
+                self.assertFalse(np.array_equal(rendered[0, 4], rendered[0, 7]))
+                self.assertFalse((run_dir / "aggregation_review.json").exists())
+                self.assertFalse((run_dir / "group_map_source.png").exists())
+                self.assertEqual((run_dir / "aggregation.json").read_bytes(), proposal_bytes)
 
                 saved = client.post("/api/aggregation-review/sample", json={"groups": [
                     {"label": "Forest", "members": [0], "approved": True},

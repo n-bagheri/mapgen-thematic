@@ -1,9 +1,12 @@
 "use strict";
 
-import { $, esc, saveAggregationReview } from "../api.js";
+import { $, esc, previewAggregation, saveAggregationReview } from "../api.js";
 import { state, toast, withBusy } from "../state.js";
 import { loadMaps } from "../workspace.js";
-import { continuePipeline, editorDetails, renderControls } from "../controls.js";
+import { continuePipeline, renderControls } from "../controls.js";
+
+let previewTimer = null;
+let previewGeneration = 0;
 
 /* Step 5 fits the map to the number of textures a hand can tell apart.  The
    proposal arrives already filled in; this panel exists so a reader can move a
@@ -117,8 +120,8 @@ export function aggregationGateHtml() {
       <span class="section-kicker">One decision needed</span>
       <h3>Review the suggested tactile categories.</h3>
       <p class="section-intro">This map has more categories than there are textures a hand can tell apart,
-        so some must share one. Drag layers between categories, then approve. Nothing on the map moves:
-        only the names change.</p>
+        so some must share one. Drag layers between categories, then approve. The geography stays fixed
+        while the fitted-category preview updates to show which regions now share a category.</p>
       <div class="category-toolbar">
         <p><strong>${groups.length} of ${slots.length}</strong> available tactile categories used. The limit is a maximum, not a target.</p>
         <span class="category-toolbar-actions">
@@ -213,6 +216,7 @@ export function bindAggregationEditor() {
     state.groupLabels = {};
     state.visibleGroupSlots = null;
     renderControls();
+    queueAggregationPreview();
   });
   $("approve-groups")?.addEventListener("click", approveAggregation);
 }
@@ -223,6 +227,7 @@ function moveLayerToGroup(classIndex, slotIndex) {
     state.visibleGroupSlots = [...visibleAggregationSlots(), slotIndex];
   }
   renderControls();
+  queueAggregationPreview();
 }
 
 /** The groups exactly as the panel shows them, ready for the review API. */
@@ -238,11 +243,55 @@ function reviewedGroups() {
   })).filter((group) => group.members.length);
 }
 
+/** Recolour Step 5 from the unsaved assignment. The preview endpoint performs
+ *  the same grouping as approval but never writes review or pipeline files. */
+function queueAggregationPreview() {
+  if (previewTimer) window.clearTimeout(previewTimer);
+  const generation = ++previewGeneration;
+  previewTimer = window.setTimeout(async () => {
+    previewTimer = null;
+    const image = document.querySelector(
+      'img[data-artifact="step5_aggregation_preview.png"]');
+    if (!image) return;
+    image.classList.add("is-updating");
+    try {
+      const blob = await previewAggregation(state.selected, reviewedGroups());
+      if (generation !== previewGeneration || !image.isConnected) return;
+      if (state.aggregationPreviewUrl) URL.revokeObjectURL(state.aggregationPreviewUrl);
+      state.aggregationPreviewUrl = URL.createObjectURL(blob);
+      image.src = state.aggregationPreviewUrl;
+      const fullSize = image.closest(".map-stage")?.querySelector("[data-full-size]");
+      if (fullSize) fullSize.href = state.aggregationPreviewUrl;
+    } catch (error) {
+      if (generation === previewGeneration) {
+        toast(`The category preview could not be refreshed: ${error.message}`, "error");
+      }
+    } finally {
+      if (generation === previewGeneration && image.isConnected) {
+        image.classList.remove("is-updating");
+      }
+    }
+  }, 120);
+}
+
+function cancelAggregationPreview() {
+  if (previewTimer) window.clearTimeout(previewTimer);
+  previewTimer = null;
+  previewGeneration += 1;
+}
+
+function clearAggregationPreviewUrl() {
+  if (state.aggregationPreviewUrl) URL.revokeObjectURL(state.aggregationPreviewUrl);
+  state.aggregationPreviewUrl = null;
+}
+
 async function approveAggregation() {
   const groups = reviewedGroups();
   if (!groups.length) return;
+  cancelAggregationPreview();
   await withBusy($("approve-groups"), "Approving…", async () => {
     await saveAggregationReview(state.selected, groups);
+    clearAggregationPreviewUrl();
     state.groupEdit = null;
     state.groupLabels = {};
     state.visibleGroupSlots = null;
@@ -251,17 +300,4 @@ async function approveAggregation() {
     await continuePipeline();
     toast("Categories approved. Building the simplified map and the tactile result.");
   });
-}
-
-/** The same grouping editor, reached from Step 5 rather than from the gate.
- *  Before approval the gate above already shows it, so this only explains
- *  where the decision lives; afterwards it is how a grouping is revisited. */
-export function aggregationEditorHtml(map) {
-  const body = map?.step5_review_ready === false
-    ? `<p class="section-intro">The category review is waiting for you at the top of this
-        panel. Approving it is what unlocks the rest of the pipeline.</p>`
-    : `${aggregationGateHtml()}
-       <p class="field-note">Approving again rebuilds Step 6 onward from the new grouping.</p>`;
-  return editorDetails("aggregation", "5", "Tactile categories",
-                       "How the map's classes share the available textures", body);
 }

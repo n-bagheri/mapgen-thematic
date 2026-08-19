@@ -1,26 +1,32 @@
 "use strict";
 
-import { $, artifactUrl, esc, mapUrl, resetFrom, saveSpecText } from "./api.js";
+import { $, esc, resetFrom, saveSpecText } from "./api.js";
 import {
-  FINAL_BATCH, FIRST_BATCH, PAGE_SIZES, STEP_DEFS,
+  ANALYSIS_BATCH, FINAL_BATCH, INITIAL_BATCH, LABEL_BATCH, PAGE_SIZES, PATTERN_BATCH,
+  SIMPLIFICATION_BATCH, STEP_DEFS,
   allDone, blockingReason, completedCount, pageSizeKey,
 } from "./steps.js";
-import { currentStepKey, isRunning, selectedMap, state, statusFor, toast, withBusy } from "./state.js";
+import {
+  currentStepKey, forgetIndividualMode, isRunning, rememberIndividualMode,
+  selectedMap, state, statusFor, toast, withBusy,
+} from "./state.js";
 import {
   loadMaps, refreshSelectedData, renderWorkspace, savePreflight, startJob,
 } from "./workspace.js";
-import { aggregationEditorHtml, aggregationGateHtml,
-         bindAggregationEditor } from "./editors/aggregation.js";
-import { bindMaskEditor, maskEditorHtml } from "./editors/mask.js";
+import { aggregationGateHtml, bindAggregationEditor } from "./editors/aggregation.js";
+import { bindMaskEditor, maskDecisionHtml } from "./editors/mask.js";
 import { bindTextEditor, textEditorHtml } from "./editors/text.js";
 import { bindLineEditor, lineEditorHtml } from "./editors/lines.js";
-import { bindSimplificationEditor, simplificationEditorHtml } from "./editors/simplification.js";
-import { bindPatternEditor, patternEditorHtml } from "./editors/patterns.js";
-import { bindPageEditor, pageEditorHtml } from "./editors/page.js";
-import { bindBrailleEditor, brailleEditorHtml } from "./editors/braille.js";
-import { bindLegendEditor, legendEditorHtml } from "./editors/legend.js";
+import {
+  bindSimplificationEditor, simplificationDecisionHtml, simplificationEditorHtml,
+} from "./editors/simplification.js";
+import {
+  bindPatternEditor, patternDecisionHtml,
+} from "./editors/patterns.js";
+import { bindBrailleEditor, brailleDecisionHtml } from "./editors/braille.js";
+import { bindLegendEditor, legendDecisionHtml, legendEditorHtml } from "./editors/legend.js";
 import { bindExportEditor, exportEditorHtml } from "./editors/exportpdf.js";
-import { activeStep, renderVisual, setActiveStep } from "./visual.js";
+import { activeStep, setActiveStep } from "./visual.js";
 
 /* The control pane shows exactly one body at a time — a run, a decision, the
    setup, or the editors — with the progress summary above and the reset row
@@ -34,31 +40,56 @@ export function renderControls() {
   const blocked = blockingReason(map);
   // A paused part-way run shows the same step panel as a live one, so the
   // results already produced stay readable while the run is stopped.
-  const paused = !live && !failed && !map.steps?.["6"] && completedCount(map) > 0;
+  const paused = !live && !failed && !state.individualRun
+    && !map.steps?.["6"] && completedCount(map) > 0;
+  const maskDecision = !live && !failed && !blocked
+    && map.steps?.["2"] && !map.steps?.["3"] && !state.data.mask?.approved;
+  const simplificationDecision = !live && !failed && !blocked && !state.individualRun
+    && map.steps?.["6"] && !map.steps?.["7"] && !map.step6_review_ready;
+  const patternDecision = !live && !failed && !blocked && !state.individualRun
+    && map.steps?.["7"] && !map.steps?.["8"] && !map.step7_review_ready;
+  const brailleDecision = !live && !failed && !blocked && !state.individualRun
+    && map.steps?.["8"] && !map.steps?.["9"] && !map.step8_review_ready;
+  const legendDecision = !live && !failed && !blocked && !state.individualRun
+    && map.steps?.["9"] && !map.step9_review_ready;
   const preflight = !live && !failed && !blocked && !paused
     && !map.steps?.["6"] && !map.steps?.["5"] && !state.individualRun;
-  document.body.classList.toggle("preflight-layout", preflight);
   let body = "";
   if (live) {
-    body = stepPanelHtml(map);
+    body = state.individualRun ? individualRunHtml(map) : stepPanelHtml(map);
   } else if (blocked) {
     body = scopeBlockHtml(map, blocked);
+  } else if (maskDecision) {
+    body = maskDecisionHtml();
+  } else if (state.individualRun) {
+    body = individualRunHtml(map);
   } else if (map.steps?.["5"] && !map.step5_review_ready) {
-    body = aggregationGateHtml() + stepStackHtml(map);
+    body = stepStackHtml(map, true);
+  } else if (simplificationDecision) {
+    body = simplificationDecisionHtml();
+  } else if (patternDecision) {
+    body = stepStackHtml(map, true);
+  } else if (brailleDecision) {
+    body = stepStackHtml(map, true);
+  } else if (legendDecision) {
+    body = legendDecisionHtml();
   } else if (!map.steps?.["6"]) {
     body = paused
       ? setupHtml(false) + stepPanelHtml(map) + stepStackHtml(map)
-      : state.individualRun ? individualRunHtml(map) : setupHtml(true, true);
+      : setupHtml(true, true);
   } else {
     body = resultActionHtml(map) + stepStackHtml(map);
   }
-  if (failed) body = stepPanelHtml(map) + failurePanelHtml(map);
+  if (failed) body = state.individualRun
+    ? individualRunHtml(map) + failurePanelHtml(map)
+    : stepPanelHtml(map) + failurePanelHtml(map);
   $("control-content").innerHTML = `
     <div class="control-shell${preflight ? " is-preflight" : ""}">
       <header class="control-header">
         <div><h2>${esc(map.name)}</h2></div>
       </header>
-      ${live || failed || paused || blocked ? "" : progressHtml(map)}
+      ${live || failed || paused || blocked || maskDecision || state.individualRun || simplificationDecision || patternDecision || brailleDecision || legendDecision
+        ? "" : progressHtml(map)}
       ${body}
       ${resetRowHtml(map, live)}
     </div>`;
@@ -69,30 +100,86 @@ export function renderControls() {
  *  list is the only numbering the reader sees. */
 export function editorDetails(id, number, title, subtitle, body) {
   return `<section class="step-editor" data-editor="${id}">
-    <h4>${title}<small>${subtitle}</small></h4>
+    <h4>${title}${subtitle ? `<small>${subtitle}</small>` : ""}</h4>
     ${body}
   </section>`;
+}
+
+function readableMapType(value) {
+  const labels = {
+    area_class_chorochromatic: "Area-class thematic map",
+    isopleth: "Isopleth map",
+    classed_sequential: "Classed sequential map",
+    choropleth: "Choropleth map",
+  };
+  return labels[value] || String(value || "Unknown map type").replaceAll("_", " ");
+}
+
+/** Step 1's structured reading is much more useful than an empty settings
+ * message. Keep the main interpretation visible and tuck the long model prose
+ * and complete class list into one disclosure. */
+function readingEditorHtml() {
+  const sem = state.data.semantics;
+  if (!sem) {
+    return editorDetails("reading", "1", "What the system read", "",
+      '<div class="empty-editor">The Step 1 reading is not available.</div>');
+  }
+  const classes = Array.isArray(sem.thematic_classes) ? sem.thematic_classes : [];
+  const visibleClasses = classes.slice(0, 6);
+  const more = Math.max(0, classes.length - visibleClasses.length);
+  const detailRows = classes.map((item) => `<li><span>${esc(item.label)}</span>
+    ${Number.isFinite(Number(item.approx_area_share_percent))
+      ? `<small>${esc(item.approx_area_share_percent)}% estimated area</small>` : ""}</li>`).join("");
+  const body = `
+    <section class="reading-summary" aria-label="Step 1 map interpretation">
+      <p class="reading-subject">${esc(sem.subject || sem.title || "Map subject not identified")}</p>
+      <div class="reading-facts">
+        <span>${esc(readableMapType(sem.map_type))}</span>
+        <span>${esc(String(sem.data_ordering || "unknown"))} data</span>
+        <span>${esc(sem.map_language || "Unknown language")}</span>
+        <span>${sem.water_present ? "Separate water identified" : "No separate water layer"}</span>
+        <span class="${sem.in_scope === false ? "is-warning" : ""}">${sem.in_scope === false
+          ? "Outside tactile pipeline scope" : "Suitable for tactile conversion"}</span>
+      </div>
+      ${sem.title ? `<p class="reading-title"><span>Detected title</span>${esc(sem.title)}</p>` : ""}
+      <div class="reading-class-preview">
+        <span class="field-label">Legend categories read</span>
+        <div>${visibleClasses.map((item) => `<span>${esc(item.label)}</span>`).join("")
+          || '<small>No thematic categories were returned.</small>'}
+          ${more ? `<span class="reading-more-chip">+${more} more</span>` : ""}</div>
+      </div>
+      ${(sem.description || detailRows) ? `<details class="reading-details">
+        <summary>See full reading</summary>
+        ${sem.description ? `<p>${esc(sem.description)}</p>` : ""}
+        ${detailRows ? `<ol>${detailRows}</ol>` : ""}
+      </details>` : ""}
+    </section>`;
+  return editorDetails("reading", "1", "What the system read", "", body);
 }
 
 /* Which editors belong to which step.  Everything the focused view can change
    is reached by opening the step that owns it. */
 const STEP_EDITORS = {
-  2: [maskEditorHtml],
+  1: [readingEditorHtml],
+  2: [maskDecisionHtml],
   3: [textEditorHtml],
   4: [lineEditorHtml],
-  5: [aggregationEditorHtml],
+  5: [aggregationGateHtml],
   6: [simplificationEditorHtml],
-  7: [patternEditorHtml, pageEditorHtml],
-  8: [brailleEditorHtml],
+  7: [patternDecisionHtml],
+  8: [brailleDecisionHtml],
   9: [legendEditorHtml],
 };
 
 /** The right pane mirrors the detailed page: one row per pipeline step, in
  *  order, carrying that step's status, its controls, and its rerun button.
  *  Opening a row is what points the left pane at that step's pictures. */
-function stepStackHtml(map) {
+function stepStackHtml(map, completedOnly = false) {
   const open = activeStep(map);
-  const rows = STEP_DEFS.map((step) => {
+  const listedSteps = completedOnly
+    ? STEP_DEFS.filter((step) => Boolean(map.steps?.[step.key]))
+    : STEP_DEFS;
+  const rows = listedSteps.map((step) => {
     const number = Number(step.key);
     const done = Boolean(map.steps?.[step.key]);
     const running = currentStepKey(map) === step.key && state.job.status === "running";
@@ -116,7 +203,7 @@ function stepStackHtml(map) {
       </div>
     </details>`;
   }).join("");
-  const exportPanel = map.steps?.["8"] && map.steps?.["9"] ? exportEditorHtml(map) : "";
+  const exportPanel = map.steps?.["9"] ? exportEditorHtml(map) : "";
   return `<div class="step-stack">${rows}</div>${exportPanel}`;
 }
 
@@ -179,9 +266,7 @@ function resetRowHtml(map, live) {
   return `
     <div class="reset-row">
       <button class="button danger small" id="reset-map" type="button" ${live ? "disabled" : ""}>Start over</button>
-      <span>${live
-        ? "A step cannot be interrupted; the run stops on its own if a step fails."
-        : "Deletes every result for this map and returns to the run setup."}</span>
+      ${live ? "<span>A step cannot be interrupted; the run stops on its own if a step fails.</span>" : ""}
     </div>`;
 }
 
@@ -191,17 +276,22 @@ async function resetMap() {
   if (!window.confirm(`Delete every result for ${map.name} and return to the run setup?`)) return;
   await withBusy($("reset-map"), "Resetting…", async () => {
     await resetFrom(state.selected, 1);
+    forgetIndividualMode(state.selected);
     state.job = { status: "idle" };
     state.viewStep = null;
     state.activeStep = 1;
     state.individualRun = false;
     state.previewLevel = null;
+    state.groupEdit = null;
+    state.groupLabels = {};
+    state.visibleGroupSlots = null;
+    if (state.aggregationPreviewUrl) URL.revokeObjectURL(state.aggregationPreviewUrl);
+    state.aggregationPreviewUrl = null;
     state.maskBrush.strokes = [];
     state.maskBrush.active = false;
     await loadMaps();
     await refreshSelectedData();
     renderWorkspace(true);
-    toast("Map reset. The run setup is ready again.");
   });
 }
 
@@ -223,6 +313,16 @@ function scopeBlockHtml(map, reason) {
 /* ------------------------------------------------------------ run setup --- */
 
 const PAGE_SIZE_LABELS = { a4: "A4 · 210 × 297 mm", a3: "A3 · 297 × 420 mm", custom: "Custom" };
+const MEDIUM_LABELS = {
+  swell_paper: "Swell paper",
+  embosser: "Embosser",
+  print_3d: "3D print",
+};
+const BRAILLE_LABELS = {
+  "unified-english-grade1": "Unified English Braille · Grade 1",
+};
+
+let specSaveChain = Promise.resolve();
 
 function modelOptions() {
   if (!state.models.length) return '<option value="">Default pipeline model</option>';
@@ -232,31 +332,41 @@ function modelOptions() {
 
 function setupHtml(showRun = true, showIndividual = false) {
   const spec = state.spec;
+  const constants = spec?.constants || {};
   const size = state.customPage ? "custom" : pageSizeKey(spec);
-  const orientation = spec?.orientation || "auto";
+  const orientation = spec?.orientation || "portrait";
+  const disabled = spec ? "" : "disabled";
   const option = (value, current, label) =>
     `<option value="${value}" ${value === current ? "selected" : ""}>${label}</option>`;
+  const options = (labels, current) => Object.entries(labels)
+    .map(([value, label]) => option(value, current, label)).join("");
+  const value = (candidate) => Number.isFinite(Number(candidate)) ? Number(candidate) : "";
   return `
     <section class="setup-card featured">
-      <h3>Run setup</h3>
-      <div class="form-grid" id="preflight-form">
+      <div class="setup-heading"><h3>Run setup</h3>
+        <span>Model per run · output specification shared by every map</span></div>
+      <div class="setup-fields"><div class="form-grid" id="preflight-form">
         <label class="field">
           <span>Model</span>
           <select id="model-select">${modelOptions()}</select>
         </label>
         <label class="field">
+          <span>Output medium</span>
+          <select id="output-medium" ${disabled}>
+            ${options(MEDIUM_LABELS, spec?.medium || "swell_paper")}
+          </select>
+        </label>
+        <label class="field">
           <span>Page size</span>
-          <select id="page-size" ${spec ? "" : "disabled"}>
+          <select id="page-size" ${disabled}>
             ${option("a4", size, PAGE_SIZE_LABELS.a4)}
             ${option("a3", size, PAGE_SIZE_LABELS.a3)}
             ${option("custom", size, PAGE_SIZE_LABELS.custom)}
           </select>
-          <small class="field-note">Shared by every map.</small>
         </label>
         <label class="field">
           <span>Orientation</span>
-          <select id="page-orientation" ${spec ? "" : "disabled"}>
-            ${option("auto", orientation, "Fit the sheet")}
+          <select id="page-orientation" ${disabled}>
             ${option("portrait", orientation, "Portrait")}
             ${option("landscape", orientation, "Landscape")}
           </select>
@@ -272,7 +382,59 @@ function setupHtml(showRun = true, showIndividual = false) {
                    value="${Number(spec.page_height_mm)}" aria-label="Page height in millimetres">
           </div>
         </div>` : ""}
+        <label class="field">
+          <span>Page margin</span>
+          <input id="page-margin" type="number" min="0" step="0.5"
+                 value="${value(spec?.margin_mm)}" ${disabled}>
+          <small class="field-note">Millimetres on every side.</small>
+        </label>
+        <label class="field">
+          <span>Braille standard</span>
+          <select id="braille-standard" ${disabled}>
+            ${options(BRAILLE_LABELS, spec?.braille_standard || "unified-english-grade1")}
+          </select>
+        </label>
       </div>
+      <details class="output-spec-advanced" id="advanced-output-spec"
+               ${state.specAdvancedOpen ? "open" : ""}>
+        <summary><span>Advanced tactile settings</span>
+          <small>Physical minimums used by every pipeline step</small></summary>
+        <div class="output-spec-grid">
+          <label class="field"><span>Braille cell width</span>
+            <input type="number" min="0.1" step="0.1" value="${value(constants.braille_cell_width_mm)}"
+                   data-spec-constant="braille_cell_width_mm" ${disabled}>
+            <small class="field-note">Millimetres, including cell spacing.</small>
+          </label>
+          <label class="field"><span>Braille cell height</span>
+            <input type="number" min="0.1" step="0.1" value="${value(constants.braille_cell_height_mm)}"
+                   data-spec-constant="braille_cell_height_mm" ${disabled}>
+            <small class="field-note">Millimetres, including line spacing.</small>
+          </label>
+          <label class="field"><span>Minimum texture side</span>
+            <input type="number" min="0.1" step="0.5" value="${value(constants.min_texture_area_side_mm)}"
+                   data-spec-constant="min_texture_area_side_mm" ${disabled}>
+            <small class="field-note">Smallest textured square, in millimetres.</small>
+          </label>
+          <label class="field"><span>Minimum element gap</span>
+            <input type="number" min="0.1" step="0.5" value="${value(constants.min_element_gap_mm)}"
+                   data-spec-constant="min_element_gap_mm" ${disabled}>
+            <small class="field-note">Clear tactile separation, in millimetres.</small>
+          </label>
+          <label class="field"><span>Minimum line width</span>
+            <input type="number" min="0.1" step="0.1" value="${value(constants.min_line_width_mm)}"
+                   data-spec-constant="min_line_width_mm" ${disabled}>
+          </label>
+          <label class="field"><span>Minimum line length</span>
+            <input type="number" min="0.1" step="0.5" value="${value(constants.min_line_length_mm)}"
+                   data-spec-constant="min_line_length_mm" ${disabled}>
+          </label>
+          <label class="field fixed-spec-field"><span>Maximum area textures</span>
+            <input id="max-area-textures" type="number" value="${value(constants.max_area_textures)}"
+                   readonly aria-readonly="true">
+            <small class="field-note">Fixed at five by the current pipeline.</small>
+          </label>
+        </div>
+      </details></div>
       ${showRun ? `<div class="action-row end${showIndividual ? " preflight-actions" : ""}">
         ${showIndividual ? `<button class="button primary" id="show-step-controls" type="button">
           Run each step individually</button>` : ""}
@@ -281,36 +443,84 @@ function setupHtml(showRun = true, showIndividual = false) {
     </section>`;
 }
 
+function individualStepDotsHtml(map) {
+  const selected = activeStep(map);
+  const dots = STEP_DEFS.map((step) => {
+    const itemState = stepState(map, step);
+    const reachable = itemState === "done" || itemState === "running" || itemState === "failed";
+    return `<button class="step-dot ${itemState}" type="button" data-individual-step="${step.key}"
+        aria-current="${Number(step.key) === selected}" ${reachable ? "" : "disabled"}
+        aria-label="Step ${esc(step.number)} · ${esc(step.title)}"
+        title="Step ${esc(step.number)} · ${esc(step.title)}">${esc(step.number)}</button>`;
+  }).join("");
+  return `<div class="step-dots individual-step-dots" role="group" aria-label="All pipeline steps">${dots}</div>`;
+}
+
 function individualRunHtml(map) {
+  const completed = completedCount(map);
+  const candidate = STEP_DEFS.find((step) => !map.steps?.[step.key]);
+  const waitingForApproval = candidate?.key === "6" && !map.step5_review_ready
+    || candidate?.key === "7" && !map.step6_review_ready
+    || candidate?.key === "8" && !map.step7_review_ready
+    || candidate?.key === "9" && !map.step8_review_ready;
+  const next = waitingForApproval ? null : candidate;
+  const live = state.job.status === "running";
   return `
     <section class="individual-run-heading">
+      ${individualStepDotsHtml(map)}
       <div><span class="section-kicker">Individual run</span>
-        <h3>Choose the step you want to run.</h3></div>
-      <button class="button subtle small" id="show-run-setup" type="button">Back to run setup</button>
+        <h3>${completed ? `${completed} completed step${completed === 1 ? "" : "s"}` : "No steps completed yet"}</h3></div>
     </section>
-    ${stepStackHtml(map)}`;
+    ${completed ? stepStackHtml(map, true)
+      : `<div class="empty-editor individual-empty">${live
+        ? "The first step is running. Completed steps will appear here."
+        : "Run Step 1 to begin. Completed steps will appear here."}</div>`}
+    ${!live && next ? `<div class="action-row end individual-next-step">
+      <button class="button primary" data-run-step="${next.key}" type="button">
+        Run step ${esc(next.number)}</button>
+    </div>` : ""}`;
 }
 
 /** Re-rendering mid-edit would replace the inputs the user is still typing in,
  *  so only a change of page-size mode asks for one. */
-async function saveSpec(patch, rerender = false) {
-  if (!state.spec) {
-    toast("The output spec could not be read; reload the page.", "error");
-    return;
-  }
-  const next = { ...state.spec, ...patch };
-  try {
-    await saveSpecText(next);
-    state.spec = next;
-    if (rerender) renderControls();
-    toast("Page setup saved.");
-  } catch (error) {
-    toast(error.message, "error");
-    renderControls();  // put the rejected field back to the stored value
-  }
+function saveSpec(patch, rerender = false) {
+  const save = async () => {
+    if (!state.spec) {
+      toast("The output spec could not be read; reload the page.", "error");
+      return;
+    }
+    // Constants are nested in the JSON file. Merge a changed constant instead
+    // of replacing its siblings, then serialize writes so quick edits cannot
+    // land out of order and silently restore an older value.
+    const next = {
+      ...state.spec,
+      ...patch,
+      ...(patch.constants ? {
+        constants: { ...(state.spec.constants || {}), ...patch.constants },
+      } : {}),
+    };
+    try {
+      await saveSpecText(next);
+      state.spec = next;
+      if (rerender) renderControls();
+      toast("Output specification saved.");
+    } catch (error) {
+      toast(error.message, "error");
+      renderControls();  // restore every field from the last valid spec
+    }
+  };
+  const operation = specSaveChain.then(save, save);
+  specSaveChain = operation.catch(() => {});
+  return operation;
 }
 
 function bindPageSetup() {
+  $("advanced-output-spec")?.addEventListener("toggle", (event) => {
+    state.specAdvancedOpen = event.currentTarget.open;
+  });
+  $("output-medium")?.addEventListener("change", (event) => {
+    saveSpec({ medium: event.target.value });
+  });
   $("page-size")?.addEventListener("change", (event) => {
     const size = PAGE_SIZES[event.target.value];
     state.customPage = !size;
@@ -323,12 +533,23 @@ function bindPageSetup() {
   $("page-orientation")?.addEventListener("change", (event) => {
     saveSpec({ orientation: event.target.value });
   });
+  $("page-margin")?.addEventListener("change", (event) => {
+    saveSpec({ margin_mm: Number(event.target.value) });
+  });
+  $("braille-standard")?.addEventListener("change", (event) => {
+    saveSpec({ braille_standard: event.target.value });
+  });
   const saveCustom = () => saveSpec({
     page_width_mm: Number($("page-width").value),
     page_height_mm: Number($("page-height").value),
   });
   $("page-width")?.addEventListener("change", saveCustom);
   $("page-height")?.addEventListener("change", saveCustom);
+  document.querySelectorAll("[data-spec-constant]").forEach((input) => {
+    input.addEventListener("change", () => {
+      saveSpec({ constants: { [input.dataset.specConstant]: Number(input.value) } });
+    });
+  });
 }
 
 /* ----------------------------------------------------------- step panel --- */
@@ -354,18 +575,13 @@ function viewedStep(map) {
     || STEP_DEFS[0];
 }
 
-function stepImageSrc(map, step) {
-  if (step.key === "1") return mapUrl(map.name);
-  return step.preview ? artifactUrl(map.stem, step.preview) : "";
-}
-
 function stepPanelHtml(map) {
   const running = STEP_DEFS.find((step) => step.key === currentStepKey(map));
   const step = viewedStep(map);
-  const status = stepState(map, step);
-  const ready = status === "done" || (step.key === "1" && status !== "");
-  const source = ready ? stepImageSrc(map, step) : "";
-  const dots = STEP_DEFS.map((item) => {
+  const visibleSteps = state.individualRun
+    ? STEP_DEFS.filter((item) => Boolean(stepState(map, item)))
+    : STEP_DEFS;
+  const dots = visibleSteps.map((item) => {
     const itemState = stepState(map, item);
     const reachable = itemState === "done" || itemState === "running" || itemState === "failed";
     return `<button class="step-dot ${itemState}" type="button" data-step-view="${item.key}"
@@ -384,8 +600,8 @@ function stepPanelHtml(map) {
         ? `Paused · next up ${next.number} · ${next.title}`
         : "Every step finished";
   const mood = failed ? "is-failed" : live ? "is-running" : "is-idle";
-  // Paused runs keep the same panel, so the results stay readable between
-  // steps; the button picks the run back up from the first missing result.
+  // Paused runs keep the same status panel between steps; the button picks the
+  // run back up from the first missing result.
   const resume = !live && !failed && next
     ? `<div class="action-row end"><button class="button primary" id="continue-run" type="button">
          Continue from ${esc(next.number)} · ${esc(next.title)}</button></div>`
@@ -396,10 +612,6 @@ function stepPanelHtml(map) {
       <p class="step-status ${mood}">${esc(headline)}</p>
       <h3>${esc(step.number)} · ${esc(step.title)}</h3>
       <p class="step-blurb">${esc(step.blurb)}</p>
-      <figure class="step-figure${source ? "" : " is-waiting"}">
-        ${source ? `<img src="${source}" alt="Result of ${esc(step.title)}">` : ""}
-        <figcaption>${esc(source ? step.caption : `${step.title} — result appears here as soon as this step finishes.`)}</figcaption>
-      </figure>
       ${resume}
     </section>`;
 }
@@ -441,7 +653,11 @@ function retrySteps(map) {
   const requested = (state.job.steps || []).map(String);
   const missingRequested = requested.filter((step) => !map.steps?.[step]);
   if (missingRequested.length) return missingRequested;
-  const batch = map.steps?.["5"] ? FINAL_BATCH : FIRST_BATCH;
+  const batch = map.steps?.["5"]
+    ? map.steps?.["6"] ? map.steps?.["7"]
+      ? map.steps?.["8"] ? FINAL_BATCH : LABEL_BATCH
+      : PATTERN_BATCH : SIMPLIFICATION_BATCH
+    : map.steps?.["2"] ? ANALYSIS_BATCH : INITIAL_BATCH;
   return batch.filter((step) => !map.steps?.[step]);
 }
 
@@ -459,27 +675,27 @@ async function retryFailedJob() {
 async function runAll() {
   await withBusy($("run-all"), "Starting…", async () => {
     await savePreflight();
+    rememberIndividualMode(state.selected, false);
+    state.individualRun = false;
     state.autorun = true;
     const map = selectedMap();
-    const missing = FIRST_BATCH.filter((step) => !map.steps?.[step]);
+    const missing = INITIAL_BATCH.filter((step) => !map.steps?.[step]);
     if (missing.length) await startJob(missing);
     else await continuePipeline();
   });
 }
 
-function showIndividualSteps() {
-  state.individualRun = true;
-  state.activeStep = 1;
-  renderControls();
-  renderVisual();
-  $("control-pane")?.scrollTo({ top: 0 });
-}
-
-function showRunSetup() {
-  state.individualRun = false;
-  renderControls();
-  renderVisual();
-  $("control-pane")?.scrollTo({ top: 0 });
+async function showIndividualSteps(event) {
+  const button = event?.currentTarget || $("show-step-controls");
+  await withBusy(button, "Starting Step 1…", async () => {
+    await savePreflight();
+    rememberIndividualMode(state.selected, true);
+    state.individualRun = true;
+    state.autorun = false;
+    state.activeStep = 1;
+    state.viewStep = null;
+    await startJob(["1"]);
+  });
 }
 
 /** Resume a paused run, saving the settings still on screen first. */
@@ -490,7 +706,8 @@ async function resumeRun() {
   });
 }
 
-/** The run is in two halves with the Step 5 category review between them. */
+/** The automatic run has six human gates: Step 2 mask, Step 5 categories,
+ *  Step 6 simplification, Step 7 patterns, Step 8 layout, and Step 9 legend. */
 export async function continuePipeline() {
   if (state.continuing || state.job.status === "running") return;
   state.continuing = true;
@@ -503,8 +720,27 @@ export async function continuePipeline() {
       renderWorkspace();
       return;
     }
+    if (!map.steps?.["2"]) {
+      const missing = INITIAL_BATCH.filter((step) => !map.steps?.[step]);
+      state.autorun = true;
+      await startJob(missing);
+      return;
+    }
+    // Existing projects that have already passed Step 2 remain compatible;
+    // the approval is required only before this run starts Step 3.
+    if (!map.steps?.["3"]) {
+      await refreshSelectedData();
+      if (!state.data.mask?.approved) {
+        state.autorun = true;
+        state.activeStep = 2;
+        state.maskBrush.active = true;
+        renderWorkspace(true);
+        toast("Review and approve the detected mask to continue.", "warning");
+        return;
+      }
+    }
     if (!map.steps?.["5"]) {
-      const missing = FIRST_BATCH.filter((step) => !map.steps?.[step]);
+      const missing = ANALYSIS_BATCH.filter((step) => !map.steps?.[step]);
       state.autorun = true;
       await startJob(missing);
       return;
@@ -513,6 +749,47 @@ export async function continuePipeline() {
       await refreshSelectedData();
       renderWorkspace();
       toast("Review the suggested tactile categories to continue.", "warning");
+      return;
+    }
+    if (!map.steps?.["6"]) {
+      state.autorun = true;
+      await startJob(SIMPLIFICATION_BATCH);
+      return;
+    }
+    // Existing projects that already reached Step 7 remain compatible. New
+    // runs require an explicit level choice before patterns consume Step 6.
+    if (!map.steps?.["7"] && !map.step6_review_ready) {
+      await refreshSelectedData();
+      state.autorun = true;
+      state.activeStep = 6;
+      renderWorkspace(true);
+      toast("Choose a simplification level to continue.", "warning");
+      return;
+    }
+    if (!map.steps?.["7"]) {
+      state.autorun = true;
+      await startJob(PATTERN_BATCH);
+      return;
+    }
+    if (!map.steps?.["8"] && !map.step7_review_ready) {
+      await refreshSelectedData();
+      state.autorun = true;
+      state.activeStep = 7;
+      renderWorkspace(true);
+      toast("Review and approve the tactile patterns to continue.", "warning");
+      return;
+    }
+    if (!map.steps?.["8"]) {
+      state.autorun = true;
+      await startJob(LABEL_BATCH);
+      return;
+    }
+    if (!map.steps?.["9"] && !map.step8_review_ready) {
+      await refreshSelectedData();
+      state.autorun = true;
+      state.activeStep = 8;
+      renderWorkspace(true);
+      toast("Review and approve the Braille labels and page layout to continue.", "warning");
       return;
     }
     const missing = FINAL_BATCH.filter((step) => !map.steps?.[step]);
@@ -524,6 +801,9 @@ export async function continuePipeline() {
       state.activeStep = 9;
       await refreshSelectedData();
       renderWorkspace(true);
+      if (!map.step9_review_ready) {
+        toast("Review and approve the legend page to enable export.", "warning");
+      }
     }
   } finally {
     state.continuing = false;
@@ -546,7 +826,39 @@ async function rerunStep1() {
   });
 }
 
+/** Approval advances one stage in an individual run, while an automatic run
+ * resumes its normal grouped batches. */
+async function continueAfterMaskApproval() {
+  if (!state.individualRun) {
+    await continuePipeline();
+    return;
+  }
+  state.autorun = false;
+  state.viewStep = null;
+  setActiveStep(3);
+  await startJob(["3"]);
+}
+
+/** Step 8 approval unlocks Step 9. In an individual run the reader starts it
+ * with the normal next-step button; an automatic run continues immediately. */
+async function continueAfterBrailleApproval() {
+  if (!state.individualRun) {
+    await continuePipeline();
+    return;
+  }
+  state.autorun = false;
+  state.viewStep = null;
+  renderWorkspace(true);
+}
+
 function bindControlEvents() {
+  document.querySelectorAll("[data-individual-step]").forEach((dot) => {
+    dot.addEventListener("click", () => {
+      state.viewStep = null;
+      setActiveStep(dot.dataset.individualStep, true);
+      renderControls();
+    });
+  });
   document.querySelectorAll("[data-step-view]").forEach((dot) => {
     dot.addEventListener("click", () => {
       // Clicking the step the run is already on hands the panel back to the run.
@@ -569,7 +881,6 @@ function bindControlEvents() {
     button.addEventListener("click", () => runSingleStep(button.dataset.runStep, button));
   });
   $("show-step-controls")?.addEventListener("click", showIndividualSteps);
-  $("show-run-setup")?.addEventListener("click", showRunSetup);
   $("model-select")?.addEventListener("change", (event) => { state.model = event.target.value; });
   $("run-all")?.addEventListener("click", runAll);
   $("continue-run")?.addEventListener("click", resumeRun);
@@ -579,14 +890,13 @@ function bindControlEvents() {
   $("reset-map")?.addEventListener("click", resetMap);
   bindPageSetup();
   bindAggregationEditor();
-  bindMaskEditor();
+  bindMaskEditor(continueAfterMaskApproval);
   bindTextEditor();
   bindLineEditor();
-  bindSimplificationEditor();
-  bindPatternEditor();
-  bindPageEditor();
-  bindBrailleEditor();
-  bindLegendEditor();
-  bindExportEditor();
+  bindSimplificationEditor(continuePipeline);
+  bindPatternEditor(continuePipeline);
+  bindBrailleEditor(continueAfterBrailleApproval);
+  bindLegendEditor(() => renderWorkspace(true));
+  bindExportEditor(() => setActiveStep(9, true));
 }
 

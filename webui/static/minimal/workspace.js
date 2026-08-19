@@ -4,10 +4,14 @@ import {
   $, artifactJson, getAggregationReview, getBrailleLayout, getCategoryColors,
   getJob, getLabelReview, getLegendLayout, getLineReview, getMaps, getMaskReview,
   getModels, getPageLayout, getPatternData, getSpec, getStep6Params, getStep6Presets,
+  getStep7Review, getStep8Review, getStep9Review,
   runSteps, saveStep6Params, uploadFile,
 } from "./api.js";
 import { blockingReason } from "./steps.js";
-import { isRunning, navCoversWorkspace, selectedMap, setNav, state, toast } from "./state.js";
+import {
+  individualModeFor, isRunning, navCoversWorkspace, rememberIndividualMode,
+  selectedMap, setNav, state, toast,
+} from "./state.js";
 import { renderProjectList } from "./library.js";
 import { continuePipeline, renderControls } from "./controls.js";
 import { renderVisual } from "./visual.js";
@@ -73,10 +77,18 @@ export async function selectMap(stem) {
   state.groupEdit = null;
   state.groupLabels = {};
   state.visibleGroupSlots = null;
+  if (state.aggregationPreviewUrl) URL.revokeObjectURL(state.aggregationPreviewUrl);
+  state.aggregationPreviewUrl = null;
   state.autorun = false;
   state.renaming = null;
-  state.individualRun = false;
+  state.individualRun = individualModeFor(selectedMap());
+  if (state.individualRun) rememberIndividualMode(stem, true);
   state.patternGroup = 0;
+  state.patternDialog = null;
+  state.showOriginalMap = false;
+  state.showFinalMap = false;
+  state.panMode = false;
+  state.colourView = false;
   state.maskBrush = { active: false, mode: "erase", radius: 12, strokes: [] };
   state.activeStep = null;   // follow the run until the reader opens a step
   if (navCoversWorkspace()) setNav(false);   // otherwise the library stays open
@@ -98,6 +110,7 @@ export async function refreshSelectedData() {
   const when = (condition, factory) => condition ? safe(factory()) : Promise.resolve(null);
   const tasks = {
     step6: safe(getStep6Params(stem)),
+    semantics: when(map.steps?.["1"], () => artifactJson(stem, "step1_semantics.json")),
     mask: when(map.steps?.["2"], () => getMaskReview(stem)),
     labels: when(map.steps?.["3"], () => getLabelReview(stem)),
     lines: when(map.steps?.["4"], () => getLineReview(stem)),
@@ -109,8 +122,11 @@ export async function refreshSelectedData() {
     patterns: when(map.steps?.["7"], () => getPatternData(stem)),
     colors: when(map.steps?.["7"], () => getCategoryColors(stem)),
     pageLayout: when(map.steps?.["7"], () => getPageLayout(stem)),
+    step7Review: when(map.steps?.["7"], () => getStep7Review(stem)),
     braille: when(map.steps?.["8"], () => getBrailleLayout(stem)),
+    step8Review: when(map.steps?.["8"], () => getStep8Review(stem)),
     legend: when(map.steps?.["9"], () => getLegendLayout(stem)),
+    step9Review: when(map.steps?.["9"], () => getStep9Review(stem)),
     job: safe(getJob(stem)),
   };
   const entries = await Promise.all(
@@ -132,14 +148,9 @@ export function renderWorkspace(revealActive = false) {
   $("visual-content").hidden = !map;
   $("control-content").hidden = !map;
   renderProjectList();
-  if (!map) {
-    document.body.classList.remove("preflight-layout");
-    return;
-  }
-  // Controls decide whether this is the compact preflight layout. Render them
-  // first so the page viewer measures the height it will actually receive.
-  renderControls();
+  if (!map) return;
   renderVisual();
+  renderControls();
   if (revealActive) {
     window.requestAnimationFrame(() => $("visual-pane")?.scrollTo({ top: 0 }));
   }
@@ -196,7 +207,12 @@ function pollingControlSignature(map) {
     state.job.error || "",
     (state.job.steps || []).join(","),
     completedSignature(map),
+    String(state.data.mask?.approved),
     String(map?.step5_review_ready),
+    String(map?.step6_review_ready),
+    String(map?.step7_review_ready),
+    String(map?.step8_review_ready),
+    String(map?.step9_review_ready),
     String(map?.in_scope),
     map?.pipeline_error || "",
     map?.step1_error || "",
@@ -262,21 +278,49 @@ function startPolling(immediate = false) {
         toast(blocked, "error");
         return;
       }
-      // The run pauses for the Step 5 category review, then carries on by
-      // itself once that decision has been made.
+      // The mask is the first human gate.  Its image and brush stay in the
+      // middle pane while the right pane contains decisions only.
+      if (state.autorun && map?.steps?.["2"] && !map.steps?.["3"]
+          && !state.data.mask?.approved) {
+        state.activeStep = 2;
+        state.maskBrush.active = true;
+        renderWorkspace(true);
+        toast("Review and approve the detected mask to continue.", "warning");
+        return;
+      }
+      // The second gate is the Step 5 category review. Once each decision is
+      // complete, continuePipeline starts the next automatic batch.
       if (state.autorun && map?.steps?.["5"] && !map.step5_review_ready) {
         state.activeStep = 5;
         renderWorkspace(true);
         return;
       }
-      if (state.autorun && map?.step5_review_ready && !map.steps?.["9"]) {
+      // Step 6 prepares all five variants, but patterns must wait until the
+      // reader explicitly chooses which simplification level is active.
+      if (state.autorun && map?.steps?.["6"] && !map.steps?.["7"]
+          && !map.step6_review_ready) {
+        state.activeStep = 6;
+        renderWorkspace(true);
+        return;
+      }
+      // Step 7 produces the finished tactile master, then pauses before
+      // Braille so its pattern and optional hybrid-colour decisions are human.
+      if (state.autorun && map?.steps?.["7"] && !map.steps?.["8"]
+          && !map.step7_review_ready) {
+        state.activeStep = 7;
+        renderWorkspace(true);
+        return;
+      }
+      if (state.autorun && map && !map.steps?.["9"]) {
         await continuePipeline();
         return;
       }
       if (map?.steps?.["9"]) {
         state.autorun = false;
         state.activeStep = 9;
-        toast("Your tactile map and its legend are ready.");
+        toast(map.step9_review_ready
+          ? "Your tactile map and its legend are ready to export."
+          : "The legend page is ready for final review.");
       } else if (map?.steps?.["6"]) {
         state.activeStep = 6;
       }

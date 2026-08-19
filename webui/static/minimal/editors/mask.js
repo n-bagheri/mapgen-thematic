@@ -1,58 +1,56 @@
 "use strict";
 
-import { $, esc, resetMask, saveMaskStrokes } from "../api.js";
+import { $, approveMask, artifactUrl, saveMaskStrokes } from "../api.js";
 import { state, statusLine, toast, withBusy } from "../state.js";
-import { editorDetails } from "../controls.js";
 import { loadMaps, refreshSelectedData, renderWorkspace } from "../workspace.js";
 
 /* Step 2 decides which pixels are the map and which are page furniture.  The
    brush paints corrections straight onto the input stage: erase takes pixels
    out of the map, restore puts them back. */
 
-export function maskEditorHtml() {
+/** Run all stops here after Step 2. The map itself remains in the middle pane;
+ *  this card contains decisions and brush controls only. */
+export function maskDecisionHtml() {
   const review = state.data.mask;
   const brush = state.maskBrush;
-  const body = review ? `
-    <p class="section-intro">The map area was found automatically. Paint over anything it kept by
-      mistake, or restore anything it dropped, then save.</p>
-    <div class="mask-toolbar">
-      <button class="button ${brush.active ? "primary" : "secondary"} small" id="mask-toggle" type="button">
-        ${brush.active ? "Stop painting" : "Paint on the map"}</button>
-      <span class="choice-row">
-        <label class="check-chip"><input type="radio" name="mask-mode" value="erase"
-          ${brush.mode === "erase" ? "checked" : ""}><span>Erase</span></label>
-        <label class="check-chip"><input type="radio" name="mask-mode" value="restore"
-          ${brush.mode === "restore" ? "checked" : ""}><span>Restore</span></label>
-      </span>
-      <span class="brush-size">Brush
-        <input id="mask-radius" type="range" min="1" max="100" step="1" value="${brush.radius}"
-               aria-label="Brush radius in pixels">
-        <output id="mask-radius-value">${brush.radius}px</output></span>
-    </div>
-    <p class="mask-stats">
-      <span><strong>${Number(review.kept_pixels).toLocaleString()}</strong> pixels kept</span>
-      <span><strong>${Number(review.automatic_pixels).toLocaleString()}</strong> found automatically</span>
-      <span>${review.reviewed ? "Edited by hand" : "Automatic only"}</span>
-    </p>
-    <div class="action-row">
-      <span class="status-copy" id="mask-save-status">${esc(brush.strokes.length
-        ? `${brush.strokes.length} unsaved stroke${brush.strokes.length === 1 ? "" : "s"}`
-        : "")}</span>
-      <span class="choice-row">
-        <button class="button subtle small" id="mask-reset" type="button">Reset to automatic</button>
-        <button class="button secondary small" id="mask-save" type="button"
-                ${brush.strokes.length ? "" : "disabled"}>Save mask</button>
-      </span>
-    </div>`
-    : '<div class="empty-editor">Run through Step 2 to correct the map area.</div>';
-  return editorDetails("mask", "1", "Geographic mask", "Which pixels count as the map", body);
+  const pending = brush.strokes.length;
+  const needsApproval = Boolean(review?.reviewed && !review?.approved && !pending);
+  return `
+    <section class="review-gate mask-decision" aria-labelledby="mask-decision-title">
+      <span class="section-kicker">One decision needed</span>
+      <h3 id="mask-decision-title">Review the detected mask.</h3>
+      <p class="section-intro">The detected map area will be adapted to a tactile map. Remove parts
+        that should not be included, restore areas that were excluded, or approve the detected mask unchanged.</p>
+      <div class="mask-decision-modes" role="radiogroup" aria-label="Mask brush mode">
+        <label><input type="radio" name="mask-mode" value="erase" ${brush.mode === "erase" ? "checked" : ""}>
+          <span class="mask-mode-icon" aria-hidden="true">
+            <svg viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M5.5 24.5 20.1 9.9a3 3 0 0 1 4.2 0l5.8 5.8a3 3 0 0 1 0 4.2L20 30H11l-5.5-5.5Z"/>
+              <path d="m15.2 14.8 10 10M5 30h26"/>
+            </svg>
+          </span><strong>Remove from map</strong></label>
+        <label><input type="radio" name="mask-mode" value="restore" ${brush.mode === "restore" ? "checked" : ""}>
+          <span class="mask-mode-icon" aria-hidden="true">
+            <img src="/images/brush.png" alt="">
+          </span><strong>Restore map area</strong></label>
+      </div>
+      <label class="mask-decision-brush"><span>Brush size</span>
+        <input id="mask-radius" type="range" min="1" max="100" step="1" value="${brush.radius}">
+        <output id="mask-radius-value">${brush.radius} px</output></label>
+      <p class="status-copy mask-decision-status" id="mask-save-status">${pending
+        ? `${pending} unapplied stroke${pending === 1 ? "" : "s"}`
+        : review?.reviewed && !review?.approved ? "Changes applied. Approval is still required." : ""}</p>
+      <div class="mask-decision-actions">
+        <button class="button secondary small" id="mask-undo" type="button" ${pending ? "" : "disabled"}>Undo stroke</button>
+        <button class="button secondary small" id="mask-discard" type="button" ${pending ? "" : "disabled"}>Discard edits</button>
+        <button class="button primary small" id="mask-save" type="button" ${pending ? "" : "disabled"}>Apply changes</button>
+      </div>
+      <button class="button primary full approve-mask${needsApproval ? " needs-attention" : ""}"
+              id="approve-mask" type="button" ${pending ? "disabled" : ""}>Approve mask &amp; continue</button>
+    </section>`;
 }
 
-export function bindMaskEditor() {
-  $("mask-toggle")?.addEventListener("click", () => {
-    state.maskBrush.active = !state.maskBrush.active;
-    renderWorkspace();
-  });
+export function bindMaskEditor(onApproved) {
   document.querySelectorAll('input[name="mask-mode"]').forEach((radio) => {
     radio.addEventListener("change", () => { state.maskBrush.mode = radio.value; });
   });
@@ -62,11 +60,14 @@ export function bindMaskEditor() {
     $("mask-radius-value").textContent = `${radius.value}px`;
   });
   $("mask-save")?.addEventListener("click", saveMask);
-  $("mask-reset")?.addEventListener("click", resetMaskToAutomatic);
+  $("mask-undo")?.addEventListener("click", undoMaskStroke);
+  $("mask-discard")?.addEventListener("click", discardMaskEdits);
+  $("approve-mask")?.addEventListener("click", () => approveMaskAndContinue(onApproved));
 }
 
-/** The canvas only exists while the brush is on, so an idle map keeps a plain
- *  picture that can still be selected and dragged like any other image. */
+/** Draw the persisted geographic mask over the map and apply unsaved strokes
+ * in memory. Excluded pixels are greyed immediately, matching the detailed
+ * view; the server receives the same image-coordinate strokes on Apply. */
 export function bindMaskCanvas() {
   // The review works in map_area.png coordinates, so the brush has to sit on
   // that picture -- Step 2's first panel -- and not on the uploaded source.
@@ -75,16 +76,25 @@ export function bindMaskCanvas() {
   holder.querySelector(".mask-canvas")?.remove();
   holder.classList.toggle("is-masking", state.maskBrush.active);
   const review = state.data.mask;
-  if (!state.maskBrush.active || !review) return;
+  if (!review) return;
 
-  const image = holder.querySelector("img");
   const canvas = document.createElement("canvas");
-  canvas.className = "mask-canvas";
+  canvas.className = `mask-canvas${state.maskBrush.active ? "" : " is-readonly"}`;
   canvas.width = Number(review.width) || 1;
   canvas.height = Number(review.height) || 1;
+  canvas.setAttribute("aria-label", "Current editable geographic mask over the map");
   holder.appendChild(canvas);
   const context = canvas.getContext("2d");
-  redrawStrokes(context);
+  const maskImage = new Image();
+  let maskReady = false;
+  maskImage.addEventListener("load", () => {
+    maskReady = true;
+    redrawMask(context, maskImage);
+  }, { once: true });
+  maskImage.addEventListener("error", () => {
+    statusLine("mask-save-status", "The current mask could not be displayed.", "error");
+  }, { once: true });
+  maskImage.src = artifactUrl(state.selected, "map_mask.png");
 
   let current = null;
   const toImagePoint = (event) => {
@@ -97,6 +107,7 @@ export function bindMaskCanvas() {
   };
 
   canvas.addEventListener("pointerdown", (event) => {
+    if (!state.maskBrush.active || !maskReady) return;
     if (state.maskBrush.strokes.length >= 300) {
       toast("Save the 300 strokes already painted before adding more.", "warning");
       return;
@@ -105,6 +116,7 @@ export function bindMaskCanvas() {
     if (!point) return;
     canvas.setPointerCapture(event.pointerId);
     current = { mode: state.maskBrush.mode, radius: state.maskBrush.radius, points: [point] };
+    redrawMask(context, maskImage, current);
   });
   canvas.addEventListener("pointermove", (event) => {
     if (!current) return;
@@ -112,66 +124,111 @@ export function bindMaskCanvas() {
     // 5000 points is the server ceiling for one stroke; stop well inside it.
     if (point && current.points.length < 4000) {
       current.points.push(point);
-      redrawStrokes(context, current);
+      redrawMask(context, maskImage, current);
     }
   });
   const finish = () => {
     if (!current) return;
     state.maskBrush.strokes.push(current);
     current = null;
-    redrawStrokes(context);
+    redrawMask(context, maskImage);
     const save = $("mask-save");
     if (save) save.disabled = false;
+    const undo = $("mask-undo");
+    if (undo) undo.disabled = false;
+    const discard = $("mask-discard");
+    if (discard) discard.disabled = false;
+    const approve = $("approve-mask");
+    if (approve) approve.disabled = true;
     const count = state.maskBrush.strokes.length;
-    statusLine("mask-save-status", `${count} unsaved stroke${count === 1 ? "" : "s"}`);
+    statusLine("mask-save-status", `${count} unapplied stroke${count === 1 ? "" : "s"}`);
   };
   canvas.addEventListener("pointerup", finish);
   canvas.addEventListener("pointercancel", finish);
   canvas.addEventListener("pointerleave", finish);
-  if (image && !image.complete) image.addEventListener("load", () => redrawStrokes(context), { once: true });
 }
 
-function redrawStrokes(context, pending = null) {
-  const { canvas } = context;
-  context.clearRect(0, 0, canvas.width, canvas.height);
+function drawMaskStroke(context, stroke) {
+  context.strokeStyle = stroke.mode === "erase" ? "#000" : "#fff";
+  context.fillStyle = context.strokeStyle;
+  context.lineWidth = stroke.radius * 2;
   context.lineCap = "round";
   context.lineJoin = "round";
-  [...state.maskBrush.strokes, ...(pending ? [pending] : [])].forEach((stroke) => {
-    context.strokeStyle = stroke.mode === "erase"
-      ? "rgba(197, 52, 52, .55)" : "rgba(30, 158, 90, .55)";
-    context.lineWidth = stroke.radius * 2;
-    context.beginPath();
-    stroke.points.forEach((point, index) => {
-      if (index) context.lineTo(point[0], point[1]);
-      else context.moveTo(point[0], point[1]);
-    });
-    if (stroke.points.length === 1) context.lineTo(stroke.points[0][0] + .01, stroke.points[0][1]);
-    context.stroke();
+  context.beginPath();
+  stroke.points.forEach((point, index) => {
+    if (index) context.lineTo(point[0], point[1]);
+    else context.moveTo(point[0], point[1]);
   });
+  if (stroke.points.length > 1) context.stroke();
+  else if (stroke.points.length === 1) {
+    context.beginPath();
+    context.arc(stroke.points[0][0], stroke.points[0][1], stroke.radius, 0, Math.PI * 2);
+    context.fill();
+  }
+}
+
+function redrawMask(context, maskImage, pending = null) {
+  const { canvas } = context;
+  if (!maskImage.complete || !maskImage.naturalWidth) return;
+  const effectiveCanvas = document.createElement("canvas");
+  effectiveCanvas.width = canvas.width;
+  effectiveCanvas.height = canvas.height;
+  const effective = effectiveCanvas.getContext("2d", { willReadFrequently: true });
+  effective.drawImage(maskImage, 0, 0, canvas.width, canvas.height);
+  [...state.maskBrush.strokes, ...(pending ? [pending] : [])].forEach((stroke) => {
+    drawMaskStroke(effective, stroke);
+  });
+  const maskPixels = effective.getImageData(0, 0, canvas.width, canvas.height);
+  const overlay = context.createImageData(canvas.width, canvas.height);
+  for (let offset = 0; offset < maskPixels.data.length; offset += 4) {
+    if (maskPixels.data[offset] >= 128) continue;
+    overlay.data[offset] = 95;
+    overlay.data[offset + 1] = 100;
+    overlay.data[offset + 2] = 110;
+    overlay.data[offset + 3] = 165;
+  }
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.putImageData(overlay, 0, 0);
 }
 
 async function saveMask() {
   const strokes = state.maskBrush.strokes;
   if (!strokes.length) return;
+  const decisionGate = Boolean($("approve-mask"));
   await withBusy($("mask-save"), "Saving…", async () => {
     const result = await saveMaskStrokes(state.selected, strokes);
     state.maskBrush.strokes = [];
     await loadMaps();
     await refreshSelectedData();
     renderWorkspace(true);
-    toast(result.downstream_invalidated
+    toast(decisionGate
+      ? "Mask changes applied. Approve the mask to continue."
+      : result.downstream_invalidated
       ? "Mask saved. Step 3 onward was cleared so it can be rebuilt."
-      : "Mask saved.", result.downstream_invalidated ? "warning" : "");
+      : "Mask saved.", decisionGate || result.downstream_invalidated ? "warning" : "");
   });
 }
 
-async function resetMaskToAutomatic() {
-  await withBusy($("mask-reset"), "Resetting…", async () => {
-    await resetMask(state.selected);
-    state.maskBrush.strokes = [];
+function undoMaskStroke() {
+  if (!state.maskBrush.strokes.length) return;
+  state.maskBrush.strokes.pop();
+  renderWorkspace();
+}
+
+function discardMaskEdits() {
+  if (!state.maskBrush.strokes.length) return;
+  state.maskBrush.strokes = [];
+  renderWorkspace();
+}
+
+async function approveMaskAndContinue(onApproved) {
+  if (state.maskBrush.strokes.length) return;
+  await withBusy($("approve-mask"), "Approving…", async () => {
+    await approveMask(state.selected);
+    state.maskBrush.active = false;
     await loadMaps();
     await refreshSelectedData();
-    renderWorkspace(true);
-    toast("Mask returned to the automatic result.");
+    toast("Mask approved. Continuing the run.");
+    await onApproved?.();
   });
 }

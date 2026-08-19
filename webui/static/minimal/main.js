@@ -2,7 +2,6 @@
 
 import { $ } from "./api.js";
 import { setNav, state, toast } from "./state.js";
-import { closePatternPickers } from "./editors/patterns.js";
 import { loadMaps, loadModels, loadSpec, renderWorkspace, uploadMap } from "./workspace.js";
 
 /* Entry point.  Everything below the shell is drawn from state, so start-up is
@@ -16,9 +15,6 @@ function bindStaticEvents() {
   $("upload-input").addEventListener("change", (event) => uploadMap(event.target.files?.[0]));
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && document.body.classList.contains("nav-open")) setNav(false, true);
-  });
-  document.addEventListener("click", (event) => {
-    if (!event.target.closest(".pattern-row")) closePatternPickers();
   });
 }
 

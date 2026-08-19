@@ -26,20 +26,22 @@ from .output_spec import OutputSpec
 # Bump this whenever the printable composition changes.  The Web UI uses this
 # value to recognize an artifact rendered by an older renderer and offers a
 # rerun instead of presenting an out-of-date full-size PNG.
-BRAILLE_LAYOUT_VERSION = 8
+BRAILLE_LAYOUT_VERSION = 9
 RENDER_PX_PER_MM = 5.0
 BRAILLE_FONT_SIZE_PT = 24.0
 BRAILLE_PADDING_MM = 3.0
 # This is a print-space measurement: the centres of corresponding Braille
 # dots on consecutive title lines must be 10 mm apart.
 BRAILLE_LINE_SPACING_MM = 10.0
-# The black circle is 6 mm. A 2 mm white ring surrounds it, so the visible
-# footprint is 10 mm across.
-BRAILLE_PIN_BLACK_DIAMETER_MM = 6.0
+# Each optional locator symbol has the requested 8 x 8 mm footprint. A 2 mm
+# white surround separates its 4 mm black core from tactile map linework.
+BRAILLE_PIN_TOTAL_SIZE_MM = 8.0
 BRAILLE_PIN_STROKE_MM = 2.0
+BRAILLE_PIN_BLACK_DIAMETER_MM = BRAILLE_PIN_TOTAL_SIZE_MM - 2 * BRAILLE_PIN_STROKE_MM
 BRAILLE_FONT_NAME = "Braille SW 2024 INSEI.ttf"
 MAX_LABEL_TEXT_LENGTH = 200
 BOX_SIDES = ("left", "right", "top", "bottom")
+PIN_SHAPES = ("circle", "triangle", "square")
 TITLE_TOP_GAP_MM = 5.0
 TITLE_PAGE_INSET_MM = 5.0
 TITLE_ALIGNS = ("left", "center", "right")
@@ -397,11 +399,17 @@ def build_braille_layout(overlay: dict, previous: dict | None = None,
                          page_layout: dict | None = None) -> dict:
     """Build editable Step 8 state, preserving prior human edits by label id."""
     prior = {str(label.get("id")): label for label in (previous or {}).get("labels", [])}
+    deleted_label_ids = {
+        str(label_id) for label_id in (previous or {}).get("deleted_label_ids", [])
+        if str(label_id).strip()
+    }
     labels = []
     source_ids: set[str] = set()
     for index, source in enumerate(overlay.get("labels", [])):
         label_id = _label_id(source, index)
         source_ids.add(label_id)
+        if label_id in deleted_label_ids:
+            continue
         saved = prior.get(label_id, {})
         original_text = repair_label_text(source.get("text"))
         text = repair_label_text(saved.get("text", original_text))
@@ -416,6 +424,10 @@ def build_braille_layout(overlay: dict, previous: dict | None = None,
             "enabled": bool(saved.get("enabled", True)),
             "side": (str(saved.get("side", "right")).lower()
                      if str(saved.get("side", "right")).lower() in BOX_SIDES else "right"),
+            "callout": bool(saved.get("callout", False)),
+            "pin_shape": (str(saved.get("pin_shape", "circle")).lower()
+                          if str(saved.get("pin_shape", "circle")).lower() in PIN_SHAPES
+                          else "circle"),
             "position_px": position,
             "position_mm": [round(position[0] / px_per_mm, 3),
                             round(position[1] / px_per_mm, 3)],
@@ -442,6 +454,10 @@ def build_braille_layout(overlay: dict, previous: dict | None = None,
             "enabled": bool(saved.get("enabled", True)),
             "side": (str(saved.get("side", "right")).lower()
                      if str(saved.get("side", "right")).lower() in BOX_SIDES else "right"),
+            "callout": bool(saved.get("callout", False)),
+            "pin_shape": (str(saved.get("pin_shape", "circle")).lower()
+                          if str(saved.get("pin_shape", "circle")).lower() in PIN_SHAPES
+                          else "circle"),
             "position_px": position,
             "position_mm": [round(position[0] / px_per_mm, 3),
                             round(position[1] / px_per_mm, 3)],
@@ -493,6 +509,13 @@ def build_braille_layout(overlay: dict, previous: dict | None = None,
             "collision_policy": "manual",
         },
         "render_px_per_mm": float(px_per_mm),
+        "toolbox": {
+            "fix_text_to_map": bool((previous or {}).get("toolbox", {}).get(
+                "fix_text_to_map", False)),
+            "group_map_elements": bool((previous or {}).get("toolbox", {}).get(
+                "group_map_elements", False)),
+        },
+        "deleted_label_ids": sorted(deleted_label_ids),
         # Positions remain in map coordinates, which keeps drag edits stable
         # when the page size changes.  The page section is the print contract.
         "canvas_px": [map_width_px, map_height_px],
@@ -528,16 +551,22 @@ def _render_metrics(label: dict, font: ImageFont.FreeTypeFont,
                     px_per_mm: float) -> dict:
     """Return the one physical geometry used by both PNG and browser preview."""
     padding = int(round(BRAILLE_PADDING_MM * px_per_mm))
+    pin_outer_radius = BRAILLE_PIN_TOTAL_SIZE_MM * px_per_mm / 2.0
     pin_black_radius = BRAILLE_PIN_BLACK_DIAMETER_MM * px_per_mm / 2.0
-    pin_outer_radius = pin_black_radius + BRAILLE_PIN_STROKE_MM * px_per_mm
     braille = str(label.get("braille_text") or "")
     bbox = font.getbbox(braille or " ")
     text_w = max(1, int(math.ceil(font.getlength(braille or " "))))
     text_h = max(1, bbox[3] - bbox[1])
-    box_w, box_h = text_w + 2 * padding, text_h + 2 * padding
+    callout = bool(label.get("callout", False))
+    box_w = text_w + (2 * padding if callout else 0)
+    box_h = text_h + (2 * padding if callout else 0)
     side = str(label.get("side", "right")).lower()
-    # `side` denotes the PIN's position relative to the text box.
-    if side == "left":
+    if not callout:
+        # A plain label is centred on its anchor. It has no opaque box and no
+        # locator symbol; the box is retained solely as its editor hit area.
+        box_x, box_y = -box_w / 2.0, -box_h / 2.0
+    # `side` denotes the optional PIN's position relative to the text box.
+    elif side == "left":
         box_x, box_y = pin_outer_radius, -box_h / 2.0
     elif side == "top":
         box_x, box_y = -box_w / 2.0, pin_outer_radius
@@ -547,16 +576,48 @@ def _render_metrics(label: dict, font: ImageFont.FreeTypeFont,
         side, box_x, box_y = "right", -pin_outer_radius - box_w, -box_h / 2.0
     return {
         "side": side,
+        "callout": callout,
+        "pin_shape": (str(label.get("pin_shape", "circle")).lower()
+                      if str(label.get("pin_shape", "circle")).lower() in PIN_SHAPES
+                      else "circle"),
+        "font_size_px": int(getattr(font, "size", 1)),
+        "font_ascent_px": int(font.getmetrics()[0]),
         "text_bbox_px": [int(v) for v in bbox],
         "text_width_px": text_w,
         "text_height_px": text_h,
         "box_offset_px": [round(box_x, 3), round(box_y, 3)],
         "box_size_px": [box_w, box_h],
-        "text_offset_px": [round(box_x + padding - bbox[0], 3),
-                           round(box_y + padding - bbox[1], 3)],
+        "text_offset_px": [round(box_x + (padding if callout else 0) - bbox[0], 3),
+                           round(box_y + (padding if callout else 0) - bbox[1], 3)],
         "pin_outer_radius_px": round(pin_outer_radius, 3),
         "pin_black_radius_px": round(pin_black_radius, 3),
     }
+
+
+def _polygon_points(x: float, y: float, radius: float, shape: str) -> list[tuple[int, int]]:
+    if shape == "triangle":
+        return [(round(x), round(y - radius)),
+                (round(x + radius), round(y + radius)),
+                (round(x - radius), round(y + radius))]
+    return [(round(x - radius), round(y - radius)),
+            (round(x + radius), round(y - radius)),
+            (round(x + radius), round(y + radius)),
+            (round(x - radius), round(y + radius))]
+
+
+def _draw_pin_symbol(draw: ImageDraw.ImageDraw, x: float, y: float,
+                     metrics: dict) -> None:
+    outer_radius = float(metrics["pin_outer_radius_px"])
+    black_radius = float(metrics["pin_black_radius_px"])
+    shape = str(metrics.get("pin_shape", "circle"))
+    if shape == "circle":
+        draw.ellipse((round(x - outer_radius), round(y - outer_radius),
+                      round(x + outer_radius), round(y + outer_radius)), fill=255)
+        draw.ellipse((round(x - black_radius), round(y - black_radius),
+                      round(x + black_radius), round(y + black_radius)), fill=0)
+        return
+    draw.polygon(_polygon_points(x, y, outer_radius, shape), fill=255)
+    draw.polygon(_polygon_points(x, y, black_radius, shape), fill=0)
 
 
 def _draw_label(draw: ImageDraw.ImageDraw, label: dict, font: ImageFont.FreeTypeFont,
@@ -570,21 +631,18 @@ def _draw_label(draw: ImageDraw.ImageDraw, label: dict, font: ImageFont.FreeType
     box_w, box_h = metrics["box_size_px"]
     box = [x + box_x, y + box_y, x + box_x + box_w, y + box_y + box_h]
 
-    draw.rectangle(tuple(round(v) for v in box), fill=255)
+    if metrics["callout"]:
+        draw.rectangle(tuple(round(v) for v in box), fill=255)
     if braille:
         text_xy = (round(x + metrics["text_offset_px"][0]),
                    round(y + metrics["text_offset_px"][1]))
         draw.text(text_xy, braille, font=font, fill=0)
-    outer_radius = metrics["pin_outer_radius_px"]
-    black_radius = metrics["pin_black_radius_px"]
-    draw.ellipse((round(x - outer_radius), round(y - outer_radius),
-                  round(x + outer_radius), round(y + outer_radius)), fill=255)
-    draw.ellipse((round(x - black_radius), round(y - black_radius),
-                  round(x + black_radius), round(y + black_radius)), fill=0)
+    if metrics["callout"]:
+        _draw_pin_symbol(draw, x, y, metrics)
     return {
         "id": label["id"],
         "box_page_px": [round(v, 3) for v in box],
-        "pin_page_px": [round(x, 3), round(y, 3)],
+        "pin_page_px": ([round(x, 3), round(y, 3)] if metrics["callout"] else None),
     }
 
 
@@ -653,6 +711,8 @@ def _draw_title(draw: ImageDraw.ImageDraw, title: dict, font: ImageFont.FreeType
     title["position_page_px"] = [round(box_x, 3), round(box_y, 3)]
     title["box_width_px"] = round(box_w, 3)
     title["render_metrics"] = {
+        "font_size_px": int(getattr(font, "size", 1)),
+        "font_ascent_px": int(font.getmetrics()[0]),
         "text_bbox_px": [0, int(line_bboxes[0][1]), text_w,
                          int(line_bboxes[0][1] + line_height)],
         "box_size_px": [box_w, box_h],
@@ -733,6 +793,7 @@ def render_braille_layout(out_dir: Path, layout: dict) -> dict:
     # The base is used by the live SVG preview. It intentionally has no label
     # layer, because that layer is edited in real time in the browser.
     page_canvas.save(out_dir / "step8_braille_base.png", dpi=(dpi, dpi))
+    base_black = np.asarray(page_canvas).copy()
     font_px = max(1, int(round(BRAILLE_FONT_SIZE_PT * 25.4 / 72.0 * px_per_mm)))
     font = ImageFont.truetype(str(braille_font_path()), font_px)
     draw = ImageDraw.Draw(page_canvas)
@@ -755,6 +816,10 @@ def render_braille_layout(out_dir: Path, layout: dict) -> dict:
         with Image.open(hybrid_path) as hybrid_map:
             hybrid_page.paste(hybrid_map.convert("RGB"),
                               (round(map_origin[0]), round(map_origin[1])))
+        hybrid_base_pixels = np.asarray(hybrid_page).copy()
+        hybrid_base_pixels[base_black < 128] = (0, 0, 0)
+        Image.fromarray(hybrid_base_pixels).save(
+            out_dir / "step8_hybrid_base.png", dpi=(dpi, dpi))
         # Raised content and Braille remain solid black above the printed base.
         hybrid_pixels = np.asarray(hybrid_page).copy()
         black = np.asarray(page_canvas) < 128
@@ -829,11 +894,28 @@ def update_braille_label(out_dir: Path, label_id: str, patch: dict) -> tuple[dic
         if side not in BOX_SIDES:
             raise ValueError("side must be left, right, top, or bottom")
         label["side"] = side
+    if "callout" in patch:
+        if not isinstance(patch["callout"], bool):
+            raise ValueError("callout must be true or false")
+        label["callout"] = patch["callout"]
+    if "pin_shape" in patch:
+        pin_shape = str(patch["pin_shape"]).lower()
+        if pin_shape not in PIN_SHAPES:
+            raise ValueError("pin shape must be circle, triangle, or square")
+        label["pin_shape"] = pin_shape
     if "position_px" in patch:
         position = _point(patch["position_px"], label["position_px"])
-        width, height = (float(v) for v in layout.get("canvas_px", [0, 0]))
-        label["position_px"] = [round(min(max(position[0], 0.0), width), 3),
-                                round(min(max(position[1], 0.0), height), 3)]
+        page = layout.get("page", {})
+        page_width, page_height = (float(v) for v in page.get(
+            "canvas_px", layout.get("canvas_px", [0, 0])))
+        origin_x, origin_y = _point(page.get("map_origin_px"), [0.0, 0.0])
+        # Labels are map-relative when fixed, but may be detached anywhere on
+        # the physical page. These bounds therefore use page space rather than
+        # clipping every label to the geographic raster.
+        label["position_px"] = [
+            round(min(max(position[0], -origin_x), page_width - origin_x), 3),
+            round(min(max(position[1], -origin_y), page_height - origin_y), 3),
+        ]
         px_per_mm = float(layout.get("render_px_per_mm", RENDER_PX_PER_MM))
         label["position_mm"] = [round(label["position_px"][0] / px_per_mm, 3),
                                 round(label["position_px"][1] / px_per_mm, 3)]
@@ -881,6 +963,127 @@ def update_braille_title(out_dir: Path, patch: dict) -> tuple[dict, dict]:
     return title, report
 
 
+def delete_braille_label(out_dir: Path, label_id: str) -> tuple[dict, dict]:
+    """Remove one label and remember deleted detections across Step 8 reruns."""
+    layout_path = out_dir / "braille_labels.json"
+    if not layout_path.exists():
+        raise FileNotFoundError("run Step 8 before deleting Braille labels")
+    layout = json.loads(layout_path.read_text(encoding="utf-8"))
+    labels = layout.get("labels", [])
+    label = next((item for item in labels if str(item.get("id")) == label_id), None)
+    if label is None:
+        raise KeyError(label_id)
+    layout["labels"] = [item for item in labels if str(item.get("id")) != label_id]
+    if label.get("source_index") is not None:
+        deleted = {str(item) for item in layout.get("deleted_label_ids", [])}
+        deleted.add(label_id)
+        layout["deleted_label_ids"] = sorted(deleted)
+    report = render_braille_layout(out_dir, layout)
+    return label, report
+
+
+def update_braille_toolbox(out_dir: Path, patch: dict) -> tuple[dict, dict]:
+    """Apply Step 8 page/toolbox state and redraw the editable output page."""
+    layout_path = out_dir / "braille_labels.json"
+    if not layout_path.exists():
+        raise FileNotFoundError("run Step 8 before editing its page layout")
+    layout = json.loads(layout_path.read_text(encoding="utf-8"))
+    toolbox = layout.setdefault("toolbox", {
+        "fix_text_to_map": False,
+        "group_map_elements": False,
+    })
+    for field in ("fix_text_to_map", "group_map_elements"):
+        if field in patch:
+            if not isinstance(patch[field], bool):
+                raise ValueError(f"{field} must be true or false")
+            toolbox[field] = patch[field]
+
+    if "all_text_enabled" in patch:
+        enabled = patch["all_text_enabled"]
+        if not isinstance(enabled, bool):
+            raise ValueError("all_text_enabled must be true or false")
+        layout.setdefault("title", {})["enabled"] = enabled
+        for label in layout.get("labels", []):
+            label["enabled"] = enabled
+
+    page = layout.setdefault("page", {})
+    page_width, page_height = (float(value) for value in page.get("canvas_px", [0, 0]))
+    map_width, map_height = (float(value) for value in layout.get("canvas_px", [0, 0]))
+    old_origin = _point(page.get("map_origin_px"), [0.0, 0.0])
+    new_origin = old_origin.copy()
+    if "map_origin_px" in patch:
+        requested = _point(patch["map_origin_px"], old_origin)
+        new_origin = [
+            round(min(max(requested[0], 0.0), max(0.0, page_width - map_width)), 3),
+            round(min(max(requested[1], 0.0), max(0.0, page_height - map_height)), 3),
+        ]
+        delta = [new_origin[0] - old_origin[0], new_origin[1] - old_origin[1]]
+        if delta != [0.0, 0.0]:
+            if not toolbox.get("fix_text_to_map", False):
+                # Keep detached labels at their physical page locations while
+                # the geographic image moves beneath them.
+                for label in layout.get("labels", []):
+                    position = _point(label.get("position_px"), [0.0, 0.0])
+                    label["position_px"] = [round(position[0] - delta[0], 3),
+                                            round(position[1] - delta[1], 3)]
+            if toolbox.get("group_map_elements", False):
+                furniture = page.get("furniture", {})
+                border = furniture.get("border", {})
+                north = furniture.get("north", {})
+                if border.get("enabled"):
+                    rect = border.get("rect_page_px", [])
+                    if len(rect) == 4:
+                        border["rect_page_px"] = [
+                            rect[0] + delta[0], rect[1] + delta[1],
+                            rect[2] + delta[0], rect[3] + delta[1],
+                        ]
+                if north.get("enabled"):
+                    point = north.get("position_page_px", [])
+                    if len(point) == 2:
+                        north["position_page_px"] = [point[0] + delta[0],
+                                                     point[1] + delta[1]]
+        page["map_origin_px"] = new_origin
+
+    raw_furniture = patch.get("furniture", page.get("furniture"))
+    page["furniture"] = normalize_map_furniture(
+        raw_furniture, new_origin, [round(map_width), round(map_height)],
+        float(layout.get("render_px_per_mm", RENDER_PX_PER_MM)),
+        page_width, page_height,
+    )
+    px_per_mm = float(layout.get("render_px_per_mm", RENDER_PX_PER_MM))
+    for label in layout.get("labels", []):
+        position = _point(label.get("position_px"), [0.0, 0.0])
+        label["position_px"] = [
+            round(min(max(position[0], -new_origin[0]), page_width - new_origin[0]), 3),
+            round(min(max(position[1], -new_origin[1]), page_height - new_origin[1]), 3),
+        ]
+        label["position_mm"] = [round(label["position_px"][0] / px_per_mm, 3),
+                                round(label["position_px"][1] / px_per_mm, 3)]
+
+    # Step 7 and Step 8 share one physical paper contract. Persist Step 8's
+    # moves back to it so a later rerender does not jump to an older position.
+    page_layout_path = out_dir / "page_layout.json"
+    try:
+        page_layout = json.loads(page_layout_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        page_layout = {}
+    page_layout.update({
+        "size_mm": page.get("size_mm"),
+        "canvas_px": page.get("canvas_px"),
+        "orientation": page.get("orientation"),
+        "margin_mm": page.get("margin_mm"),
+        "map_origin_px": page.get("map_origin_px"),
+        "map_size_px": [round(map_width), round(map_height)],
+        "map_size_mm": page.get("map_size_mm"),
+        "render_px_per_mm": layout.get("render_px_per_mm", RENDER_PX_PER_MM),
+        "dpi": page.get("dpi"),
+        "furniture": page.get("furniture"),
+    })
+    page_layout_path.write_text(json.dumps(page_layout, indent=2), encoding="utf-8")
+    report = render_braille_layout(out_dir, layout)
+    return layout, report
+
+
 def add_braille_label(out_dir: Path, text: object = "") -> tuple[dict, dict]:
     """Create a persistent user-authored label at the map centre."""
     layout_path = out_dir / "braille_labels.json"
@@ -897,6 +1100,8 @@ def add_braille_label(out_dir: Path, text: object = "") -> tuple[dict, dict]:
         "braille_text": to_grade1_font_text(label_text),
         "enabled": True,
         "side": "right",
+        "callout": False,
+        "pin_shape": "circle",
         "position_px": [round(width / 2.0, 3), round(height / 2.0, 3)],
         "position_mm": [round(width / 2.0 / float(layout.get("render_px_per_mm", RENDER_PX_PER_MM)), 3),
                         round(height / 2.0 / float(layout.get("render_px_per_mm", RENDER_PX_PER_MM)), 3)],

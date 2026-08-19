@@ -76,6 +76,10 @@ class MinimalUiRouteTests(unittest.TestCase):
             finally:
                 response.close()
 
+    def test_entry_module_does_not_import_the_removed_pattern_picker(self):
+        entry = (MINIMAL_DIR / "main.js").read_text(encoding="utf-8")
+        self.assertNotIn("closePatternPickers", entry)
+
     def test_palette_follows_the_detailed_page(self):
         minimal = (STATIC / "minimal.css").read_text(encoding="utf-8")
         detailed = (STATIC / "style.css").read_text(encoding="utf-8")
@@ -100,18 +104,25 @@ class StepNumberingTests(unittest.TestCase):
         self.assertEqual(keys, ["1", "2", "3", "4", "5", "6", "7", "8", "9"])
         self.assertNotIn('"8a"', self.steps)
 
-    def test_the_run_pauses_for_the_step_5_category_review(self):
-        self.assertIn('FIRST_BATCH = ["1", "2", "3", "4", "5"]', self.steps)
-        self.assertIn('FINAL_BATCH = ["6", "7", "8", "9"]', self.steps)
+    def test_the_run_pauses_for_each_pipeline_batch(self):
+        self.assertIn('INITIAL_BATCH = ["1", "2"]', self.steps)
+        self.assertIn('ANALYSIS_BATCH = ["3", "4", "5"]', self.steps)
+        self.assertIn('SIMPLIFICATION_BATCH = ["6"]', self.steps)
+        self.assertIn('PATTERN_BATCH = ["7"]', self.steps)
+        self.assertIn('LABEL_BATCH = ["8"]', self.steps)
+        self.assertIn('FINAL_BATCH = ["9"]', self.steps)
 
     def test_every_step_the_server_knows_has_a_definition(self):
         keys = set(re.findall(r'\{ key: "([^"]+)"', self.steps))
         self.assertEqual(keys, {str(step) for step in server.STEP_ARTIFACTS})
 
-    def test_the_gate_reads_the_step_5_review_flag(self):
+    def test_the_gates_read_all_review_flags(self):
         source = module_source()
         self.assertIn("step5_review_ready", source)
-        self.assertNotIn("step6_review_ready", source)
+        self.assertIn("step6_review_ready", source)
+        self.assertIn("step7_review_ready", source)
+        self.assertIn("step8_review_ready", source)
+        self.assertIn("step9_review_ready", source)
 
 
 class EndpointContractTests(unittest.TestCase):
@@ -145,8 +156,11 @@ class EndpointContractTests(unittest.TestCase):
 
     def test_every_new_feature_is_reachable(self):
         for path in ("/api/maskreview/", "/api/category-colors/", "/api/page-layout/",
+                     "/api/aggregation-preview/", "/api/step7-review/",
                      "/api/north-marker.svg", "/api/braille-labels/",
+                     "/api/braille-layout/", "/api/step8-review/",
                      "/api/legend/", "/api/legend-page/", "/api/legend-swatch/",
+                     "/api/step9-review/",
                      "/api/download/", "/api/maps/order"):
             self.assertIn(path, self.source)
 
@@ -161,15 +175,16 @@ class EndpointContractTests(unittest.TestCase):
         # is needed for the previews beside each editable name.
         self.assertIn(".braille-preview", stylesheet)
 
-    def test_the_page_overlay_never_paints_over_the_render(self):
-        """The PNG under the overlay is the real page. Filling the overlay
-        shapes would hide the artwork it is supposed to let you grab."""
+    def test_the_page_overlay_draws_live_braille_over_a_label_free_base(self):
+        """Text changes are immediate in SVG while the printable PNG rerenders."""
         stylesheet = (STATIC / "minimal.css").read_text(encoding="utf-8")
         rule = re.search(r"\.braille-pin rect \{([^}]*)\}", stylesheet)
         self.assertIsNotNone(rule)
         self.assertIn("fill: transparent", rule.group(1))
         overlay = (MINIMAL_DIR / "editors" / "braille.js").read_text(encoding="utf-8")
-        self.assertNotIn("<text", overlay)
+        self.assertIn("<text", overlay)
+        steps = (MINIMAL_DIR / "steps.js").read_text(encoding="utf-8")
+        self.assertIn('artifact: "step8_braille_base.png"', steps)
 
     def test_project_management_is_available_from_the_library(self):
         library = (MINIMAL_DIR / "library.js").read_text(encoding="utf-8")
@@ -196,9 +211,9 @@ class EditorCoverageTests(unittest.TestCase):
         self.controls = (MINIMAL_DIR / "controls.js").read_text(encoding="utf-8")
 
     def test_each_step_has_an_editor(self):
-        for name in ("maskEditorHtml", "textEditorHtml", "lineEditorHtml",
-                     "simplificationEditorHtml", "patternEditorHtml", "pageEditorHtml",
-                     "brailleEditorHtml", "legendEditorHtml", "exportEditorHtml"):
+        for name in ("readingEditorHtml", "maskDecisionHtml", "textEditorHtml", "lineEditorHtml",
+                     "aggregationGateHtml", "simplificationEditorHtml", "patternDecisionHtml",
+                     "brailleDecisionHtml", "legendEditorHtml", "exportEditorHtml"):
             self.assertIn(name, self.controls)
 
     def test_every_editor_belongs_to_a_step(self):
@@ -210,13 +225,14 @@ class EditorCoverageTests(unittest.TestCase):
         owned = {int(step): [n.strip() for n in body.split(",") if n.strip()]
                  for step, body in re.findall(r"(\d+): \[([^]]*)\]", block)}
         self.assertEqual(owned, {
-            2: ["maskEditorHtml"],
+            1: ["readingEditorHtml"],
+            2: ["maskDecisionHtml"],
             3: ["textEditorHtml"],
             4: ["lineEditorHtml"],
-            5: ["aggregationEditorHtml"],
+            5: ["aggregationGateHtml"],
             6: ["simplificationEditorHtml"],
-            7: ["patternEditorHtml", "pageEditorHtml"],
-            8: ["brailleEditorHtml"],
+            7: ["patternDecisionHtml"],
+            8: ["brailleDecisionHtml"],
             9: ["legendEditorHtml"],
         })
 
@@ -242,11 +258,106 @@ class EditorCoverageTests(unittest.TestCase):
 
     def test_fresh_setup_keeps_individual_steps_out_of_the_initial_view(self):
         self.assertIn('id="show-step-controls"', self.controls)
-        self.assertIn("state.individualRun ? individualRunHtml(map) : setupHtml(true, true)",
-                      self.controls)
+        self.assertIn("state.individualRun", self.controls)
+        self.assertIn("individualRunHtml(map)", self.controls)
         stylesheet = (STATIC / "minimal.css").read_text(encoding="utf-8")
         self.assertIn(".control-shell.is-preflight", stylesheet)
-        self.assertIn(".preflight-layout .map-stage .map-frame", stylesheet)
+        self.assertIn(".map-stage .map-frame", stylesheet)
+
+    def test_individual_mode_lists_only_completed_steps_and_no_setup_card(self):
+        block = self.controls[self.controls.index("function individualRunHtml(map)"):]
+        block = block[:block.index("/** Re-rendering mid-edit")]
+        self.assertIn("stepStackHtml(map, true)", block)
+        self.assertIn("Run step ${esc(next.number)}", block)
+        self.assertNotIn("setupHtml", block)
+        self.assertIn("completedOnly", self.controls)
+        self.assertIn("STEP_DEFS.filter((step) => Boolean(map.steps?.[step.key]))",
+                      self.controls)
+        self.assertIn("STEP_DEFS.filter((item) => Boolean(stepState(map, item)))",
+                      self.controls)
+
+    def test_individual_mode_keeps_its_step_list_while_a_step_runs(self):
+        render = self.controls[self.controls.index("export function renderControls()"):
+                               self.controls.index("export function editorDetails")]
+        self.assertIn("state.individualRun ? individualRunHtml(map) : stepPanelHtml(map)", render)
+        individual = self.controls[self.controls.index("function individualStepDotsHtml(map)"):
+                                   self.controls.index("/** Re-rendering mid-edit")]
+        self.assertIn("STEP_DEFS.map((step)", individual)
+        self.assertIn('data-individual-step="${step.key}"', individual)
+        self.assertIn("${!live && next ?", individual)
+        self.assertIn("Run step ${esc(next.number)}</button>", individual)
+        self.assertNotIn("${esc(next.title)}</button>", individual)
+        self.assertIn('candidate?.key === "6" && !map.step5_review_ready', individual)
+        stylesheet = (STATIC / "minimal.css").read_text(encoding="utf-8")
+        dots = re.search(r"\.individual-step-dots \{([^}]*)\}", stylesheet).group(1)
+        self.assertIn("margin: 0", dots)
+        heading = re.search(r"\.individual-run-heading \{([^}]*)\}", stylesheet).group(1)
+        self.assertIn("gap: 0", heading)
+
+    def test_entering_individual_mode_saves_setup_and_runs_only_step_one(self):
+        block = self.controls[self.controls.index("async function showIndividualSteps"):]
+        block = block[:block.index("/** Resume a paused run")]
+        self.assertIn("await savePreflight()", block)
+        self.assertIn("state.individualRun = true", block)
+        self.assertIn("rememberIndividualMode(state.selected, true)", block)
+        self.assertIn('await startJob(["1"])', block)
+
+    def test_individual_mode_relies_on_start_over_instead_of_a_setup_shortcut(self):
+        self.assertNotIn("show-run-setup", self.controls)
+        self.assertNotIn("Back to run setup", self.controls)
+        self.assertNotIn("Map reset. The run setup is ready again.", self.controls)
+        self.assertNotIn("Deletes every result for this map and returns to the run setup.",
+                         self.controls)
+        stylesheet = (STATIC / "minimal.css").read_text(encoding="utf-8")
+        self.assertIn(".action-row.end.individual-next-step { justify-content: center; }",
+                      stylesheet)
+        reset = re.search(r"\.reset-row \{([^}]*)\}", stylesheet).group(1)
+        self.assertIn("justify-items: center", reset)
+
+    def test_individual_mode_survives_refresh_and_map_switching(self):
+        state_source = (MINIMAL_DIR / "state.js").read_text(encoding="utf-8")
+        workspace = (MINIMAL_DIR / "workspace.js").read_text(encoding="utf-8")
+        for marker in ("rememberIndividualMode", "forgetIndividualMode", "individualModeFor",
+                       "globalThis.localStorage"):
+            self.assertIn(marker, state_source)
+        self.assertIn("state.individualRun = individualModeFor(selectedMap())", workspace)
+        self.assertIn("requested.length === 1", state_source)
+
+    def test_run_setup_edits_the_complete_output_spec(self):
+        for control_id in ("output-medium", "page-size", "page-orientation",
+                           "page-margin", "braille-standard", "advanced-output-spec"):
+            self.assertIn(f'id="{control_id}"', self.controls)
+        for field in ("braille_cell_width_mm", "braille_cell_height_mm",
+                      "min_texture_area_side_mm", "min_element_gap_mm",
+                      "min_line_width_mm", "min_line_length_mm"):
+            self.assertIn(f'data-spec-constant="{field}"', self.controls)
+        self.assertIn('id="max-area-textures"', self.controls)
+        self.assertIn('class="setup-fields"', self.controls)
+        self.assertIn('readonly aria-readonly="true"', self.controls)
+        self.assertIn("constants: { ...(state.spec.constants || {}), ...patch.constants }",
+                      self.controls)
+        self.assertNotIn('option("auto", orientation', self.controls)
+
+    def test_every_step_uses_the_same_unnumbered_preview_card(self):
+        visual = (MINIMAL_DIR / "visual.js").read_text(encoding="utf-8")
+        stylesheet = (STATIC / "minimal.css").read_text(encoding="utf-8")
+        self.assertNotIn("stage-index", visual)
+        self.assertNotIn('class="visual-header"', visual)
+        self.assertNotIn("stage-badge", visual)
+        self.assertNotIn("preflight-layout", stylesheet)
+        self.assertIn("height: calc(100dvh - 55px)", stylesheet)
+
+    def test_step_one_shows_a_compact_structured_reading(self):
+        workspace = (MINIMAL_DIR / "workspace.js").read_text(encoding="utf-8")
+        stylesheet = (STATIC / "minimal.css").read_text(encoding="utf-8")
+        self.assertIn('artifactJson(stem, "step1_semantics.json")', workspace)
+        for field in ("sem.subject", "sem.map_type", "sem.data_ordering",
+                      "sem.map_language", "sem.water_present", "sem.thematic_classes"):
+            self.assertIn(field, self.controls)
+        self.assertIn("What the system read", self.controls)
+        self.assertIn("See full reading", self.controls)
+        self.assertNotIn("Step 1 interpretation", self.controls)
+        self.assertIn(".reading-summary", stylesheet)
 
     def test_an_out_of_scope_map_offers_only_step_1(self):
         self.assertIn("scopeBlockHtml", self.controls)
@@ -258,6 +369,11 @@ class EditorCoverageTests(unittest.TestCase):
         for marker in ("tactile-group", "layer-chip", 'draggable="true"',
                        "add-group", "reset-groups"):
             self.assertIn(marker, aggregation)
+        self.assertNotIn("aggregationEditorHtml", aggregation)
+        step5_branch = self.controls[
+            self.controls.index('} else if (map.steps?.["5"] && !map.step5_review_ready) {'):
+            self.controls.index("} else if (simplificationDecision) {")]
+        self.assertIn("body = stepStackHtml(map, true)", step5_branch)
 
     def test_step_5_colours_come_from_step_4_classes(self):
         """classes_gen.json only exists after Step 6, so the Step 5 review has
@@ -266,6 +382,211 @@ class EditorCoverageTests(unittest.TestCase):
         self.assertIn("classesFinal", aggregation)
         workspace = (MINIMAL_DIR / "workspace.js").read_text(encoding="utf-8")
         self.assertIn("classes_final.json", workspace)
+
+    def test_step_5_shows_only_the_fitted_category_preview(self):
+        steps = (MINIMAL_DIR / "steps.js").read_text(encoding="utf-8")
+        block = re.search(r"^  5: \[([\s\S]*?)^  \],", steps, re.M).group(1)
+        self.assertNotIn("label_map_preview.png", block)
+        self.assertEqual(block.count("artifact:"), 1)
+        self.assertIn("step5_aggregation_preview.png", block)
+
+    def test_step_5_assignments_request_an_unsaved_live_preview(self):
+        aggregation = (MINIMAL_DIR / "editors" / "aggregation.js").read_text(encoding="utf-8")
+        visual = (MINIMAL_DIR / "visual.js").read_text(encoding="utf-8")
+        self.assertIn("previewAggregation", aggregation)
+        self.assertIn("queueAggregationPreview", aggregation)
+        self.assertIn('data-artifact="${esc(source.name)}"', visual)
+
+    def test_step_6_is_a_styled_simplification_decision(self):
+        simplification = (MINIMAL_DIR / "editors" / "simplification.js").read_text(
+            encoding="utf-8")
+        stylesheet = (STATIC / "minimal.css").read_text(encoding="utf-8")
+        self.assertIn("simplificationDecisionHtml", self.controls)
+        self.assertIn('id="simplification-decision"', simplification)
+        self.assertIn('id="preset-slider"', simplification)
+        self.assertIn("Use this level &amp; continue", simplification)
+        self.assertIn(".simplification-decision", stylesheet)
+
+    def test_step_6_shows_only_the_simplified_map_with_all_layer_switches(self):
+        steps = (MINIMAL_DIR / "steps.js").read_text(encoding="utf-8")
+        visual = (MINIMAL_DIR / "visual.js").read_text(encoding="utf-8")
+        block = re.search(r"^  6: \[([\s\S]*?)^  \],", steps, re.M).group(1)
+        self.assertNotIn("group_map_source.png", block)
+        self.assertEqual(block.count("dynamic:"), 1)
+        self.assertIn('caption: "Simplified map"', block)
+        self.assertIn('overlay: "layers"', block)
+        for label in ("Colors", "Labels", "Lines", "Boundaries"):
+            self.assertIn(f'layerButton("{label.lower() if label != "Colors" else "map"}", "{label}")',
+                          visual)
+
+    def test_step_7_is_a_pattern_decision_with_hybrid_and_distance_modes(self):
+        patterns = (MINIMAL_DIR / "editors" / "patterns.js").read_text(encoding="utf-8")
+        stylesheet = (STATIC / "minimal.css").read_text(encoding="utf-8")
+        self.assertIn("patternDecisionHtml", self.controls)
+        self.assertNotIn("patternEditorHtml", patterns)
+        pattern_branch = self.controls[self.controls.index("} else if (patternDecision) {"):
+                                       self.controls.index("} else if (brailleDecision) {")]
+        self.assertIn("body = stepStackHtml(map, true)", pattern_branch)
+        for control_id in ("preserve-haptic-distances", "create-hybrid-map"):
+            self.assertIn(f'modeButton("{control_id}"', patterns)
+        self.assertIn('id="approve-patterns"', patterns)
+        for action in ("data-edit-pattern", "data-change-pattern", "data-pattern-colour"):
+            self.assertIn(action, patterns)
+        self.assertIn(".pattern-decision", stylesheet)
+        self.assertNotIn("pageEditorHtml", self.controls)
+
+    def test_step_7_shows_only_the_finished_master_on_the_output_page(self):
+        steps = (MINIMAL_DIR / "steps.js").read_text(encoding="utf-8")
+        visual = (MINIMAL_DIR / "visual.js").read_text(encoding="utf-8")
+        viewer = (MINIMAL_DIR / "viewer.js").read_text(encoding="utf-8")
+        block = re.search(r"^  7: \[([\s\S]*?)^  \],", steps, re.M).group(1)
+        self.assertEqual(block.count("artifact:"), 1)
+        self.assertIn('artifact: "step8a_cleanup.png"', block)
+        self.assertIn("pageLayout: true", block)
+        self.assertIn("originalCompare: true", block)
+        self.assertIn("tactilePageCanvasHtml", visual)
+        self.assertIn("Display original map", viewer)
+        self.assertIn("Display colors", viewer)
+
+    def test_step_8_is_a_full_page_layout_decision(self):
+        braille = (MINIMAL_DIR / "editors" / "braille.js").read_text(encoding="utf-8")
+        steps = (MINIMAL_DIR / "steps.js").read_text(encoding="utf-8")
+        stylesheet = (STATIC / "minimal.css").read_text(encoding="utf-8")
+        self.assertIn("brailleDecisionHtml", self.controls)
+        self.assertNotIn("brailleEditorHtml", braille)
+        braille_branch = self.controls[self.controls.index("} else if (brailleDecision) {"):
+                                       self.controls.index("} else if (legendDecision) {")]
+        self.assertIn("body = stepStackHtml(map, true)", braille_branch)
+        self.assertIn("bindBrailleEditor(continueAfterBrailleApproval)", self.controls)
+        approval = self.controls[self.controls.index("async function continueAfterBrailleApproval()"):
+                                 self.controls.index("function bindControlEvents()")]
+        self.assertIn("renderWorkspace(true)", approval)
+        self.assertNotIn('startJob(["9"])', approval)
+        decision = braille[braille.index("export function brailleDecisionHtml()"):
+                           braille.index("export function bindBrailleEditor")]
+        self.assertNotIn("One decision needed", decision)
+        self.assertNotIn("Edit the detected text and its Braille", decision)
+        row = braille[braille.index("function brailleRowHtml(label)"):
+                      braille.index("function toolboxBody")]
+        heading = row[row.index('class="braille-row-heading"'):
+                      row.index('class="braille-row-detail"')]
+        self.assertIn('class="braille-row-options"', heading)
+        detail = row[row.index('class="braille-row-detail"'):]
+        self.assertIn('class="braille-callout-options', detail)
+        self.assertIn('class="braille-preview"', detail)
+        detail_css = re.search(r"\.braille-row-detail \{([^}]*)\}", stylesheet).group(1)
+        self.assertIn("background: #f4dfb8", detail_css)
+        for control_id in ("braille-add", "braille-all-off", "fix-text-to-map",
+                           "group-map-elements", "toggle-north", "toggle-border",
+                           "approve-braille"):
+            self.assertIn(f'id="{control_id}"', braille)
+        for action in ("braille-callout", "braille-shape", "braille-side",
+                       "braille-delete", "data-page-map", "data-page-border",
+                       "data-page-north", "data-title-resize"):
+            self.assertIn(action, braille)
+        block = re.search(r"^  8: \[([\s\S]*?)^  \],", steps, re.M).group(1)
+        self.assertIn("originalCompare: true", block)
+        self.assertIn("pageRender: true", block)
+        self.assertIn(".braille-decision", stylesheet)
+
+    def test_step_9_is_a_final_legend_decision_with_map_comparison(self):
+        legend = (MINIMAL_DIR / "editors" / "legend.js").read_text(encoding="utf-8")
+        steps = (MINIMAL_DIR / "steps.js").read_text(encoding="utf-8")
+        viewer = (MINIMAL_DIR / "viewer.js").read_text(encoding="utf-8")
+        stylesheet = (STATIC / "minimal.css").read_text(encoding="utf-8")
+        self.assertIn("legendDecisionHtml", self.controls)
+        for control_id in ("legend-compare", "approve-legend"):
+            self.assertIn(f'id="{control_id}"', legend)
+        embedded = legend[legend.index("export function legendEditorHtml()"):
+                          legend.index("export function bindLegendEditor")]
+        self.assertIn("legendToolboxBody(true)", embedded)
+        self.assertIn("saveStep9Review", legend)
+        block = re.search(r"^  9: \[([\s\S]*?)^  \],", steps, re.M).group(1)
+        self.assertIn("mapLegendCompare: true", block)
+        self.assertIn("Display tactile map", viewer)
+        self.assertIn("step9-comparison-canvas", (MINIMAL_DIR / "visual.js").read_text(
+            encoding="utf-8"))
+        self.assertIn(".legend-decision", stylesheet)
+
+    def test_completed_steps_two_to_four_use_the_focused_review_views(self):
+        steps = (MINIMAL_DIR / "steps.js").read_text(encoding="utf-8")
+        visual = (MINIMAL_DIR / "visual.js").read_text(encoding="utf-8")
+        text = (MINIMAL_DIR / "editors" / "text.js").read_text(encoding="utf-8")
+        step2 = re.search(r"^  2: \[([\s\S]*?)^  \],", steps, re.M).group(1)
+        step3 = re.search(r"^  3: \[([\s\S]*?)^  \],", steps, re.M).group(1)
+        step4 = re.search(r"^  4: \[([\s\S]*?)^  \],", steps, re.M).group(1)
+        self.assertIn("intermediate: true", step2)
+        self.assertIn("See all intermediate steps", visual)
+        self.assertEqual(step3.count("artifact:"), 1)
+        self.assertIn('caption: "Detected text on the map"', step3)
+        self.assertIn("label-include", text)
+        self.assertNotIn("label-remove", text)
+        self.assertIn("remove: true", text)
+        self.assertEqual(step4.count("artifact:"), 1)
+        self.assertIn('caption: "Segmented map"', step4)
+        self.assertIn('overlay: "segmented-lines"', step4)
+        self.assertIn("Display lines", visual)
+
+    def test_export_is_large_and_requires_step9_approval(self):
+        export = (MINIMAL_DIR / "editors" / "exportpdf.js").read_text(encoding="utf-8")
+        visual = (MINIMAL_DIR / "visual.js").read_text(encoding="utf-8")
+        stylesheet = (STATIC / "minimal.css").read_text(encoding="utf-8")
+        self.assertIn("map.step9_review_ready", export)
+        self.assertIn("export-button", export)
+        self.assertIn("data-export-preview", export)
+        self.assertIn('id="export-show-input"', export)
+        self.assertIn("state.showFinalMap = true", export)
+        self.assertIn("state.showOriginalMap = event.target.checked", export)
+        self.assertIn("step9-input-sheet", visual)
+        for removed_copy in ("Final files", "The finished two-page PDF",
+                             "The approved map and legend pages are ready",
+                             "Two pages at"):
+            self.assertNotIn(removed_copy, export)
+        self.assertIn(".export-panel h3", stylesheet)
+        self.assertIn(".export-button", stylesheet)
+        export_css = re.search(r"\.export-panel \{([^}]*)\}", stylesheet).group(1)
+        self.assertIn("border: 1px solid var(--line)", export_css)
+
+    def test_run_all_stops_for_an_explicit_mask_decision(self):
+        workspace = (MINIMAL_DIR / "workspace.js").read_text(encoding="utf-8")
+        mask = (MINIMAL_DIR / "editors" / "mask.js").read_text(encoding="utf-8")
+        self.assertIn("maskDecisionHtml", self.controls)
+        self.assertIn("state.data.mask?.approved", self.controls)
+        self.assertIn("state.data.mask?.approved", workspace)
+        for control_id in ("mask-undo", "mask-discard", "mask-save", "approve-mask"):
+            self.assertIn(f'id="{control_id}"', mask)
+        self.assertIn("approveMaskAndContinue", mask)
+
+    def test_individual_step2_uses_the_full_mask_decision_panel(self):
+        decision = self.controls.index("} else if (maskDecision) {")
+        individual = self.controls.index("} else if (state.individualRun) {")
+        self.assertLess(decision, individual)
+        condition_start = self.controls.index("const maskDecision =")
+        condition = self.controls[condition_start:self.controls.index(";", condition_start)]
+        self.assertNotIn("!state.individualRun", condition)
+        visual = (MINIMAL_DIR / "visual.js").read_text(encoding="utf-8")
+        self.assertIn("state.maskBrush.active = step === 2", visual)
+        self.assertIn("bindMaskEditor(continueAfterMaskApproval)", self.controls)
+        callback = self.controls[self.controls.index("async function continueAfterMaskApproval()"):
+                                 self.controls.index("function bindControlEvents()")]
+        self.assertIn('await startJob(["3"])', callback)
+        mask = (MINIMAL_DIR / "editors" / "mask.js").read_text(encoding="utf-8")
+        self.assertIn('class="mask-mode-icon"', mask)
+        self.assertIn('src="/images/brush.png"', mask)
+        self.assertNotIn("maskEditorHtml", mask)
+
+    def test_the_right_panel_never_embeds_a_map_preview(self):
+        stylesheet = (STATIC / "minimal.css").read_text(encoding="utf-8")
+        self.assertNotIn("stepImageSrc", self.controls)
+        self.assertNotIn("step-figure", self.controls)
+        self.assertNotIn(".step-figure", stylesheet)
+
+    def test_applied_mask_changes_make_approval_glow(self):
+        stylesheet = (STATIC / "minimal.css").read_text(encoding="utf-8")
+        mask = (MINIMAL_DIR / "editors" / "mask.js").read_text(encoding="utf-8")
+        self.assertIn("needs-attention", mask)
+        self.assertIn(".approve-mask.needs-attention", stylesheet)
+        self.assertIn("@keyframes approval-glow", stylesheet)
 
 
 class PayloadFieldTests(unittest.TestCase):
@@ -278,7 +599,8 @@ class PayloadFieldTests(unittest.TestCase):
     def test_label_patch_fields_are_supported(self):
         sent = set(re.findall(r"patchLabel\([^,]+,\s*\{\s*(\w+)", self.read("braille.js")))
         self.assertTrue(sent)
-        self.assertLessEqual(sent, {"text", "enabled", "position_px", "side"})
+        self.assertLessEqual(sent, {"text", "enabled", "position_px", "side",
+                                    "callout", "pin_shape"})
 
     def test_title_patch_fields_are_supported(self):
         sent = set(re.findall(r"patchTitle\(\{\s*(\w+)", self.read("braille.js")))
@@ -382,6 +704,10 @@ class StepViewTests(unittest.TestCase):
         self.assertIn('overlay: "mask"', self.steps)
         mask = (MINIMAL_DIR / "editors" / "mask.js").read_text(encoding="utf-8")
         self.assertIn('$("mask-target")', mask)
+        self.assertIn('artifactUrl(state.selected, "map_mask.png")', mask)
+        self.assertIn("redrawMask(context, maskImage, current)", mask)
+        self.assertIn("maskPixels.data[offset] >= 128", mask)
+        self.assertIn("overlay.data[offset + 3] = 165", mask)
 
 
 class ViewerToolTests(unittest.TestCase):
@@ -429,6 +755,21 @@ class ViewerToolTests(unittest.TestCase):
         viewer = (MINIMAL_DIR / "viewer.js").read_text(encoding="utf-8")
         self.assertIn("availableH", viewer)
         self.assertIn("naturalH", viewer)
+
+    def test_fit_can_go_below_the_manual_twenty_five_percent_floor(self):
+        self.assertIn("const fittedZoom = Math.min", self.viewer)
+        self.assertIn("Math.min(MIN_ZOOM, fittedZoom)", self.viewer)
+        self.assertIn("Number(range.min) || MIN_ZOOM", self.viewer)
+
+    def test_shared_toolbar_can_pan_a_zoomed_map(self):
+        stylesheet = (STATIC / "minimal.css").read_text(encoding="utf-8")
+        self.assertIn('class="page-pan-toggle"', self.viewer)
+        self.assertIn("state.panMode = !state.panMode", self.viewer)
+        self.assertIn("frame.setPointerCapture", self.viewer)
+        self.assertIn("frame.scrollLeft", self.viewer)
+        self.assertIn("frame.scrollTop", self.viewer)
+        self.assertIn(".map-frame.is-pan-enabled", stylesheet)
+        self.assertIn('.page-pan-toggle[aria-pressed="true"]', stylesheet)
 
     def test_colour_view_is_offered_only_where_a_colour_render_exists(self):
         self.assertIn("view.hybrid ?", self.viewer)

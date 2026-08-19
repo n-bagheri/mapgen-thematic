@@ -80,12 +80,13 @@ STEP_EXTRA = {
         "approved_lines.geojson", "line_review.json"),
     5: ("aggregation_review.json", "group_map_source.png", "groups.json"),
     6: ("label_map_gen.png", "label_map_gen_preview.png", "step6_changes.png",
-        "step6_transitions.json", "step6_params.json"),
+        "step6_transitions.json", "step6_params.json", "step6_review.json"),
     7: ("overlay_labels.json", "pattern_transforms.json", "page_layout.json",
+        "step7_review.json",
         "step7_hybrid.png", "step8a_hybrid.png", "step8_white_stroke_mask.png",
         "step8_black_stroke_mask.png"),
-    8: ("step8_hybrid.png",),
-    9: ("step9_legend_hybrid.png",),
+    8: ("step8_hybrid.png", "step8_hybrid_base.png", "step8_review.json"),
+    9: ("step9_legend_hybrid.png", "step9_review.json"),
 }
 
 CANONICAL_STEP_ORDER = (1, 2, 3, 4, 5, 6, 7, 8, 9)
@@ -226,6 +227,8 @@ def step_done(stem: str, step: int | str) -> bool:
         if report.get("renderer_version") != BRAILLE_LAYOUT_VERSION:
             return False
     if step == 9:
+        if not step_done(stem, 8):
+            return False
         from mapgen.legend import LEGEND_VERSION
         run_dir = RUNS_DIR / stem
         source = run_dir / "symbols.json"
@@ -257,6 +260,111 @@ def step5_review_ready(stem: str) -> bool:
     run_dir = RUNS_DIR / stem
     return all((run_dir / name).exists()
                for name in ("group_map_source.png", "groups.json"))
+
+
+def step6_review_ready(stem: str) -> bool:
+    """True only when the active simplification preset was chosen by a user."""
+    run_dir = RUNS_DIR / stem
+    review_path = run_dir / "step6_review.json"
+    params_path = run_dir / "step6_params.json"
+    try:
+        review = json.loads(review_path.read_text(encoding="utf-8"))
+        params = json.loads(params_path.read_text(encoding="utf-8"))
+        selected_level_matches = int(review.get("level", 0)) == int(
+            params.get("simplification_level", -1))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return False
+    return bool(review.get("approved")) and selected_level_matches and step_done(stem, 6)
+
+
+def _step7_review_payload(stem: str) -> dict:
+    """Load the persisted Step 7 choices, with safe defaults for older runs."""
+    path = RUNS_DIR / stem / "step7_review.json"
+    try:
+        saved = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        saved = {}
+    return {
+        "version": 1,
+        "approved": bool(saved.get("approved", False)),
+        "preserve_haptic_distances": bool(saved.get("preserve_haptic_distances", True)),
+        "create_hybrid_map": bool(saved.get("create_hybrid_map", False)),
+    }
+
+
+def _save_step7_review(stem: str, payload: dict) -> dict:
+    normalized = {
+        "version": 1,
+        "approved": bool(payload.get("approved", False)),
+        "preserve_haptic_distances": bool(payload.get("preserve_haptic_distances", True)),
+        "create_hybrid_map": bool(payload.get("create_hybrid_map", False)),
+    }
+    path = RUNS_DIR / stem / "step7_review.json"
+    path.write_text(json.dumps(normalized, indent=2), encoding="utf-8")
+    if not normalized["approved"]:
+        _invalidate_step8_review(stem)
+        _invalidate_step9_review(stem)
+    return normalized
+
+
+def step7_review_ready(stem: str) -> bool:
+    """True once the current pattern and hybrid choices were explicitly approved."""
+    return _step7_review_payload(stem)["approved"] and step_done(stem, 7)
+
+
+def _step8_review_payload(stem: str) -> dict:
+    """Load the explicit label-and-page approval for Step 8."""
+    path = RUNS_DIR / stem / "step8_review.json"
+    try:
+        saved = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        saved = {}
+    return {"version": 1, "approved": bool(saved.get("approved", False))}
+
+
+def _save_step8_review(stem: str, payload: dict) -> dict:
+    normalized = {"version": 1, "approved": bool(payload.get("approved", False))}
+    path = RUNS_DIR / stem / "step8_review.json"
+    path.write_text(json.dumps(normalized, indent=2), encoding="utf-8")
+    return normalized
+
+
+def _invalidate_step8_review(stem: str) -> None:
+    path = RUNS_DIR / stem / "step8_review.json"
+    if not path.exists():
+        return
+    _save_step8_review(stem, {"approved": False})
+
+
+def step8_review_ready(stem: str) -> bool:
+    """True once the current Braille labels and page geometry were approved."""
+    return _step8_review_payload(stem)["approved"] and step_done(stem, 8)
+
+
+def _step9_review_payload(stem: str) -> dict:
+    path = RUNS_DIR / stem / "step9_review.json"
+    try:
+        saved = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        saved = {}
+    return {"version": 1, "approved": bool(saved.get("approved", False))}
+
+
+def _save_step9_review(stem: str, payload: dict) -> dict:
+    normalized = {"version": 1, "approved": bool(payload.get("approved", False))}
+    path = RUNS_DIR / stem / "step9_review.json"
+    path.write_text(json.dumps(normalized, indent=2), encoding="utf-8")
+    return normalized
+
+
+def _invalidate_step9_review(stem: str) -> None:
+    path = RUNS_DIR / stem / "step9_review.json"
+    if path.exists():
+        _save_step9_review(stem, {"approved": False})
+
+
+def step9_review_ready(stem: str) -> bool:
+    return _step9_review_payload(stem)["approved"] and step_done(stem, 9)
 
 
 # --------------------------------------------------------------------------- jobs
@@ -316,6 +424,7 @@ def _run_single_step(step: int | str, image: Path, log,
     elif step == 7:
         from mapgen.symbols import run_step7
         from mapgen.boundaries import run_step8
+        from mapgen.braille import load_step7_page_layout
         from mapgen.cleanup import run_step8a
 
         symbols = run_step7(image, model=model)
@@ -327,6 +436,10 @@ def _run_single_step(step: int | str, image: Path, log,
         log(f"{boundaries['selected_adjacencies']} selected adjacency type(s); "
             f"priority patterns={len(boundaries['active_patterns'])}")
         cleanup = run_step8a(image, model=model)
+        # Step 7 now pauses for a decision before Braille is generated. Build
+        # its paper contract here so the review already uses the configured
+        # page size, margins, and orientation.
+        load_step7_page_layout(RUNS_DIR / image.stem)
         log(f"final cleanup: {cleanup['owner_groups']} boundary-owner group(s); "
             f"{cleanup['repainted_components']} top component layer(s); "
             f"{cleanup['restored_pixels']} pixels restored")
@@ -424,6 +537,10 @@ def api_maps():
             "pipeline_error": pipeline_error,
             "steps": {str(s): step_done(p.stem, s) for s in STEP_ARTIFACTS},
             "step5_review_ready": step5_review_ready(p.stem),
+            "step6_review_ready": step6_review_ready(p.stem),
+            "step7_review_ready": step7_review_ready(p.stem),
+            "step8_review_ready": step8_review_ready(p.stem),
+            "step9_review_ready": step9_review_ready(p.stem),
             "job": snapshot.get(p.stem),
         })
     return jsonify({"maps": maps})
@@ -562,6 +679,14 @@ def api_run():
                 for artifact in run_dir.glob("step6_preset_*"):
                     if artifact.is_file():
                         artifact.unlink()
+        if 6 in steps:
+            (run_dir / "step6_review.json").unlink(missing_ok=True)
+        if 7 in steps:
+            (run_dir / "step7_review.json").unlink(missing_ok=True)
+        if 8 in steps:
+            (run_dir / "step8_review.json").unlink(missing_ok=True)
+        if 9 in steps:
+            (run_dir / "step9_review.json").unlink(missing_ok=True)
         _jobs[stem] = {"status": "running", "steps": steps, "current": None,
                        "model": model, "log": [], "error": None}
     threading.Thread(target=_job_worker, args=(stem, image, steps, model), daemon=True).start()
@@ -656,11 +781,16 @@ def api_maskreview_get(stem: str):
     mask = imread(mask_path)[..., 0]
     automatic = imread(auto_path)[..., 0]
     review_path = run_dir / "map_mask_review.json"
+    try:
+        review = json.loads(review_path.read_text(encoding="utf-8")) if review_path.exists() else {}
+    except (OSError, json.JSONDecodeError):
+        review = {}
     return jsonify({
         "width": int(image.shape[1]), "height": int(image.shape[0]),
         "kept_pixels": int((mask > 0).sum()),
         "automatic_pixels": int((automatic > 0).sum()),
-        "reviewed": review_path.exists(),
+        "reviewed": int(review.get("strokes_saved", 0)) > 0,
+        "approved": bool(review.get("approved", False)),
     })
 
 
@@ -672,17 +802,36 @@ def api_maskreview_post(stem: str):
 
     run_dir, map_path, mask_path, auto_path = _mask_review_paths(stem)
     data = request.get_json(silent=True) or {}
-    if not isinstance(data, dict) or set(data) - {"strokes", "reset"}:
-        abort(400, "mask review accepts strokes or reset")
+    if not isinstance(data, dict) or set(data) - {"strokes", "reset", "approve"}:
+        abort(400, "mask review accepts strokes, reset, or approve")
+    actions = int("strokes" in data) + int(data.get("reset") is True) + int(data.get("approve") is True)
+    if actions != 1:
+        abort(400, "choose exactly one mask-review action")
     with _lock:
         job = _jobs.get(stem)
         if job and job["status"] == "running":
             abort(409, "a job is running for this map")
         mask = imread(mask_path)[..., 0]
         automatic = imread(auto_path)[..., 0]
+        review_path = run_dir / "map_mask_review.json"
+        if data.get("approve") is True:
+            try:
+                review = json.loads(review_path.read_text(encoding="utf-8")) if review_path.exists() else {}
+            except (OSError, json.JSONDecodeError):
+                review = {}
+            review.update({
+                "version": 2,
+                "approved": True,
+                "strokes_saved": int(review.get("strokes_saved", 0)),
+                "kept_pixels": int((mask > 0).sum()),
+            })
+            review_path.write_text(json.dumps(review, indent=2), encoding="utf-8")
+            return jsonify({"ok": True, "approved": True,
+                            "kept_pixels": int((mask > 0).sum()),
+                            "invalidated": [], "downstream_invalidated": False})
         if data.get("reset"):
             mask = automatic.copy()
-            (run_dir / "map_mask_review.json").unlink(missing_ok=True)
+            review_path.unlink(missing_ok=True)
             stroke_count = 0
         else:
             strokes = data.get("strokes")
@@ -732,8 +881,8 @@ def api_maskreview_post(stem: str):
                     # manual removal.
                     mask[stroke_mask > 0] = 255
                 stroke_count += 1
-            (run_dir / "map_mask_review.json").write_text(json.dumps({
-                "version": 1, "strokes_saved": stroke_count,
+            review_path.write_text(json.dumps({
+                "version": 2, "approved": False, "strokes_saved": stroke_count,
                 "kept_pixels": int((mask > 0).sum()),
             }, indent=2), encoding="utf-8")
 
@@ -1017,6 +1166,53 @@ def api_aggregation_review_get(stem: str):
     })
 
 
+@app.post("/api/aggregation-preview/<stem>")
+def api_aggregation_preview_post(stem: str):
+    """Render unsaved Step 5 category assignments without changing the run."""
+    import cv2
+    import numpy as np
+    from mapgen.aggregate import build_aggregation_review
+    from mapgen.isolate import imread
+    from mapgen.postprocess import build_group_definitions, group_raster, _render_groups
+
+    if find_map(stem) is None:
+        abort(404, "unknown map")
+    with _lock:
+        job = _jobs.get(stem)
+        if job and job["status"] == "running":
+            abort(409, "a job is running for this map")
+    run_dir = RUNS_DIR / stem
+    aggregation_path = run_dir / "aggregation.json"
+    classes_path = run_dir / "classes_final.json"
+    label_map_path = run_dir / "label_map.png"
+    if not all(path.exists() for path in (aggregation_path, classes_path, label_map_path)):
+        abort(409, "run through Step 5 before previewing category assignments")
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict) or set(data) != {"groups"}:
+        abort(400, "aggregation preview requires groups")
+    aggregation = json.loads(aggregation_path.read_text(encoding="utf-8"))
+    try:
+        review = build_aggregation_review(aggregation, data["groups"])
+    except (TypeError, ValueError) as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    preview_aggregation = dict(aggregation)
+    preview_aggregation["groups"] = [
+        {key: value for key, value in group.items() if key != "approved"}
+        for group in review["groups"]
+    ]
+    classes = json.loads(classes_path.read_text(encoding="utf-8"))["classes"]
+    source = imread(label_map_path)[..., 0].astype(np.int16) - 1
+    definitions = build_group_definitions(preview_aggregation, classes)
+    grouped, _ = group_raster(source, definitions)
+    preview = _render_groups(grouped, definitions)
+    ok, encoded = cv2.imencode(".png", preview)
+    if not ok:
+        abort(500, "could not render the category preview")
+    response = send_file(io.BytesIO(encoded.tobytes()), mimetype="image/png")
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return response
+
+
 @app.post("/api/aggregation-review/<stem>")
 def api_aggregation_review_post(stem: str):
     if find_map(stem) is None:
@@ -1167,12 +1363,17 @@ def api_step6preset_post(stem: str):
         abort(409, "generate the five previews first")
     invalidated = []
     run_dir = RUNS_DIR / stem
-    for step in (7, 8):
+    for step in (7, 8, 9):
         for name in STEP_ARTIFACTS[step] + STEP_EXTRA[step]:
             artifact = run_dir / name
             if artifact.exists():
                 artifact.unlink()
                 invalidated.append(name)
+    (run_dir / "step6_review.json").write_text(json.dumps({
+        "version": 1,
+        "approved": True,
+        "level": level,
+    }, indent=2), encoding="utf-8")
     return jsonify({"ok": True, "active_level": level, "invalidated": invalidated})
 
 
@@ -1220,6 +1421,43 @@ def _pattern_editor_payload(symbols: dict) -> dict:
         "limits": {key: {"min": limits[0], "max": limits[1]}
                    for key, limits in PATTERN_TRANSFORM_LIMITS.items()},
     }
+
+
+@app.route("/api/step7-review/<stem>", methods=["GET", "POST"])
+def api_step7_review(stem: str):
+    """Persist the two pattern modes and the explicit Step 7 approval gate."""
+    if find_map(stem) is None:
+        abort(404, "unknown map")
+    if not (RUNS_DIR / stem / "symbols.json").exists():
+        abort(409, "run Step 7 before reviewing its tactile patterns")
+    current = _step7_review_payload(stem)
+    if request.method == "GET":
+        return jsonify(current)
+    with _lock:
+        job = _jobs.get(stem)
+        if job and job["status"] == "running":
+            abort(409, "wait for the running pipeline step before changing Step 7")
+
+    data = request.get_json(silent=True) or {}
+    allowed = {"preserve_haptic_distances", "create_hybrid_map", "approve"}
+    if not isinstance(data, dict) or not data or set(data) - allowed:
+        abort(400, "Step 7 review accepts pattern modes and/or approval")
+    for key in allowed & set(data):
+        if not isinstance(data[key], bool):
+            abort(400, f"{key} must be true or false")
+    if "preserve_haptic_distances" in data:
+        current["preserve_haptic_distances"] = data["preserve_haptic_distances"]
+        current["approved"] = False
+    if "create_hybrid_map" in data:
+        current["create_hybrid_map"] = data["create_hybrid_map"]
+        current["approved"] = False
+    if data.get("approve"):
+        if not step_done(stem, 7):
+            abort(409, "finish Step 7 before approving its tactile patterns")
+        current["approved"] = True
+    elif data.get("approve") is False:
+        current["approved"] = False
+    return jsonify(_save_step7_review(stem, current))
 
 
 @app.get("/api/pattern-transforms/<stem>")
@@ -1296,6 +1534,12 @@ def api_pattern_transforms_post(stem: str, group_id: int):
     rerender_step7_artifacts(run_dir, symbols)
     run_step8(image, runs_dir=RUNS_DIR)
     run_step8a(image, runs_dir=RUNS_DIR)
+    if (run_dir / "step8a_cleanup.png").exists():
+        from mapgen.braille import load_step7_page_layout
+        load_step7_page_layout(run_dir)
+    review = _step7_review_payload(stem)
+    review["approved"] = False
+    _save_step7_review(stem, review)
     if (run_dir / "braille_labels.json").exists():
         from mapgen.braille import run_step8 as run_braille_step8
         run_braille_step8(image, runs_dir=RUNS_DIR)
@@ -1322,22 +1566,36 @@ def api_pattern_assignments_post(stem: str, group_id: int):
         if job and job["status"] == "running":
             abort(409, "a job is running for this map")
     data = request.get_json(force=True)
-    pattern_id = data.get("pattern") if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        abort(400, "select a pattern from the Step 7 library")
+    pattern_id = data.get("pattern")
     if not isinstance(pattern_id, str) or pattern_id not in PATTERNS:
         return jsonify({"ok": False, "error": "select a pattern from the Step 7 library"}), 400
+    review = _step7_review_payload(stem)
+    preserve_haptic_distances = data.get(
+        "preserve_haptic_distances", review["preserve_haptic_distances"])
+    if not isinstance(preserve_haptic_distances, bool):
+        abort(400, "preserve_haptic_distances must be true or false")
 
     run_dir, symbols = _step7_symbols(stem)
     assignments = symbols.get("area_assignments", [])
     if group_id < 0 or group_id >= len(assignments):
         abort(404, "unknown Step 7 area")
     try:
-        reassign_step7_pattern(run_dir, symbols, group_id, pattern_id)
+        reassign_step7_pattern(
+            run_dir, symbols, group_id, pattern_id, preserve_haptic_distances)
     except (OSError, TypeError, ValueError) as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
 
     rerender_step7_artifacts(run_dir, symbols)
     run_step8(image, runs_dir=RUNS_DIR)
     run_step8a(image, runs_dir=RUNS_DIR)
+    if (run_dir / "step8a_cleanup.png").exists():
+        from mapgen.braille import load_step7_page_layout
+        load_step7_page_layout(run_dir)
+    review["approved"] = False
+    review["preserve_haptic_distances"] = preserve_haptic_distances
+    _save_step7_review(stem, review)
     if (run_dir / "braille_labels.json").exists():
         from mapgen.braille import run_step8 as run_braille_step8
         run_braille_step8(image, runs_dir=RUNS_DIR)
@@ -1350,6 +1608,7 @@ def api_pattern_assignments_post(stem: str, group_id: int):
         "pattern": pattern_id,
         "pattern_data": _pattern_editor_payload(symbols),
         "pattern_optimization": symbols.get("pattern_optimization", {}),
+        "review": review,
         "final_artifact": "step8a_cleanup.png",
     })
 
@@ -1365,6 +1624,53 @@ def _braille_layout(stem: str) -> tuple[Path, dict]:
         return run_dir, json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         abort(409, "Step 8 label layout is unreadable; rerun Step 8")
+
+
+@app.route("/api/step8-review/<stem>", methods=["GET", "POST"])
+def api_step8_review(stem: str):
+    """Expose the explicit Step 8 toolbox/page approval gate."""
+    if find_map(stem) is None:
+        abort(404, "unknown map")
+    if not (RUNS_DIR / stem / "braille_labels.json").exists():
+        abort(409, "run Step 8 before reviewing its labels and page layout")
+    current = _step8_review_payload(stem)
+    if request.method == "GET":
+        return jsonify(current)
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict) or set(data) != {"approve"} or not isinstance(
+            data.get("approve"), bool):
+        abort(400, "Step 8 review accepts one boolean approve field")
+    with _lock:
+        job = _jobs.get(stem)
+        if job and job["status"] == "running":
+            abort(409, "wait for the running pipeline step before approving Step 8")
+        if data["approve"] and not step_done(stem, 8):
+            abort(409, "finish Step 8 before approving its page layout")
+        current["approved"] = data["approve"]
+        return jsonify(_save_step8_review(stem, current))
+
+
+@app.post("/api/braille-layout/<stem>")
+def api_braille_layout_post(stem: str):
+    from mapgen.braille import update_braille_toolbox
+
+    run_dir, _ = _braille_layout(stem)
+    data = request.get_json(force=True)
+    allowed = {"all_text_enabled", "fix_text_to_map", "group_map_elements",
+               "map_origin_px", "furniture"}
+    if not isinstance(data, dict) or not data or set(data) - allowed:
+        abort(400, "Step 8 layout update accepts text, grouping, map position, and furniture fields")
+    try:
+        with _lock:
+            job = _jobs.get(stem)
+            if job and job["status"] == "running":
+                abort(409, "a job is running for this map")
+            layout, report = update_braille_toolbox(run_dir, data)
+            _invalidate_step8_review(stem)
+    except (TypeError, ValueError) as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, "layout": layout,
+                    "enabled_labels": report["enabled_labels"]})
 
 
 @app.get("/api/page-layout/<stem>")
@@ -1407,6 +1713,7 @@ def api_page_layout_post(stem: str):
                                               data.get("orientation"), data.get("furniture"))
             if (RUNS_DIR / stem / "braille_labels.json").exists():
                 rerender_braille(image, runs_dir=RUNS_DIR)
+                _invalidate_step8_review(stem)
     except (FileNotFoundError, TypeError, ValueError) as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     return jsonify({"ok": True, "layout": layout})
@@ -1422,7 +1729,18 @@ def api_category_colors(stem: str):
     current = (json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"colors": {}})
     aggregation_path = run_dir / "aggregation.json"
     allowed_labels = None
-    if aggregation_path.exists():
+    symbols_path = run_dir / "symbols.json"
+    if symbols_path.exists():
+        try:
+            symbols_for_labels = json.loads(symbols_path.read_text(encoding="utf-8"))
+            allowed_labels = {
+                str(assignment.get("label"))
+                for assignment in symbols_for_labels.get("area_assignments", [])
+                if assignment.get("label")
+            }
+        except (OSError, json.JSONDecodeError):
+            allowed_labels = None
+    elif aggregation_path.exists():
         from mapgen.aggregate import effective_aggregation
         try:
             effective = effective_aggregation(run_dir, json.loads(aggregation_path.read_text(encoding="utf-8")))
@@ -1460,6 +1778,12 @@ def api_category_colors(stem: str):
             from mapgen.cleanup import run_step8a
             run_step8(image, runs_dir=RUNS_DIR)
             run_step8a(image, runs_dir=RUNS_DIR)
+            if (run_dir / "step8a_cleanup.png").exists():
+                from mapgen.braille import load_step7_page_layout
+                load_step7_page_layout(run_dir)
+            review = _step7_review_payload(stem)
+            review["approved"] = False
+            _save_step7_review(stem, review)
             if (run_dir / "braille_labels.json").exists():
                 from mapgen.braille import run_step8 as run_braille
                 run_braille(image, runs_dir=RUNS_DIR)
@@ -1474,6 +1798,8 @@ def api_download_pdf(stem: str):
     """Download the completed tactile map and legend as one two-page PDF."""
     if find_map(stem) is None:
         abort(404, "unknown map")
+    if not step9_review_ready(stem):
+        abort(409, "approve the Step 9 legend before exporting the final PDF")
     run_dir = RUNS_DIR / stem
     hybrid = request.args.get("variant") == "hybrid"
     map_name = "step8_hybrid.png" if hybrid else "step8_braille.png"
@@ -1522,6 +1848,7 @@ def api_braille_labels_add(stem: str):
             if job and job["status"] == "running":
                 abort(409, "a job is running for this map")
             label, report = add_braille_label(run_dir, data.get("text", ""))
+            _invalidate_step8_review(stem)
     except (TypeError, ValueError) as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     return jsonify({"ok": True, "label": label, "enabled_labels": report["enabled_labels"]})
@@ -1542,6 +1869,7 @@ def api_braille_title_post(stem: str):
             if job and job["status"] == "running":
                 abort(409, "a job is running for this map")
             title, report = update_braille_title(run_dir, data)
+            _invalidate_step8_review(stem)
     except (TypeError, ValueError) as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     return jsonify({"ok": True, "title": title, "enabled_labels": report["enabled_labels"]})
@@ -1555,7 +1883,7 @@ def api_braille_labels_post(stem: str, label_id: str):
     data = request.get_json(force=True)
     if not isinstance(data, dict):
         abort(400, "label update must be an object")
-    allowed = {"text", "enabled", "position_px", "side"}
+    allowed = {"text", "enabled", "position_px", "side", "callout", "pin_shape"}
     unknown = set(data) - allowed
     if unknown:
         return jsonify({"ok": False, "error":
@@ -1568,6 +1896,7 @@ def api_braille_labels_post(stem: str, label_id: str):
             if job and job["status"] == "running":
                 abort(409, "a job is running for this map")
             label, report = update_braille_label(run_dir, label_id, data)
+            _invalidate_step8_review(stem)
     except KeyError:
         abort(404, "unknown Step 8 label")
     except (TypeError, ValueError) as exc:
@@ -1580,6 +1909,24 @@ def api_braille_labels_post(stem: str, label_id: str):
     })
 
 
+@app.delete("/api/braille-labels/<stem>/<label_id>")
+def api_braille_labels_delete(stem: str, label_id: str):
+    from mapgen.braille import delete_braille_label
+
+    run_dir, _ = _braille_layout(stem)
+    try:
+        with _lock:
+            job = _jobs.get(stem)
+            if job and job["status"] == "running":
+                abort(409, "a job is running for this map")
+            deleted, report = delete_braille_label(run_dir, label_id)
+            _invalidate_step8_review(stem)
+    except KeyError:
+        abort(404, "unknown Step 8 label")
+    return jsonify({"ok": True, "deleted": deleted,
+                    "enabled_labels": report["enabled_labels"]})
+
+
 def _legend_layout(stem: str) -> tuple[Path, dict]:
     if find_map(stem) is None:
         abort(404, "unknown map")
@@ -1588,6 +1935,30 @@ def _legend_layout(stem: str) -> tuple[Path, dict]:
     if not path.exists():
         abort(409, "run Step 9 before editing its legend")
     return run_dir, json.loads(path.read_text(encoding="utf-8"))
+
+
+@app.route("/api/step9-review/<stem>", methods=["GET", "POST"])
+def api_step9_review(stem: str):
+    """Persist the explicit final legend approval that unlocks export."""
+    if find_map(stem) is None:
+        abort(404, "unknown map")
+    if not (RUNS_DIR / stem / "legend_labels.json").exists():
+        abort(409, "run Step 9 before reviewing the legend page")
+    current = _step9_review_payload(stem)
+    if request.method == "GET":
+        return jsonify(current)
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict) or set(data) != {"approve"} or not isinstance(
+            data.get("approve"), bool):
+        abort(400, "Step 9 review accepts one boolean approve field")
+    with _lock:
+        job = _jobs.get(stem)
+        if job and job["status"] == "running":
+            abort(409, "wait for the running pipeline step before approving Step 9")
+        if data["approve"] and not step_done(stem, 9):
+            abort(409, "finish Step 9 before approving its legend")
+        current["approved"] = data["approve"]
+        return jsonify(_save_step9_review(stem, current))
 
 
 @app.get("/api/legend/<stem>")
@@ -1628,6 +1999,7 @@ def api_legend_page_post(stem: str):
             if job and job["status"] == "running":
                 abort(409, "a job is running for this map")
             layout, report = update_legend_page_orientation(run_dir, data["orientation"])
+            _invalidate_step9_review(stem)
     except (FileNotFoundError, TypeError, ValueError) as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     return jsonify({"ok": True, "layout": layout, "report": report})
@@ -1643,7 +2015,11 @@ def api_legend_post(stem: str, target: str):
         abort(400, "legend edit contains an unsupported field")
     try:
         with _lock:
+            job = _jobs.get(stem)
+            if job and job["status"] == "running":
+                abort(409, "a job is running for this map")
             item, report = update_legend(run_dir, target, data)
+            _invalidate_step9_review(stem)
     except KeyError:
         abort(404, "unknown legend item")
     except (TypeError, ValueError) as exc:
