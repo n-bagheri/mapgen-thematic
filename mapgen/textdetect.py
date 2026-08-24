@@ -32,8 +32,8 @@ import numpy as np
 from pydantic import BaseModel, Field
 
 from .isolate import imread, imwrite, prepare_text_input, to_lab
-from .semantics import (API_TIMEOUT_MS, DEFAULT_MODEL, MapSemantics,
-                        _ensure_api_key, require_pipeline_eligible)
+from .semantics import (DEFAULT_MODEL, EmptyModelResponse, MapSemantics,
+                        generate_json, require_pipeline_eligible)
 
 # --------------------------------------------------------------------------- schema
 
@@ -49,7 +49,10 @@ class TextKind(str, Enum):
 class TextItem(BaseModel):
     text: str = Field(description="The label exactly as written, keeping accents")
     kind: TextKind
-    box_2d: list[int] = Field(description="[y_min, x_min, y_max, x_max] normalized to 0-1000 of THIS image")
+    # Length bounds are load-bearing on the Gemma text-schema path, where
+    # Pydantic is the only validator and the caller unpacks four values.
+    box_2d: list[int] = Field(min_length=4, max_length=4,
+                              description="[y_min, x_min, y_max, x_max] normalized to 0-1000 of THIS image")
 
 
 class TextDetections(BaseModel):
@@ -125,10 +128,8 @@ def _expects_overlay_text(sem: MapSemantics) -> bool:
 
 
 def _gemini_text(tile_bgr: np.ndarray, prompt: str, model: str | None) -> TextDetections:
-    from google import genai
     from google.genai import types
 
-    _ensure_api_key()
     # MAX_TILE decides how many pieces the map is cut into, not how big each
     # piece is, so a large scan produces multi-megapixel tiles.  The model only
     # returns boxes normalized to 0-1000 of whatever it is shown, and those are
@@ -144,21 +145,11 @@ def _gemini_text(tile_bgr: np.ndarray, prompt: str, model: str | None) -> TextDe
     ok, buf = cv2.imencode(".jpg", sent, [cv2.IMWRITE_JPEG_QUALITY, 90])
     if not ok:
         raise ValueError("tile encode failed")
-    # Same deadline as Steps 1 and 2: a stalled request must not wedge the run.
-    client = genai.Client(http_options=types.HttpOptions(timeout=API_TIMEOUT_MS))
-    response = client.models.generate_content(
-        model=model or os.environ.get("GEMINI_MODEL", DEFAULT_MODEL),
-        contents=[types.Part.from_bytes(data=buf.tobytes(), mime_type="image/jpeg"), prompt],
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=TextDetections,
-            temperature=0.0,
-        ),
-    )
-    det = response.parsed
-    if not isinstance(det, TextDetections):
-        det = TextDetections.model_validate_json(response.text)
-    return det
+    # generate_json carries the shared deadline and retries, and avoids Gemma's
+    # server-side response_schema stall by sending the schema as text instead.
+    return generate_json(
+        [types.Part.from_bytes(data=buf.tobytes(), mime_type="image/jpeg"), prompt],
+        TextDetections, model=model, temperature=0.0)
 
 
 def _tiles(img: np.ndarray) -> list[tuple[int, int, np.ndarray]]:
@@ -187,16 +178,42 @@ def detect_text(map_bgr: np.ndarray, sem: MapSemantics, model: str | None) -> li
     context, capital_hint = _context_from_sem(sem)
     prompt = TEXT_PROMPT.format(context=context, capital_hint=capital_hint)
     raw: list[dict] = []
-    for ox, oy, tile in _tiles(map_bgr):
-        th, tw = tile.shape[:2]
-        detected = _gemini_text(tile, prompt, model)
+
+    def collect(part, off_x, off_y, depth):
+        th, tw = part.shape[:2]
+        try:
+            detected = _gemini_text(part, prompt, model)
+        except EmptyModelResponse as exc:
+            # Gemma's decoder can wedge on one crowded view, looping inside its
+            # thinking channel until the token budget dies (temperature does
+            # not reliably free it).  A narrower view usually reads fine, so
+            # quarter the tile once; a quadrant that still wedges only costs
+            # that region's Gemini boxes -- the CRAFT/EasyOCR fusion still
+            # contributes its text, and the Step 3 review gate puts every
+            # label in front of the reader.
+            if depth >= 1 or min(th, tw) < 500:
+                print(f"WARN: Gemini text skipped for tile at ({off_x},{off_y}): {exc}")
+                return
+            half_x, half_y = tw // 2, th // 2
+            lap_x, lap_y = tw // 8, th // 8
+            for qx, qy, quad in (
+                    (0, 0, part[:half_y + lap_y, :half_x + lap_x]),
+                    (half_x - lap_x, 0, part[:half_y + lap_y, half_x - lap_x:]),
+                    (0, half_y - lap_y, part[half_y - lap_y:, :half_x + lap_x]),
+                    (half_x - lap_x, half_y - lap_y,
+                     part[half_y - lap_y:, half_x - lap_x:])):
+                collect(quad, off_x + qx, off_y + qy, depth + 1)
+            return
         for it in detected.items:
             y0, x0, y1, x1 = it.box_2d
             raw.append({
                 "text": it.text.strip(), "kind": it.kind.value,
-                "box": [int(ox) + int(x0 / 1000 * tw), int(oy) + int(y0 / 1000 * th),
-                        int(ox) + int(x1 / 1000 * tw), int(oy) + int(y1 / 1000 * th)],
+                "box": [off_x + int(x0 / 1000 * tw), off_y + int(y0 / 1000 * th),
+                        off_x + int(x1 / 1000 * tw), off_y + int(y1 / 1000 * th)],
             })
+
+    for ox, oy, tile in _tiles(map_bgr):
+        collect(tile, int(ox), int(oy), 0)
     # merge duplicate text boxes from tile overlap
     raw.sort(key=lambda r: (r["box"][2] - r["box"][0]) * (r["box"][3] - r["box"][1]),
              reverse=True)

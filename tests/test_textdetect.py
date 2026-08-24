@@ -16,6 +16,46 @@ from mapgen.textdetect import (
 )
 
 
+class WedgedTileSalvageTests(unittest.TestCase):
+    """A tile whose decode wedges (EmptyModelResponse) is quartered once; a
+    quadrant that still wedges is surrendered to the EasyOCR fusion instead of
+    failing the whole step."""
+
+    @staticmethod
+    def _semantics():
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            subject="test map",
+            overlay_text=SimpleNamespace(
+                has_city_labels=True, has_region_labels=False,
+                has_line_labels=False, notes="", capital_city=None),
+            lines=[])
+
+    def test_wedged_tile_is_quartered_and_offsets_are_kept(self):
+        from mapgen.semantics import EmptyModelResponse
+        quadrant_answers = [TextDetections(items=[TextItem(
+            text=f"Q{index}", kind=TextKind.city, box_2d=[0, 0, 100, 100],
+        )]) for index in range(4)]
+        with patch("mapgen.textdetect._gemini_text",
+                   side_effect=[EmptyModelResponse("wedged")] + quadrant_answers):
+            items = detect_text(np.zeros((1000, 1000, 3), np.uint8),
+                                self._semantics(), "test")
+        self.assertEqual({it["text"] for it in items}, {"Q0", "Q1", "Q2", "Q3"})
+        by_text = {it["text"]: it["box"] for it in items}
+        self.assertEqual(by_text["Q0"][:2], [0, 0])
+        self.assertEqual(by_text["Q1"][:2], [375, 0])     # right half offset
+        self.assertEqual(by_text["Q2"][:2], [0, 375])     # lower half offset
+        self.assertEqual(by_text["Q3"][:2], [375, 375])
+
+    def test_persistently_wedged_region_yields_no_items_but_no_failure(self):
+        from mapgen.semantics import EmptyModelResponse
+        with patch("mapgen.textdetect._gemini_text",
+                   side_effect=EmptyModelResponse("wedged")):
+            items = detect_text(np.zeros((1000, 1000, 3), np.uint8),
+                                self._semantics(), "test")
+        self.assertEqual(items, [])
+
+
 class TextDetectionTests(unittest.TestCase):
     @staticmethod
     def _semantics():

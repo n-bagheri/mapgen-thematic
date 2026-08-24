@@ -145,5 +145,77 @@ class ScopePolicyTests(unittest.TestCase):
                          ["country boundaries"])
 
 
+class GenerateJsonSalvageTests(unittest.TestCase):
+    """The Gemma text path must survive the malformations Gemma actually emits:
+    trailing commas, a bare list instead of the single-field wrapper object,
+    and a thought-only response with no text at all."""
+
+    @staticmethod
+    def _response(text):
+        from types import SimpleNamespace
+        finish = SimpleNamespace(finish_reason="MAX_TOKENS")
+        return SimpleNamespace(parsed=None, text=text,
+                               candidates=[finish] if text is None else [])
+
+    def _run(self, responses, retries=1):
+        from unittest.mock import MagicMock, patch
+        from mapgen import semantics
+        from mapgen.textdetect import TextDetections
+        client = MagicMock()
+        client.models.generate_content.side_effect = responses
+        calls = client.models.generate_content
+        with patch.object(semantics, "os") as fake_os:
+            fake_os.environ.get.return_value = "gemma-test"
+            with patch("google.genai.Client", return_value=client):
+                result = semantics.generate_json(
+                    ["prompt"], TextDetections, temperature=0.0, retries=retries)
+        return result, calls
+
+    def test_trailing_commas_are_repaired_locally(self):
+        from mapgen.semantics import _strip_trailing_commas
+        repaired = _strip_trailing_commas('{"a": [1, 2,], }')
+        self.assertEqual(json.loads(repaired), {"a": [1, 2]})
+        untouched = '{"a": "text, ] inside", "b": [1]}'
+        self.assertEqual(_strip_trailing_commas(untouched), untouched)
+
+    def test_bare_list_is_wrapped_into_the_single_field_schema(self):
+        item = '{"text": "WOLOF", "kind": "region_label", "box_2d": [5, 6, 7, 8]}'
+        result, calls = self._run([self._response(f"[{item}]")])
+        self.assertEqual(len(result.items), 1)
+        self.assertEqual(result.items[0].text, "WOLOF")
+        self.assertEqual(calls.call_count, 1)
+
+    def test_thought_only_response_retries_warm_then_succeeds(self):
+        good = '{"items": [{"text": "A", "kind": "city", "box_2d": [1, 2, 3, 4]}]}'
+        result, calls = self._run([self._response(None), self._response(good)])
+        self.assertEqual(len(result.items), 1)
+        self.assertEqual(calls.call_count, 2)
+        second_config = calls.call_args_list[1].kwargs["config"]
+        self.assertEqual(second_config.temperature, 0.6)
+
+    def test_persistent_thought_only_response_raises_the_typed_error(self):
+        from mapgen.semantics import EmptyModelResponse
+        with self.assertRaises(EmptyModelResponse):
+            self._run([self._response(None), self._response(None)], retries=1)
+
+    def test_cap_truncated_list_is_closed_after_its_last_complete_element(self):
+        item = '{"text": "KEPT", "kind": "city", "box_2d": [1, 2, 3, 4]}'
+        cut = '{"items": [' + item + ', {"text": "LOST", "ki'
+        result, calls = self._run([self._response(cut)])
+        self.assertEqual([it.text for it in result.items], ["KEPT"])
+        self.assertEqual(calls.call_count, 1)
+
+    def test_a_complete_but_wrong_document_is_not_rescued_as_truncation(self):
+        from mapgen.semantics import _close_truncated_json
+        self.assertIsNone(_close_truncated_json('{"items": []}'))
+        self.assertIsNone(_close_truncated_json('not json at all'))
+
+    def test_brackets_inside_strings_do_not_confuse_the_closer(self):
+        cut = ('{"items": [{"text": "a } ] b", "kind": "city",'
+               ' "box_2d": [1, 2, 3, 4]}, {"text": "C')
+        result, _ = self._run([self._response(cut)])
+        self.assertEqual([it.text for it in result.items], ["a } ] b"])
+
+
 if __name__ == "__main__":
     unittest.main()

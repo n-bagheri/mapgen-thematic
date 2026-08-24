@@ -17,6 +17,7 @@ import io
 import json
 import mimetypes
 import os
+import re
 from enum import Enum
 from pathlib import Path
 from typing import Callable
@@ -302,6 +303,121 @@ def _ensure_api_key() -> None:
         f"({names} in {KEY_FILES[0].parent})")
 
 
+class EmptyModelResponse(RuntimeError):
+    """The model finished without any non-thought text to parse.
+
+    Gemma's hybrid reasoning can fall into a greedy repetition loop inside its
+    thinking channel until max_output_tokens is spent, which leaves
+    ``response.text`` as None with finish_reason MAX_TOKENS.  Retryable -- and
+    the retry must sample (temperature > 0), because the loop is deterministic
+    and a colder retry reproduces it exactly.
+    """
+
+
+def _strip_trailing_commas(text: str) -> str:
+    """Undo the one JSON malformation Gemma actually emits: trailing commas.
+
+    Walks the text with string-literal awareness, so a comma inside a quoted
+    value is never touched -- only a comma whose next meaningful character
+    closes an array or object is dropped.
+    """
+    out = []
+    in_string = False
+    escaped = False
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if in_string:
+            out.append(char)
+            escaped = not escaped and char == "\\"
+            if char == '"' and not escaped:
+                in_string = False
+            index += 1
+            continue
+        if char == '"':
+            in_string = True
+            out.append(char)
+            index += 1
+            continue
+        if char == ",":
+            lookahead = index + 1
+            while lookahead < len(text) and text[lookahead] in " \t\r\n":
+                lookahead += 1
+            if lookahead < len(text) and text[lookahead] in "]}":
+                index += 1          # drop the comma; whitespace stays
+                continue
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
+def _close_truncated_json(text: str) -> str | None:
+    """Close a JSON document that an output-token cap cut mid-way.
+
+    Only rescues the shape that actually overflows -- a long array of objects
+    -- by cutting back after the last array element that closed completely and
+    then closing every container still open at that point.  Returns None when
+    the document is complete or no such cut point exists, so anything else
+    still surfaces as malformed.
+    """
+    stack: list[str] = []
+    in_string = False
+    escaped = False
+    cut: tuple[int, str] | None = None
+    for index, char in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char in "[{":
+            stack.append(char)
+        elif char in "]}":
+            if not stack:
+                return None
+            stack.pop()
+            if char == "}" and stack and stack[-1] == "[":
+                closers = "".join("]" if opener == "[" else "}"
+                                  for opener in reversed(stack))
+                cut = (index + 1, closers)
+    if cut is None or not stack:
+        return None
+    index, closers = cut
+    return text[:index] + closers
+
+
+def _salvage_parse(schema, raw_text: str):
+    """Best-effort recovery ladder for the shapes Gemma actually gets wrong.
+
+    Trailing commas are repaired; a bare list is wrapped into the schema's
+    single list field; a document truncated by the output cap is closed after
+    its last complete element.  Every rescue still validates against the
+    schema, and anything unrescuable re-raises to be retried as malformed.
+    """
+    repaired = _strip_trailing_commas(raw_text)
+    try:
+        return schema.model_validate_json(repaired)
+    except ValidationError:
+        pass
+    try:
+        decoded = json.loads(repaired)
+    except json.JSONDecodeError:
+        closed = _close_truncated_json(repaired)
+        if closed is None:
+            raise
+        decoded = json.loads(closed)
+    fields = schema.model_fields
+    if isinstance(decoded, list) and len(fields) == 1:
+        (field_name,) = fields
+        return schema.model_validate({field_name: decoded})
+    return schema.model_validate(decoded)
+
+
 def generate_json(contents, schema, model: str | None = None, temperature: float = 0.2,
                   retries: int = 1, status: Callable[[str], None] | None = None):
     """Schema-enforced model call with a deadline and same-model retries."""
@@ -323,6 +439,10 @@ def generate_json(contents, schema, model: str | None = None, temperature: float
         schema_instruction = (
             "Return ONLY one valid JSON object matching this JSON Schema exactly:\n"
             + schema_text
+            # Pretty-printing a long answer wastes most of the output budget
+            # on indentation, and a cap-truncated answer is unparseable.
+            + "\nOutput the JSON minified on a single line, with no spaces or"
+              " newlines between tokens and no markdown fences."
         )
         request_contents = list(contents) if isinstance(contents, (list, tuple)) else [contents]
         request_contents.append(schema_instruction)
@@ -331,16 +451,24 @@ def generate_json(contents, schema, model: str | None = None, temperature: float
     if status:
         status(f"requesting model {resolved} (timeout {API_TIMEOUT_MS // 1000}s)")
     try:
+        empty_retry = False
         for attempt in range(retries + 1):
             try:
+                # A malformed answer from a sampling call is retried
+                # deterministically to reduce formatting drift.  But when the
+                # first attempt was already deterministic -- or the failure was
+                # a decode loop -- Gemma reproduces the same wrong bytes
+                # exactly, so those retries must sample their way out instead.
+                retry_temperature = 0.6 if (empty_retry or temperature == 0.0) else 0.0
                 config_args = {
                     "response_mime_type": "application/json",
-                    # If a model produced malformed JSON, make the retry fully
-                    # deterministic to reduce formatting drift.
-                    "temperature": 0.0 if attempt else temperature,
+                    "temperature": retry_temperature if attempt else temperature,
                 }
                 if is_gemma:
-                    config_args["max_output_tokens"] = 8192
+                    # Enough for several hundred minified detection items, but
+                    # bounded so a wedged thinking loop cannot burn unlimited
+                    # time before EmptyModelResponse gets raised.
+                    config_args["max_output_tokens"] = 16384
                 else:
                     config_args["response_schema"] = schema
                 response = client.models.generate_content(
@@ -350,7 +478,18 @@ def generate_json(contents, schema, model: str | None = None, temperature: float
                 )
                 parsed = response.parsed
                 if not isinstance(parsed, schema):
-                    parsed = schema.model_validate_json(response.text)
+                    raw_text = response.text
+                    if raw_text is None:
+                        candidates = response.candidates or []
+                        finish = (getattr(candidates[0], "finish_reason", None)
+                                  if candidates else None)
+                        raise EmptyModelResponse(
+                            f"{resolved} returned no text to parse "
+                            f"(finish_reason={finish})")
+                    try:
+                        parsed = schema.model_validate_json(raw_text)
+                    except ValidationError:
+                        parsed = _salvage_parse(schema, raw_text)
                 return parsed
             except Exception as exc:  # noqa: BLE001 - classify API failures
                 last = exc
@@ -361,8 +500,11 @@ def generate_json(contents, schema, model: str | None = None, temperature: float
                 timed_out = code == 408 or "TIMEOUT" in upper or "TIMED OUT" in upper
                 server_error = code in {500, 502, 503, 504} or any(
                     marker in upper for marker in ("INTERNAL", "UNAVAILABLE", "SERVICE UNAVAILABLE"))
+                empty = isinstance(exc, EmptyModelResponse)
+                empty_retry = empty
                 malformed = (
-                    isinstance(exc, (ValidationError, json.JSONDecodeError))
+                    empty
+                    or isinstance(exc, (ValidationError, json.JSONDecodeError))
                     or "JSON_INVALID" in upper
                     or "INVALID JSON" in upper
                 )
@@ -372,6 +514,7 @@ def generate_json(contents, schema, model: str | None = None, temperature: float
                     reason = (
                         "rate limited" if rate_limited
                         else "timed out" if timed_out
+                        else "returned an empty response" if empty
                         else "returned malformed JSON" if malformed
                         else "service error"
                     )

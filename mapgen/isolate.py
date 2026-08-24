@@ -32,11 +32,10 @@ import numpy as np
 from pydantic import BaseModel, Field, model_validator
 
 from .semantics import (
-    API_TIMEOUT_MS,
     encode_for_model,
+    generate_json,
     DEFAULT_MODEL,
     MapSemantics,
-    _ensure_api_key,
     require_pipeline_eligible,
 )
 
@@ -71,7 +70,12 @@ as [y_min, x_min, y_max, x_max], normalized to 0-1000.
 
 
 class LayoutBox(BaseModel):
-    box_2d: list[int] = Field(description="[y_min, x_min, y_max, x_max] normalized to 0-1000")
+    # The length bounds are load-bearing: with the schema supplied as text
+    # (the Gemma path), Pydantic is the only validator, and box_to_px unpacks
+    # exactly four values.  A wrong-length box must fail validation so the
+    # model call retries instead of crashing Step 2 mid-run.
+    box_2d: list[int] = Field(min_length=4, max_length=4,
+                              description="[y_min, x_min, y_max, x_max] normalized to 0-1000")
     label: str
 
 
@@ -97,38 +101,19 @@ class MapLayout(BaseModel):
 
 
 def detect_layout(image_path: Path, model: str | None = None) -> MapLayout:
-    from google import genai
     from google.genai import types
 
-    _ensure_api_key()
     # The boxes come back normalized to 0-1000 and are mapped onto the original
     # pixels below, so showing the model a downscaled copy costs no accuracy and
     # keeps a large scan from timing out on upload and inference.
     data, mime = encode_for_model(image_path)
-    # Without an explicit deadline a stalled request never returns and the whole
-    # pipeline waits on it; Step 1 already uses this same budget.
-    client = genai.Client(http_options=types.HttpOptions(timeout=API_TIMEOUT_MS))
-    last_error: Exception | None = None
-    for attempt in range(LAYOUT_RETRIES + 1):
-        try:
-            response = client.models.generate_content(
-                model=model or os.environ.get("GEMINI_MODEL", DEFAULT_MODEL),
-                contents=[types.Part.from_bytes(data=data, mime_type=mime), LAYOUT_PROMPT],
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=MapLayout,
-                    temperature=0.0,
-                ),
-            )
-            layout = response.parsed
-            if not isinstance(layout, MapLayout):
-                layout = MapLayout.model_validate_json(response.text)
-            return layout
-        except Exception as exc:  # transient deadline/5xx: one more try
-            last_error = exc
-            if attempt >= LAYOUT_RETRIES:
-                raise
-    raise last_error  # unreachable, kept for the type checker
+    # generate_json owns every model call: the shared deadline, the retry
+    # classification, and the Gemma path that supplies the response schema as
+    # text because Gemma's server-side response_schema option stalls into
+    # DEADLINE_EXCEEDED.  Step 1 has always gone through it; Step 2 must too.
+    return generate_json(
+        [types.Part.from_bytes(data=data, mime_type=mime), LAYOUT_PROMPT],
+        MapLayout, model=model, temperature=0.0, retries=LAYOUT_RETRIES)
 
 
 # --------------------------------------------------------------------------- cv helpers
@@ -975,7 +960,130 @@ def detect_swatches(
     labels: list[str] | None = None,
     ordered: bool = False,
 ) -> tuple[list[tuple[int, int, int, int]], list[str]]:
-    """Find legend color swatches; returns rects in reading (column-major) order."""
+    """Find legend color swatches; returns rects in reading (column-major) order.
+
+    A small scan's legend crop can hold swatches only a few pixels tall, which
+    the erosion-based uniformity tests reject wholesale.  When detection at
+    the native size does not produce the expected count on such a crop, retry
+    on an upscaled copy and map the rectangles back; the upscale result is
+    only trusted when it matches the expected count exactly, so behaviour on
+    every legend that already worked is unchanged.
+    """
+    rects, warnings = _detect_swatches_at_scale(legend_bgr, expected, labels, ordered)
+    if len(rects) == expected:
+        return rects, warnings
+    lh, lw = legend_bgr.shape[:2]
+    if min(lh, lw) < 400:
+        # A micro legend (TCD's colour ramp is 37 px wide) can need more than
+        # 4x before the cell structure is measurable; exact-count acceptance
+        # keeps the larger scales as safe as the smaller ones.
+        for scale in (3, 4, 6):
+            upscaled = cv2.resize(legend_bgr, None, fx=scale, fy=scale,
+                                  interpolation=cv2.INTER_CUBIC)
+            up_rects, up_warn = _detect_swatches_at_scale(
+                upscaled, expected, labels, ordered)
+            if len(up_rects) == expected:
+                back = [(x // scale, y // scale,
+                         max(1, w // scale), max(1, h // scale))
+                        for x, y, w, h in up_rects]
+                return back, warnings + up_warn + [
+                    f"detected swatches on a {scale}x upscaled legend crop"]
+    # Structure as the last arbiter: real swatches form one column on a regular
+    # pitch, text fragments and stray blobs do not.  Still exact-count gated.
+    grid = _column_grid_swatches(legend_bgr, expected, rects)
+    if grid is not None:
+        grid_rects, grid_warn = grid
+        return grid_rects, warnings + grid_warn
+    return rects, warnings
+
+
+def _column_grid_swatches(
+    legend_bgr: np.ndarray,
+    expected: int,
+    candidates: list[tuple[int, int, int, int]],
+) -> tuple[list[tuple[int, int, int, int]], list[str]] | None:
+    """Recover a single-column legend from its grid structure.
+
+    Keeps the cohort of candidates that share the column's x-position and the
+    (taller) modal height, infers the vertical pitch, and fills the grid holes
+    whose pixels are a uniform non-paper fill -- which recovers swatches the
+    contour pass lost to text fusion while rejecting text fragments (wrong
+    column, wrong height) and outline-only rows (paper interior).  Only a
+    reconstruction matching the expected count exactly is returned.
+    """
+    if len(candidates) < 4:
+        return None
+    heights = sorted(rect[3] for rect in candidates)
+    tall = heights[len(heights) // 2:]          # text fragments skew small
+    med_h = tall[len(tall) // 2]
+    cohort = [rect for rect in candidates if rect[3] >= 0.75 * med_h]
+    if len(cohort) < 3:
+        return None
+    xs = sorted(rect[0] for rect in cohort)
+    med_x = xs[len(xs) // 2]
+    widths = sorted(rect[2] for rect in cohort)
+    med_w = widths[len(widths) // 2]
+    cohort = [rect for rect in cohort if abs(rect[0] - med_x) <= 0.5 * med_w]
+    if len(cohort) < 3 or len(cohort) > expected:
+        return None
+    cohort.sort(key=lambda rect: rect[1])
+    centers = [rect[1] + rect[3] / 2 for rect in cohort]
+    gaps = sorted(second - first for first, second in zip(centers, centers[1:]))
+    pitches = [gap for gap in gaps if gap >= 0.8 * med_h]
+    if not pitches:
+        return None
+    pitch = pitches[len(pitches) // 2]
+
+    lab = to_lab(legend_bgr)
+    height, width = legend_bgr.shape[:2]
+    bg = border_median_lab(lab, strip=max(2, min(height, width) // 50))
+
+    def looks_like_fill(y: int) -> bool:
+        x0, x1 = med_x + med_w // 4, med_x + med_w - med_w // 4
+        y0, y1 = y + med_h // 4, y + med_h - med_h // 4
+        if y0 < 0 or y1 > height or x1 <= x0 or y1 <= y0:
+            return False
+        patch = lab[y0:y1, x0:x1]
+        if patch.size == 0 or not _uniform(patch, tol=9.0):
+            return False
+        median = np.median(patch.reshape(-1, 3), axis=0)
+        return float(np.linalg.norm(median - bg)) >= 4
+
+    base = centers[0]
+    result: dict[int, tuple[int, int, int, int]] = {}
+    for rect, center in zip(cohort, centers):
+        result[round((center - base) / pitch)] = rect
+    for index in range(min(result), max(result)):
+        if index not in result:
+            y = int(round(base + index * pitch - med_h / 2))
+            if looks_like_fill(y):
+                result[index] = (med_x, y, med_w, med_h)
+    step_down, step_up = max(result) + 1, min(result) - 1
+    while len(result) < expected:
+        grew = False
+        for index in (step_down, step_up):
+            if len(result) >= expected:
+                break
+            y = int(round(base + index * pitch - med_h / 2))
+            if 0 <= y and y + med_h <= height and looks_like_fill(y):
+                result[index] = (med_x, y, med_w, med_h)
+                grew = True
+        step_down += 1
+        step_up -= 1
+        if not grew:
+            break
+    if len(result) != expected:
+        return None
+    rects = [result[key] for key in sorted(result)]
+    return rects, [f"reconstructed a {expected}-swatch legend column from its grid structure"]
+
+
+def _detect_swatches_at_scale(
+    legend_bgr: np.ndarray,
+    expected: int,
+    labels: list[str] | None = None,
+    ordered: bool = False,
+) -> tuple[list[tuple[int, int, int, int]], list[str]]:
     if ordered and labels:
         colorbar = detect_horizontal_colorbar(legend_bgr, expected, labels)
         if colorbar is not None:
@@ -1124,6 +1232,11 @@ def sample_swatch(legend_bgr: np.ndarray, rect: tuple[int, int, int, int]) -> tu
 # --------------------------------------------------------------------------- runner
 
 DELTA_E_WARN = 10.0
+# Below this LAB distance two sampled classes (or a class and the paper) are
+# not a printed palette but a detection artifact: every healthy run in this
+# project separates its classes by >= 10, while glyph legends and mis-split
+# grids sample at 0-2.2.
+MIN_CLASS_SEPARATION = 3.0
 
 
 class LegendSwatchDetectionError(ValueError):
@@ -1296,6 +1409,29 @@ def run_step2(image_path: Path, model: str | None = None, runs_dir: Path = Path(
                         f"low color contrast (dE={de:.1f}) between "
                         f"'{sampled[i][0]}' and '{sampled[j][0]}' -- Step 4 may conflate them"
                     )
+        # Counts can match while the colours cannot: a symbol-glyph legend
+        # yields near-identical ink samples, and a mis-split grid samples the
+        # same cell twice or bare paper.  No printed legend gives two classes
+        # the same ink, so treat such a palette as a failed detection rather
+        # than handing Step 4 an assignment it cannot make.
+        paper = border_median_lab(
+            to_lab(legend_img), strip=max(2, min(legend_img.shape[:2]) // 50))
+        papery = [label for label, lab_value in sampled
+                  if float(np.linalg.norm(lab_value - paper)) < MIN_CLASS_SEPARATION]
+        colliding = sorted({
+            label
+            for i in range(len(sampled)) for j in range(i + 1, len(sampled))
+            if float(np.linalg.norm(sampled[i][1] - sampled[j][1])) < MIN_CLASS_SEPARATION
+            for label in (sampled[i][0], sampled[j][0])})
+        if papery or colliding:
+            named = ", ".join(f"'{label}'" for label in (papery or colliding)[:4])
+            reason = ("sampled as bare paper" if papery
+                      else "sampled with indistinguishable colors")
+            raise LegendSwatchDetectionError(
+                f"Step 2 cannot continue: legend entries {named} were {reason}, "
+                "so regions cannot be assigned to classes by color. The legend "
+                "likely uses symbols or merged swatches; inspect the legend crop "
+                "or rerun Step 1.")
     elif sem.legend_present:
         # Continuing here would hand Step 4 an empty palette and fail later with
         # a message about missing seeds, far from the actual cause.  The legend

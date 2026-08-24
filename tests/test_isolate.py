@@ -322,5 +322,43 @@ class LegendDetectionTests(unittest.TestCase):
         self.assertEqual(len({tuple(rgb) for rgb in sampled}), 16)
 
 
+class ColumnGridReconstructionTests(unittest.TestCase):
+    """A single-column legend can be recovered from its grid structure when
+    the contour pass loses swatches to text fusion and gains text fragments."""
+
+    @staticmethod
+    def _legend():
+        """13 fill rows at pitch 19 under one outline-only row, like a real
+        land-cover legend; text is simulated by thin blobs beside the column."""
+        legend = np.full((300, 150, 3), 255, np.uint8)
+        cv2.rectangle(legend, (3, 20), (39, 36), (0, 0, 0), 1)   # outline row
+        colors = [(30 + 15 * i, 90, 220 - 12 * i) for i in range(13)]
+        for row, color in enumerate(colors):
+            y = 41 + row * 19
+            cv2.rectangle(legend, (3, y), (39, y + 16), color, -1)
+        return legend
+
+    def test_grid_completion_recovers_lost_swatches_and_drops_fragments(self):
+        from mapgen.isolate import _column_grid_swatches
+        legend = self._legend()
+        found = [(3, 41 + row * 19, 36, 16) for row in range(13) if row not in (5, 6, 7)]
+        fragments = [(45, 46, 40, 9), (45, 103, 50, 9), (90, 103, 54, 9)]
+        result = _column_grid_swatches(legend, 13, found + fragments)
+        self.assertIsNotNone(result)
+        rects, warnings = result
+        self.assertEqual(len(rects), 13)
+        self.assertEqual([rect[1] for rect in rects],
+                         [41 + row * 19 for row in range(13)])
+        self.assertTrue(any("grid structure" in warning for warning in warnings))
+
+    def test_an_outline_only_row_is_never_reconstructed_as_a_swatch(self):
+        """Expecting one more class than the column holds must fail, not
+        promote the paper-interior outline row above the column."""
+        from mapgen.isolate import _column_grid_swatches
+        legend = self._legend()
+        found = [(3, 41 + row * 19, 36, 16) for row in range(13) if row not in (5,)]
+        self.assertIsNone(_column_grid_swatches(legend, 14, found))
+
+
 if __name__ == "__main__":
     unittest.main()
