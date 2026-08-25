@@ -4,10 +4,15 @@ import cv2
 import numpy as np
 
 from mapgen.isolate import (
+    MapLayout,
+    border_median_lab,
     detect_swatches,
+    legend_paper_lab,
     prepare_text_input,
+    recover_legend_box,
     refine_map_mask,
     sample_swatch,
+    to_lab,
 )
 
 
@@ -358,6 +363,212 @@ class ColumnGridReconstructionTests(unittest.TestCase):
         legend = self._legend()
         found = [(3, 41 + row * 19, 36, 16) for row in range(13) if row not in (5,)]
         self.assertIsNone(_column_grid_swatches(legend, 14, found))
+
+
+
+class LegendPaperEstimationTests(unittest.TestCase):
+    """A legend box cut from a map sheet often catches map content on one or
+    two sides.  Pooling all four borders then lands between paper and map, and
+    every paper pixel reads as foreground (the Africa ethnolinguistic sheet)."""
+
+    @staticmethod
+    def _legend_with_sea_on_two_sides():
+        legend = np.full((400, 300, 3), 250, np.uint8)   # near-white paper
+        legend[:26, :] = (240, 195, 165)                 # sea along the top
+        legend[:, :26] = (240, 195, 165)                 # sea along the left
+        colors_bgr = [(30, 60, 210), (40, 180, 70), (210, 120, 30), (60, 60, 60)]
+        for i, color in enumerate(colors_bgr):
+            y = 60 + i * 70
+            cv2.rectangle(legend, (60, y), (110, y + 34), color, -1)
+        return legend, colors_bgr
+
+    def test_contaminated_sides_are_dropped_from_the_paper_estimate(self):
+        legend, _ = self._legend_with_sea_on_two_sides()
+        lab = to_lab(legend)
+        strip = max(2, min(legend.shape[:2]) // 50)
+        pooled = border_median_lab(lab, strip)
+        paper = legend_paper_lab(lab, strip)
+        white = to_lab(np.full((1, 1, 3), 250, np.uint8))[0, 0]
+
+        self.assertGreater(float(np.linalg.norm(pooled - white)), 8.0)
+        self.assertLess(float(np.linalg.norm(paper - white)), 2.0)
+
+    def test_swatches_survive_map_content_bleeding_into_the_crop(self):
+        legend, colors_bgr = self._legend_with_sea_on_two_sides()
+        labels = ["one", "two", "three", "four"]
+
+        rects, _ = detect_swatches(legend, len(labels), labels=labels)
+
+        self.assertEqual(len(rects), len(colors_bgr))
+        sampled = [tuple(sample_swatch(legend, rect)[0]) for rect in rects]
+        self.assertEqual(
+            sorted(sampled), sorted(tuple(c[::-1]) for c in colors_bgr))
+
+    def test_an_inset_legend_with_no_paper_keeps_the_border_median(self):
+        """All four sides agree on the map colour, so nothing is dropped."""
+        legend = np.full((300, 240, 3), (150, 190, 120), np.uint8)
+        cv2.rectangle(legend, (40, 40), (90, 74), (30, 60, 210), -1)
+        cv2.rectangle(legend, (40, 120), (90, 154), (210, 120, 30), -1)
+        lab = to_lab(legend)
+        strip = max(2, min(legend.shape[:2]) // 50)
+
+        self.assertLess(
+            float(np.linalg.norm(
+                legend_paper_lab(lab, strip) - border_median_lab(lab, strip))),
+            0.5)
+
+
+
+def _table_legend(rows=12, swatch=(24, 13), body_rows=3):
+    """A legend keyed inside a dense data table (the Africa ethnolinguistic
+    sheet keys 15 families inside a 1200-row ethnographic table).
+
+    Body text is drawn as the solid blobs the detector actually sees: at scan
+    resolution the letters of a word merge under the colour threshold into one
+    filled, uniform, swatch-shaped component about half a swatch tall.  Those
+    blobs outnumber the swatches roughly ten to one, which is what pulls the
+    median candidate size down to a letter.
+    """
+    page = np.full((760, 560, 3), 252, np.uint8)
+    palette = [(40, 60, 200), (60, 170, 80), (200, 130, 40), (150, 80, 170),
+               (70, 170, 200), (110, 110, 60), (200, 90, 140), (90, 140, 60),
+               (170, 100, 200), (60, 100, 150), (140, 160, 70), (200, 60, 60)]
+    ink = (38, 38, 38)
+    sw, sh = swatch
+    for i in range(rows):
+        y = 30 + i * 60
+        cv2.rectangle(page, (40, y), (40 + sw, y + sh), palette[i % len(palette)], -1)
+        cv2.rectangle(page, (40, y), (40 + sw, y + sh), (60, 60, 60), 1)
+        # the family heading beside the swatch, then the body rows beneath it
+        cv2.rectangle(page, (76, y + 2), (76 + 58, y + 2 + 7), ink, -1)
+        for k in range(1, body_rows + 1):
+            ty = y + 2 + k * 13
+            for cx, cw in ((76, 26), (112, 17), (140, 30), (182, 22), (216, 26)):
+                cv2.rectangle(page, (cx, ty), (cx + cw, ty + 6), ink, -1)
+    return page, rows
+
+
+class DenseTableLegendTests(unittest.TestCase):
+    """The median candidate is the right swatch-size consensus only while
+    swatches outnumber text.  A legend printed inside a data table inverts
+    that, and every real swatch was then discarded as an oversized outlier."""
+
+    def test_swatches_are_found_among_far_more_text_than_swatches(self):
+        page, rows = _table_legend()
+
+        rects, _ = detect_swatches(page, rows, labels=["r%d" % i for i in range(rows)])
+
+        self.assertEqual(len(rects), rows)
+        # every rect must be a swatch box, not a word: swatches share one size
+        self.assertLessEqual(max(r[3] for r in rects) - min(r[3] for r in rects), 3)
+        self.assertTrue(all(r[0] < 70 for r in rects), "rects drifted into the text column")
+
+    def test_a_run_of_body_text_is_not_split_into_a_swatch(self):
+        """_split_merged reconstructs a leading rectangle from a wide blob; a
+        text run is wider than a swatch and about half its height."""
+        page, rows = _table_legend()
+        # a long unbroken rule the same height as the body text
+        cv2.rectangle(page, (76, 700), (250, 707), (40, 40, 40), -1)
+
+        rects, _ = detect_swatches(page, rows, labels=["r%d" % i for i in range(rows)])
+
+        self.assertEqual(len(rects), rows)
+        self.assertFalse(any(r[1] >= 695 for r in rects))
+
+
+class LegendBoxRecoveryTests(unittest.TestCase):
+    """A legend printed as a data table comes back from the layout call under
+    `other`, so Step 2 saw no legend box at all and stopped."""
+
+    @staticmethod
+    def _layout(other_boxes):
+        return MapLayout.model_validate({
+            "map_areas": [{"box_2d": [0, 0, 500, 500], "label": "mainland"}],
+            "legend": None, "title": None, "scale_bar": None, "north_arrow": None,
+            "other": other_boxes,
+        })
+
+    def _page(self):
+        page = np.full((1000, 1200, 3), 252, np.uint8)
+        table, rows = _table_legend()
+        page[120:880, 40:600] = table
+        return page, rows
+
+    def test_the_legend_is_recovered_from_an_other_box(self):
+        page, rows = self._page()
+        layout = self._layout([
+            {"box_2d": [120, 33, 880, 500], "label": "ethnographic_table"},
+            {"box_2d": [10, 10, 40, 60], "label": "logo"},
+        ])
+
+        box, warnings = recover_legend_box(page, layout, rows, False)
+
+        self.assertIsNotNone(box)
+        self.assertTrue(any("ethnographic_table" in w for w in warnings))
+        x0, y0, x1, y1 = box
+        rects, _ = detect_swatches(page[y0:y1, x0:x1], rows,
+                                   labels=["r%d" % i for i in range(rows)])
+        self.assertEqual(len(rects), rows)
+
+    def test_a_box_that_is_not_a_legend_is_never_guessed(self):
+        page, rows = self._page()
+        layout = self._layout([{"box_2d": [10, 10, 60, 120], "label": "notes"}])
+
+        box, warnings = recover_legend_box(page, layout, rows, False)
+
+        self.assertIsNone(box)
+        self.assertEqual(warnings, [])
+
+    def test_nothing_is_recovered_when_step_1_transcribed_no_entries(self):
+        """expected == 0 would otherwise match any empty box."""
+        page, _ = self._page()
+        layout = self._layout([{"box_2d": [120, 33, 880, 500], "label": "table"}])
+
+        self.assertEqual(recover_legend_box(page, layout, 0, False), (None, []))
+
+
+
+class LayoutSingularBoxTests(unittest.TestCase):
+    """Gemma answers the singular box fields with a one-element list about as
+    often as with the object the schema asks for, and the whole Step 2 layout
+    call then died in validation over the wrapper."""
+
+    BASE = {
+        "map_areas": [{"box_2d": [0, 0, 961, 1000], "label": "mainland"}],
+        "legend": None, "title": None, "scale_bar": None,
+        "north_arrow": None, "other": [],
+    }
+
+    def test_a_one_element_list_is_unwrapped(self):
+        layout = MapLayout.model_validate({
+            **self.BASE,
+            "legend": [{"box_2d": [538, 13, 975, 363], "label": "legend"}],
+            "title": [{"box_2d": [10, 774, 50, 931], "label": "title"}],
+            "scale_bar": [{"box_2d": [88, 815, 118, 950], "label": "scale_bar"}],
+        })
+
+        self.assertEqual(layout.legend.box_2d, [538, 13, 975, 363])
+        self.assertEqual(layout.title.label, "title")
+        self.assertEqual(layout.scale_bar.label, "scale_bar")
+
+    def test_several_boxes_keep_the_largest(self):
+        """A fragmented answer splits the legend into panels; the whole legend
+        is the one to sample, not a corner of it."""
+        layout = MapLayout.model_validate({**self.BASE, "legend": [
+            {"box_2d": [0, 0, 20, 20], "label": "corner"},
+            {"box_2d": [500, 0, 900, 400], "label": "whole"},
+        ]})
+
+        self.assertEqual(layout.legend.label, "whole")
+
+    def test_an_empty_list_reads_as_absent(self):
+        layout = MapLayout.model_validate({**self.BASE, "north_arrow": []})
+        self.assertIsNone(layout.north_arrow)
+
+    def test_the_documented_object_shape_is_untouched(self):
+        layout = MapLayout.model_validate({
+            **self.BASE, "legend": {"box_2d": [1, 2, 3, 4], "label": "plain"}})
+        self.assertEqual(layout.legend.label, "plain")
 
 
 if __name__ == "__main__":

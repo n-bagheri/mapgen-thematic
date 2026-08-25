@@ -63,6 +63,11 @@ as [y_min, x_min, y_max, x_max], normalized to 0-1000.
   An unframed detached island is not an inset.
 - legend: tight box around the legend (color swatches + their labels + the
   legend heading). null if there is no legend.
+- A legend is whatever keys the map's colors, however it is printed. It is
+  still the legend when the swatches sit inside a large data table with many
+  columns and hundreds of rows of supporting detail: box the whole table.
+  Return it as legend, never in other, whenever it carries color swatches
+  that match colors used on the map.
 - title, scale_bar, north_arrow: when present, else null.
 - other: inset maps, notes, logos, coordinate labels or anything else that is
   not map content, each with a short label.
@@ -97,6 +102,22 @@ class MapLayout(BaseModel):
         if isinstance(data, dict) and "map_areas" not in data and data.get("map_area"):
             data = {**data, "map_areas": [data["map_area"]]}
             data.pop("map_area", None)
+        # Gemma answers the singular box fields with a one-element list about as
+        # often as with the object the schema asks for, and the whole layout
+        # call then fails validation over a wrapper.  Unwrap it: with several
+        # boxes keep the largest, which is the legend itself rather than one of
+        # the panels a fragmented answer splits it into.
+        if isinstance(data, dict):
+            data = {**data}
+            for field in ("legend", "title", "scale_bar", "north_arrow"):
+                value = data.get(field)
+                if isinstance(value, list):
+                    boxes = [b for b in value if isinstance(b, dict) and b.get("box_2d")]
+                    data[field] = max(
+                        boxes,
+                        key=lambda b: ((b["box_2d"][2] - b["box_2d"][0])
+                                       * (b["box_2d"][3] - b["box_2d"][1])),
+                    ) if boxes else None
         return data
 
 
@@ -174,6 +195,36 @@ def box_to_px(box: LayoutBox, w: int, h: int, pad_frac: float = 0.0) -> tuple[in
 def border_median_lab(lab: np.ndarray, strip: int = 10) -> np.ndarray:
     parts = [lab[:strip], lab[-strip:], lab[:, :strip], lab[:, -strip:]]
     return np.median(np.concatenate([p.reshape(-1, 3) for p in parts]), axis=0)
+
+
+# A legend side counts as background when it would not read as foreground
+# against the best side, using the same delta-E the swatch masks use.
+PAPER_SIDE_TOLERANCE = 10.0
+
+
+def legend_paper_lab(lab: np.ndarray, strip: int = 10) -> np.ndarray:
+    """Background Lab of a legend crop, ignoring sides that caught map content.
+
+    A legend box cut from a map sheet often includes map content along one or
+    two sides: the Africa ethnolinguistic sheet puts sea above and to the left
+    of its legend table.  Pooling all four borders then returns a median
+    halfway between paper and sea that matches no pixel at all -- every paper
+    pixel reads as foreground, the crop collapses into a single blob, and no
+    swatch survives the size filter.  A legend is mostly its own background,
+    so rank the sides by agreement with the crop's dominant colour and pool
+    only those that agree with the best one.  An inset legend printed straight
+    onto the map has no paper, but all four of its sides then agree on the map
+    colour and the result is the plain border median.
+    """
+    sides = [lab[:strip], lab[-strip:], lab[:, :strip], lab[:, -strip:]]
+    medians = [np.median(side.reshape(-1, 3), axis=0) for side in sides]
+    inner = lab[strip:-strip, strip:-strip] if min(lab.shape[:2]) > 4 * strip else lab
+    dominant = np.median(inner.reshape(-1, 3), axis=0)
+    best = min(medians, key=lambda m: float(np.linalg.norm(m - dominant)))
+    agreeing = [side for side, median in zip(sides, medians)
+                if float(np.linalg.norm(median - best)) <= PAPER_SIDE_TOLERANCE]
+    return np.median(
+        np.concatenate([side.reshape(-1, 3) for side in agreeing]), axis=0)
 
 
 NAMED_COLORS = {  # semantic color hints used for water recovery in Step 4
@@ -578,7 +629,7 @@ def detect_horizontal_colorbar(
         return None
     lh, lw = legend_bgr.shape[:2]
     lab = to_lab(legend_bgr)
-    bg = border_median_lab(lab, strip=max(2, min(lh, lw) // 50))
+    bg = legend_paper_lab(lab, strip=max(2, min(lh, lw) // 50))
     binmask = (np.linalg.norm(lab - bg, axis=2) > 8).astype(np.uint8)
     binmask = cv2.morphologyEx(binmask, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
     contours, _ = cv2.findContours(binmask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -1036,7 +1087,7 @@ def _column_grid_swatches(
 
     lab = to_lab(legend_bgr)
     height, width = legend_bgr.shape[:2]
-    bg = border_median_lab(lab, strip=max(2, min(height, width) // 50))
+    bg = legend_paper_lab(lab, strip=max(2, min(height, width) // 50))
 
     def looks_like_fill(y: int) -> bool:
         x0, x1 = med_x + med_w // 4, med_x + med_w - med_w // 4
@@ -1078,6 +1129,48 @@ def _column_grid_swatches(
     return rects, [f"reconstructed a {expected}-swatch legend column from its grid structure"]
 
 
+# A legend prints its swatches at one size, so a cohort +-30% wide holds all of
+# them and little else.
+SWATCH_COHORT_TOL = 0.70
+
+
+def _swatch_size_consensus(
+    cands: list[tuple[int, int, int, int]], expected: int,
+) -> tuple[float, float]:
+    """The swatch size the candidates agree on, not the median candidate.
+
+    The median is the right consensus only while swatches dominate the
+    candidate set.  A legend keyed inside a dense data table inverts that: the
+    Africa ethnolinguistic sheet prints 15 family swatches among a 1200-row
+    ethnographic table, so ~110 of ~126 candidates are text strokes, the median
+    candidate is a letter six pixels tall, and every real swatch is then
+    discarded as an oversized outlier.  Score the cohort each observed size
+    would admit and keep the tightest one that still covers every transcribed
+    entry.  Ties go to the box with the larger short side: a swatch is a filled
+    area, while the runs of body text and the bold headings it is being
+    separated from are thin strips, and a wide heading can otherwise form a
+    cohort of exactly the right size.
+    """
+    median = (float(np.median([r[2] for r in cands])),
+              float(np.median([r[3] for r in cands])))
+    if len(cands) <= expected:
+        return median
+    best: tuple[tuple[int, int, int], list[tuple[int, int, int, int]]] | None = None
+    for w, h in {(r[2], r[3]) for r in cands}:
+        cohort = [r for r in cands
+                  if SWATCH_COHORT_TOL * w <= r[2] <= w / SWATCH_COHORT_TOL
+                  and SWATCH_COHORT_TOL * h <= r[3] <= h / SWATCH_COHORT_TOL]
+        if len(cohort) < expected:
+            continue
+        key = (len(cohort), -min(w, h), -(w * h))
+        if best is None or key < best[0]:
+            best = (key, cohort)
+    if best is None:
+        return median
+    return (float(np.median([r[2] for r in best[1]])),
+            float(np.median([r[3] for r in best[1]])))
+
+
 def _detect_swatches_at_scale(
     legend_bgr: np.ndarray,
     expected: int,
@@ -1097,7 +1190,7 @@ def _detect_swatches_at_scale(
 
     lh, lw = legend_bgr.shape[:2]
     lab = to_lab(legend_bgr)
-    bg = border_median_lab(lab, strip=max(2, min(lh, lw) // 50))
+    bg = legend_paper_lab(lab, strip=max(2, min(lh, lw) // 50))
     raw = (np.linalg.norm(lab - bg, axis=2) > 10).astype(np.uint8)
 
     # Closing bridges the anti-aliasing gap inside a swatch, but on a tight
@@ -1137,16 +1230,21 @@ def _detect_swatches_at_scale(
     if not cands:
         return [], ["no legend swatches detected"]
 
-    med_w = float(np.median([r[2] for r in cands]))
-    med_h = float(np.median([r[3] for r in cands]))
+    med_w, med_h = _swatch_size_consensus(cands, expected)
 
-    # size consistency: letter bodies and specks are far off the median swatch
+    # size consistency: letter bodies and specks are far off the consensus swatch
     cands = [r for r in cands
              if 0.55 * med_w <= r[2] <= 2.5 * med_w and 0.55 * med_h <= r[3] <= 2.5 * med_h]
-    # merged blobs were size-rejected above; try to split them back into swatches
+    # merged blobs were size-rejected above; try to split them back into swatches.
+    # What the splitter hands back is only a swatch if it matches the size the
+    # rest of the legend agreed on: a run of body text is wider than a swatch
+    # and about half its height, so without this it reconstructs the leading
+    # word of a table row as one more swatch.
     recovered = 0
     for r in rejected_size:
-        subs = _split_merged(binmask, lab, r, med_w, med_h, bg)
+        subs = [s for s in _split_merged(binmask, lab, r, med_w, med_h, bg)
+                if SWATCH_COHORT_TOL * med_w <= s[2] <= med_w / SWATCH_COHORT_TOL
+                and SWATCH_COHORT_TOL * med_h <= s[3] <= med_h / SWATCH_COHORT_TOL]
         recovered += len(subs)
         cands += subs
     if recovered:
@@ -1239,6 +1337,35 @@ DELTA_E_WARN = 10.0
 MIN_CLASS_SEPARATION = 3.0
 
 
+def recover_legend_box(
+    img: np.ndarray, layout: MapLayout, expected: int, ordered: bool,
+) -> tuple[tuple[int, int, int, int] | None, list[str]]:
+    """Find the legend among the boxes the layout call filed elsewhere.
+
+    The layout prompt asks for the legend as swatches plus labels, so a legend
+    printed as a data table is routinely returned under `other` instead -- the
+    Africa ethnolinguistic sheet keys its 15 families inside a full-page
+    ethnographic table and the call labels it `ethnographic_table`.  Step 1
+    still transcribed the entries, so the palette is recoverable: re-read each
+    non-map box and keep one only when it yields exactly the swatches Step 1
+    counted.  An exact match is the whole test -- a notes block or a logo
+    yields nothing like the transcribed count, so nothing is guessed.
+    """
+    if expected < 1:
+        return None, []   # nothing to match against; an empty box would "match"
+    h, w = img.shape[:2]
+    for box in layout.other:
+        x0, y0, x1, y1 = box_to_px(box, w, h)
+        if x1 - x0 < 16 or y1 - y0 < 16:
+            continue
+        rects, _ = detect_swatches(img[y0:y1, x0:x1], expected, ordered=ordered)
+        if len(rects) == expected:
+            return (x0, y0, x1, y1), [
+                f"recovered the legend from the '{box.label}' box the layout "
+                f"call returned under other"]
+    return None, []
+
+
 class LegendSwatchDetectionError(ValueError):
     """Raised instead of emitting a partial or misaligned legend palette."""
 
@@ -1248,6 +1375,14 @@ def run_step2(image_path: Path, model: str | None = None, runs_dir: Path = Path(
 
     out_dir = runs_dir / image_path.stem
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Step 2 writes its palette last, so every failure below this point used to
+    # leave the previous run's classes.json and geometry.json in place. Step 4
+    # reads both without a freshness check, so a stale empty palette silently
+    # became a map with no thematic classes instead of a stopped pipeline.
+    # Retire them up front: a Step 2 that does not finish leaves no palette.
+    (out_dir / "classes.json").unlink(missing_ok=True)
+    (out_dir / "geometry.json").unlink(missing_ok=True)
 
     sem_path = out_dir / "step1_semantics.json"
     if sem_path.exists():
@@ -1317,6 +1452,12 @@ def run_step2(image_path: Path, model: str | None = None, runs_dir: Path = Path(
     legend_box = None
     if layout.legend is not None:
         legend_box = box_to_px(layout.legend, w, h)
+    elif sem.legend_present:
+        legend_box, recovery_warnings = recover_legend_box(
+            img, layout, len([e for e in sem.legend_entries if e.is_thematic]),
+            sem.data_ordering.value == "ordered")
+        warnings += recovery_warnings
+    if legend_box is not None:
         lx0, ly0, lx1, ly1 = legend_box
         legend_img = img[ly0:ly1, lx0:lx1]
         imwrite(out_dir / "legend.png", legend_img)
@@ -1414,7 +1555,7 @@ def run_step2(image_path: Path, model: str | None = None, runs_dir: Path = Path(
         # same cell twice or bare paper.  No printed legend gives two classes
         # the same ink, so treat such a palette as a failed detection rather
         # than handing Step 4 an assignment it cannot make.
-        paper = border_median_lab(
+        paper = legend_paper_lab(
             to_lab(legend_img), strip=max(2, min(legend_img.shape[:2]) // 50))
         papery = [label for label, lab_value in sampled
                   if float(np.linalg.norm(lab_value - paper)) < MIN_CLASS_SEPARATION]

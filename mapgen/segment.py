@@ -28,7 +28,10 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .isolate import imread, imwrite, thinning, to_lab, NAMED_COLORS, _NAMED_LAB
+from .isolate import (
+    imread, imwrite, thinning, to_lab, LegendSwatchDetectionError,
+    NAMED_COLORS, _NAMED_LAB,
+)
 from .semantics import MapSemantics, require_pipeline_eligible
 
 UNSEEDED_DELTA = 16.0   # pixel farther than this from every seed -> needs a new cluster
@@ -892,6 +895,17 @@ def run_step4(image_path: Path, model: str | None = None, runs_dir: Path = Path(
     require_pipeline_eligible(sem, "Step 4")
     geo = json.loads((out_dir / "geometry.json").read_text(encoding="utf-8"))
     classes_json = json.loads((out_dir / "classes.json").read_text(encoding="utf-8"))
+    # Without legend seeds every content pixel falls through to the unseeded
+    # k-means, which invents a handful of non-thematic "unlabelled" classes.
+    # Step 5 then keeps them as one no-fill background and the map renders as a
+    # single flat blob. That is a broken Step 2 palette, not a map with no
+    # classes, so stop here rather than producing a plausible-looking result.
+    if not any(cl.get("lab") for cl in classes_json["classes"]):
+        raise LegendSwatchDetectionError(
+            "Step 4 cannot continue: classes.json carries no legend colour, so "
+            "no pixel could be assigned to a class. Re-run Step 2 to rebuild the "
+            "palette from the legend."
+        )
     img = imread(out_dir / "map_area.png")
     h, w = img.shape[:2]
     mask = imread(out_dir / "map_mask.png")[..., 0]
