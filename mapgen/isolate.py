@@ -43,34 +43,24 @@ LAYOUT_RETRIES = 1  # a deadline or 5xx on this call is usually transient
 
 # --------------------------------------------------------------------------- layout call
 
-LAYOUT_PROMPT = """\
-Locate the layout elements of this thematic map image. Return bounding boxes
+LAYOUT_PROMPT = """\nLocate the layout elements of this thematic map image. Return bounding boxes
 as [y_min, x_min, y_max, x_max], normalized to 0-1000.
 
-- map_areas: return ONE SEPARATE BOX for EACH geographically detached component
-  of the mapped territory. Include the mainland, islands, overseas territories,
-  and displaced territorial components, as well as water shown as part of the
-  map picture. Keep each box tight and exclude surrounding page margins.
-- Detached components that use the same thematic colors, legend, and symbology
-  as the main territory belong in map_areas, NOT in other. This remains true
-  when an island is moved closer to the mainland for page layout. For example,
-  Corsica on a thematic map of France must be a separate map_areas entry.
-- Before calling a detached colored shape an inset, compare its colors and
-  symbols with the main map. If it uses the same thematic legend, classify it
-  as a detached mapped-territory component. Never return it in other.
-- Call something an inset map only when it is an independently framed secondary
-  map, normally with its own scale, title, locator context, or different extent.
-  An unframed detached island is not an inset.
-- legend: tight box around the legend (color swatches + their labels + the
-  legend heading). null if there is no legend.
-- A legend is whatever keys the map's colors, however it is printed. It is
-  still the legend when the swatches sit inside a large data table with many
-  columns and hundreds of rows of supporting detail: box the whole table.
-  Return it as legend, never in other, whenever it carries color swatches
-  that match colors used on the map.
+- map_areas: ONE tight box per geographically detached component of the mapped
+  territory (mainland, islands, overseas or displaced components), including
+  water shown as part of the map picture. Exclude page margins.
+- A detached component that uses the same thematic colors and legend as the
+  main map belongs in map_areas, never in other, even when it was moved closer
+  for page layout (e.g. Corsica on a France map).
+- An inset map is only an independently framed secondary map with its own
+  scale, title, or different extent. An unframed detached island is not one.
+- legend: one tight box around the legend (swatches + labels + heading).
+  A legend whose color swatches are keyed inside a large data table is still
+  the legend: box the whole table as legend, never as other. null if absent.
 - title, scale_bar, north_arrow: when present, else null.
-- other: inset maps, notes, logos, coordinate labels or anything else that is
-  not map content, each with a short label.
+- other: inset maps, notes, and logos, each with a short label. Never box the
+  frame's grid letters or numbers (coordinate labels), tick marks, or text
+  that lies on the map itself.
 """
 
 
@@ -1171,6 +1161,31 @@ def _swatch_size_consensus(
             float(np.median([r[3] for r in best[1]])))
 
 
+def _colorbar_split_is_papery(
+    legend_bgr: np.ndarray, rects: list[tuple[int, int, int, int]],
+) -> bool:
+    """True when a claimed colorbar split cannot be a printed color bar.
+
+    The colorbar detectors slice one long component into `expected` equal
+    cells.  On a real ramp every cell lands on ink, but a multi-column grid of
+    discrete swatches can masquerade as a bar: china's 4x5 climate grid stacks
+    its first column tightly enough to read as one vertical bar, and force-
+    splitting it into 17 cells lands half of them on the paper gaps and label
+    text between swatches.  A genuine bar prints at most one near-paper cell
+    (a white "no data" end bin), so two or more papery cells mean the split is
+    a misread and the generic grid detection must run instead.
+    """
+    lab = to_lab(legend_bgr)
+    lh, lw = legend_bgr.shape[:2]
+    paper = legend_paper_lab(lab, strip=max(2, min(lh, lw) // 50))
+    papery = 0
+    for rect in rects:
+        _, cell = sample_swatch(legend_bgr, rect)
+        if float(np.linalg.norm(np.float32(cell) - paper)) < MIN_CLASS_SEPARATION:
+            papery += 1
+    return papery >= 2
+
+
 def _detect_swatches_at_scale(
     legend_bgr: np.ndarray,
     expected: int,
@@ -1178,12 +1193,11 @@ def _detect_swatches_at_scale(
     ordered: bool = False,
 ) -> tuple[list[tuple[int, int, int, int]], list[str]]:
     if ordered and labels:
-        colorbar = detect_horizontal_colorbar(legend_bgr, expected, labels)
-        if colorbar is not None:
-            return colorbar
-        colorbar = detect_vertical_colorbar(legend_bgr, expected, labels)
-        if colorbar is not None:
-            return colorbar
+        for detect in (detect_horizontal_colorbar, detect_vertical_colorbar):
+            colorbar = detect(legend_bgr, expected, labels)
+            if colorbar is not None and not _colorbar_split_is_papery(
+                    legend_bgr, colorbar[0]):
+                return colorbar
         compact = _detect_compact_grid_swatches(legend_bgr, expected)
         if compact is not None:
             return compact, [f"reconstructed compact {len(compact)}-swatch legend grid"]
@@ -1337,6 +1351,46 @@ DELTA_E_WARN = 10.0
 MIN_CLASS_SEPARATION = 3.0
 
 
+# `other` labels that claim to be part of the page frame rather than content.
+FRAME_LABEL_RE = re.compile(r"coordinat|graticule|grid|tick|frame", re.IGNORECASE)
+
+
+def drop_frame_label_boxes(
+    img: np.ndarray, furniture: list[tuple[str, tuple[int, int, int, int]]],
+) -> tuple[list[tuple[str, tuple[int, int, int, int]]], list[str]]:
+    """Drop `other` boxes that claim to be frame labels but sit on map content.
+
+    A grid letter or coordinate label lives in the page margin by definition,
+    yet the layout call sometimes returns dozens of such boxes and scatters
+    several of them over the mapped picture (the Africa ethnolinguistic sheet
+    drew 33, some floating mid-ocean).  Each misplaced box punches a hole in
+    the geographic mask and blanks real content from the text-detection input.
+    Margins are near-paper, so a frame-label box mostly covered by non-paper
+    pixels contradicts its own claim and is discarded.  Boxes with other
+    labels (logos, notes) legitimately sit on the picture and are never
+    touched, and neither are the dedicated legend/title/scale/north boxes.
+    """
+    suspects = [i for i, (name, _) in enumerate(furniture)
+                if name.startswith("other:") and FRAME_LABEL_RE.search(name)]
+    if not suspects:
+        return furniture, []
+    scale = max(1, max(img.shape[:2]) // 800)
+    small = img[::scale, ::scale]
+    lab = to_lab(small)
+    content = np.linalg.norm(lab - border_median_lab(lab), axis=2) > 8
+    dropped = []
+    for i in suspects:
+        x0, y0, x1, y1 = (v // scale for v in furniture[i][1])
+        patch = content[y0:max(y0 + 1, y1), x0:max(x0 + 1, x1)]
+        if patch.size and float(np.mean(patch)) > 0.5:
+            dropped.append(i)
+    if not dropped:
+        return furniture, []
+    kept = [item for i, item in enumerate(furniture) if i not in set(dropped)]
+    return kept, [
+        f"dropped {len(dropped)} frame-label box(es) that sat on map content"]
+
+
 def recover_legend_box(
     img: np.ndarray, layout: MapLayout, expected: int, ordered: bool,
 ) -> tuple[tuple[int, int, int, int] | None, list[str]]:
@@ -1376,14 +1430,6 @@ def run_step2(image_path: Path, model: str | None = None, runs_dir: Path = Path(
     out_dir = runs_dir / image_path.stem
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Step 2 writes its palette last, so every failure below this point used to
-    # leave the previous run's classes.json and geometry.json in place. Step 4
-    # reads both without a freshness check, so a stale empty palette silently
-    # became a map with no thematic classes instead of a stopped pipeline.
-    # Retire them up front: a Step 2 that does not finish leaves no palette.
-    (out_dir / "classes.json").unlink(missing_ok=True)
-    (out_dir / "geometry.json").unlink(missing_ok=True)
-
     sem_path = out_dir / "step1_semantics.json"
     if sem_path.exists():
         sem = MapSemantics.model_validate_json(sem_path.read_text(encoding="utf-8"))
@@ -1401,6 +1447,17 @@ def run_step2(image_path: Path, model: str | None = None, runs_dir: Path = Path(
         layout = detect_layout(image_path, model=model)
         layout_path.write_text(layout.model_dump_json(indent=2), encoding="utf-8")
         layout_cached = False
+
+    # Step 2 writes its palette last, so every failure while it rebuilds its
+    # artifacts used to leave the previous run's classes.json and geometry.json
+    # in place; Step 4 reads both without a freshness check, and a stale empty
+    # palette silently became a map with no thematic classes.  Retire them here
+    # -- after the eligibility gate and the layout call, so a bad Step 1 redraw
+    # or a failed model call stops loudly WITHOUT destroying a completed run --
+    # and before the first artifact rewrite below, so an interrupted rebuild
+    # still leaves no palette rather than a stale one.
+    (out_dir / "classes.json").unlink(missing_ok=True)
+    (out_dir / "geometry.json").unlink(missing_ok=True)
 
     img = imread(image_path)
     h, w = img.shape[:2]
@@ -1430,6 +1487,8 @@ def run_step2(image_path: Path, model: str | None = None, runs_dir: Path = Path(
         ("scale_bar", layout.scale_bar), ("north_arrow", layout.north_arrow),
     ) if b is not None]
     furniture += [(f"other:{b.label}", box_to_px(b, w, h)) for b in layout.other]
+    furniture, frame_warn = drop_frame_label_boxes(img, furniture)
+    warnings += frame_warn
 
     map_boxes = [box_to_px(box, w, h, pad_frac=0.02) for box in layout.map_areas]
     mask, tight, mask_warn = refine_map_mask(img, map_boxes, [f[1] for f in furniture])

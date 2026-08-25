@@ -5,6 +5,8 @@ import numpy as np
 
 from mapgen.isolate import (
     MapLayout,
+    _colorbar_split_is_papery,
+    drop_frame_label_boxes,
     border_median_lab,
     detect_swatches,
     legend_paper_lab,
@@ -569,6 +571,109 @@ class LayoutSingularBoxTests(unittest.TestCase):
         layout = MapLayout.model_validate({
             **self.BASE, "legend": {"box_2d": [1, 2, 3, 4], "label": "plain"}})
         self.assertEqual(layout.legend.label, "plain")
+
+
+
+class FrameLabelBoxTests(unittest.TestCase):
+    """The layout call sometimes scatters `coordinate_label` boxes over the
+    mapped picture; a frame label by definition sits in the near-paper margin,
+    so a box mostly covered by content contradicts its own claim."""
+
+    @staticmethod
+    def _page():
+        page = np.full((600, 800, 3), 250, np.uint8)      # paper margin
+        page[60:540, 80:720] = (200, 170, 120)            # map picture
+        return page
+
+    def test_a_frame_label_box_on_map_content_is_dropped(self):
+        page = self._page()
+        furniture = [
+            ("other:coordinate_label", (10, 100, 40, 140)),    # margin: real
+            ("other:coordinate_label", (300, 250, 360, 290)),  # mid-picture
+        ]
+
+        kept, warnings = drop_frame_label_boxes(page, furniture)
+
+        self.assertEqual([n for n, _ in kept], ["other:coordinate_label"])
+        self.assertEqual(kept[0][1], (10, 100, 40, 140))
+        self.assertTrue(warnings)
+
+    def test_logos_and_dedicated_boxes_on_content_are_never_touched(self):
+        page = self._page()
+        furniture = [
+            ("legend", (100, 100, 400, 400)),
+            ("title", (500, 80, 700, 140)),
+            ("other:logo", (600, 450, 700, 520)),
+        ]
+
+        kept, warnings = drop_frame_label_boxes(page, furniture)
+
+        self.assertEqual(kept, furniture)
+        self.assertEqual(warnings, [])
+
+
+
+class Step2GateSafetyTests(unittest.TestCase):
+    """A bad Step 1 redraw (a legend-less or out-of-scope draw on a re-run)
+    must stop Step 2 at the eligibility gate WITHOUT destroying the palette a
+    previously completed run left on disk."""
+
+    def test_a_legendless_redraw_leaves_the_previous_palette_alone(self):
+        import json, tempfile
+        from pathlib import Path
+        from mapgen.isolate import run_step2
+        from mapgen.semantics import MissingLegendError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            run_dir = runs / "synthetic"
+            run_dir.mkdir(parents=True)
+            (run_dir / "step1_semantics.json").write_text(json.dumps({
+                "map_type": "area_class_chorochromatic", "in_scope": True,
+                "data_ordering": "qualitative", "map_language": "English",
+                "subject": "s", "description": "d", "title": None,
+                "legend_present": False, "legend_title": None,
+                "legend_entries": [], "water_present": False,
+                "thematic_classes": [], "non_thematic": [], "lines": [],
+                "overlay_text": {"has_city_labels": False, "capital_city": None,
+                                 "has_region_labels": False,
+                                 "has_line_labels": False, "notes": ""},
+            }), encoding="utf-8")
+            (run_dir / "classes.json").write_text('{"classes": []}', encoding="utf-8")
+            (run_dir / "geometry.json").write_text('{}', encoding="utf-8")
+
+            with self.assertRaises(MissingLegendError):
+                run_step2(Path(tmp) / "synthetic.png", runs_dir=runs)
+
+            self.assertTrue((run_dir / "classes.json").exists())
+            self.assertTrue((run_dir / "geometry.json").exists())
+
+
+
+class ColorbarSplitValidationTests(unittest.TestCase):
+    """A multi-column grid of discrete swatches can masquerade as one vertical
+    color bar (china's 4x5 climate grid); force-splitting it into equal cells
+    lands half of them on the paper gaps between swatches, and each of those
+    was then reported as a bare-paper class."""
+
+    def test_a_split_landing_on_paper_gaps_is_rejected(self):
+        legend = np.full((200, 120, 3), 250, np.uint8)
+        colors = [(30, 60, 210), (40, 180, 70), (210, 120, 30)]
+        for i, color in enumerate(colors):     # swatches with paper gaps
+            cv2.rectangle(legend, (10, 12 + i * 60), (40, 36 + i * 60), color, -1)
+        cells = [(10, 12 + i * 30, 30, 28) for i in range(6)]  # every other on paper
+
+        self.assertTrue(_colorbar_split_is_papery(legend, cells))
+
+    def test_a_real_ramp_with_one_white_end_bin_is_accepted(self):
+        legend = np.full((200, 120, 3), 250, np.uint8)
+        ramp = [(255, 255, 255), (180, 220, 250), (90, 160, 240),
+                (40, 90, 220), (30, 40, 160), (20, 10, 90)]
+        for i, color in enumerate(ramp):
+            cv2.rectangle(legend, (10, 10 + i * 30), (40, 40 + i * 30), color, -1)
+        cells = [(10, 10 + i * 30, 30, 30) for i in range(6)]
+
+        self.assertFalse(_colorbar_split_is_papery(legend, cells))
 
 
 if __name__ == "__main__":

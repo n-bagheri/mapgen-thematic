@@ -233,6 +233,10 @@ fill the response schema. Rules:
   transcribed verbatim from top to bottom. Never include "Legend", the legend
   title, units, explanatory headings, or source text as entries. Mark swatch
   rows that are not the mapped theme (water, no data) as is_thematic=false.
+- A legend can be printed as a large data table: when rows anywhere on the
+  sheet carry a small color chip keyed to the map colors, that table IS the
+  legend -- set legend_present=true and transcribe each chip row as an entry,
+  ignoring the table's other columns.
 - A visible legend is required for this pipeline. Set legend_present=false
   when there is no legend; Step 1 will record that result and the pipeline
   must stop before Step 2.
