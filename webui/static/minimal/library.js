@@ -26,7 +26,10 @@ export function renderProjectList() {
   const list = $("project-list");
   const editing = renameFieldSnapshot();
   $("nav-empty").hidden = state.maps.length > 0;
-  list.innerHTML = state.maps.map(projectRow).join("");
+  const topDrop = state.maps.length > 1
+    ? '<div class="project-drop-top" data-project-drop-top aria-hidden="true"></div>'
+    : "";
+  list.innerHTML = topDrop + state.maps.map(projectRow).join("");
   bindProjectList(editing);
 }
 
@@ -80,7 +83,8 @@ function projectRow(map) {
 }
 
 function bindProjectList(editing) {
-  $("project-list").querySelectorAll(".project-item[data-stem]").forEach((item) => {
+  const list = $("project-list");
+  list.querySelectorAll(".project-item[data-stem]").forEach((item) => {
     const stem = item.dataset.stem;
     item.querySelector(".project-open")?.addEventListener("click", () => selectMap(stem));
     item.querySelector('[data-action="rename"]')?.addEventListener("click", () => {
@@ -90,6 +94,7 @@ function bindProjectList(editing) {
     item.querySelector('[data-action="delete"]')?.addEventListener("click", () => removeProject(item));
     if (item.draggable) bindRowDrag(item);
   });
+  bindTopDropZone(list.querySelector("[data-project-drop-top]"));
   bindRenameField(editing);
 }
 
@@ -101,10 +106,12 @@ function bindRowDrag(item) {
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("text/plain", dragging);
     item.classList.add("is-dragging");
+    $("project-list").classList.add("is-reordering");
   });
   item.addEventListener("dragend", () => {
     dragging = null;
     item.classList.remove("is-dragging");
+    $("project-list").classList.remove("is-reordering");
     clearDropMarks();
   });
   item.addEventListener("dragover", (event) => {
@@ -112,9 +119,11 @@ function bindRowDrag(item) {
     event.preventDefault();
     event.dataTransfer.dropEffect = "move";
     // Which half of the row the pointer is over decides whether the project
-    // lands above or below it, so the drop never has to be guessed at.
+    // lands above or below it. The whole first row is a top-position target,
+    // making it easy to move a project all the way to the start of the list.
     const box = item.getBoundingClientRect();
-    const below = event.clientY > box.top + box.height / 2;
+    const first = $("project-list").querySelector(".project-item[data-stem]");
+    const below = item !== first && event.clientY > box.top + box.height / 2;
     clearDropMarks();
     item.classList.add(below ? "drop-after" : "drop-before");
   });
@@ -127,8 +136,31 @@ function bindRowDrag(item) {
     event.preventDefault();
     const below = item.classList.contains("drop-after");
     const dragged = dragging || event.dataTransfer.getData("text/plain");
+    dragging = null;
+    $("project-list").classList.remove("is-reordering");
     clearDropMarks();
     if (dragged && dragged !== item.dataset.stem) moveProject(dragged, item.dataset.stem, below);
+  });
+}
+
+/** A full-width target above the first row makes the first list position
+ * explicit instead of requiring a precise drop on one half of that row. */
+function bindTopDropZone(zone) {
+  if (!zone) return;
+  zone.addEventListener("dragover", (event) => {
+    if (!dragging || dragging === state.maps[0]?.stem) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    clearDropMarks();
+  });
+  zone.addEventListener("drop", (event) => {
+    event.preventDefault();
+    const dragged = dragging || event.dataTransfer.getData("text/plain");
+    const first = state.maps[0]?.stem;
+    dragging = null;
+    $("project-list").classList.remove("is-reordering");
+    clearDropMarks();
+    if (dragged && first && dragged !== first) moveProject(dragged, first, false);
   });
 }
 

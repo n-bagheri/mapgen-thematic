@@ -39,10 +39,15 @@ export const state = {
   pollVisualSignature: "",
   pollControlSignature: "",
   maskBrush: { active: false, mode: "erase", radius: 12, strokes: [] },
+  lineDrawing: { active: false, draft: [], addedIds: [] },
   patternGroup: 0,     // which Step 7 area the transform box is editing
   patternDialog: null, // { kind: "edit" | "change", groupId } in Step 7
   renaming: null,     // stem of the project whose name is being edited in place
   individualRun: false,
+  runSetupOpen: false,
+  runSetupDraft: null,
+  runSetupModelDraft: "",
+  runSetupDirty: false,
 };
 
 export function selectedMap() {
@@ -68,6 +73,11 @@ export function forgetIndividualMode(stem) {
 }
 
 export function individualModeFor(map) {
+  // An untouched upload always starts at Run setup. A saved preference may
+  // belong to an older map whose stem was reused, so it cannot start a new
+  // map in individual mode by itself.
+  const hasProgress = STEP_DEFS.some((step) => Boolean(map?.steps?.[step.key]));
+  if (!hasProgress && map?.job?.status !== "running") return false;
   if (!map?.stem) return false;
   try {
     const saved = globalThis.localStorage?.getItem(`${RUN_MODE_PREFIX}${map.stem}`);

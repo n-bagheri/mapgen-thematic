@@ -7,11 +7,13 @@ the endpoints each editor talks to, and the two controls this pipeline has no
 server support for.
 """
 
+import io
 import json
 import pathlib
 import re
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from webui import server
 
@@ -191,6 +193,16 @@ class EndpointContractTests(unittest.TestCase):
         for name in ("renameMap", "reorderMaps", "deleteMap"):
             self.assertIn(name, library)
 
+    def test_the_library_has_a_dedicated_top_position_drop_target(self):
+        library = (MINIMAL_DIR / "library.js").read_text(encoding="utf-8")
+        stylesheet = (STATIC / "minimal.css").read_text(encoding="utf-8")
+        self.assertIn("data-project-drop-top", library)
+        self.assertIn("bindTopDropZone", library)
+        self.assertIn("moveProject(dragged, first, false)", library)
+        self.assertIn('classList.add("is-reordering")', library)
+        self.assertNotIn("Move to top", library)
+        self.assertNotIn(".project-drop-top.is-drop-target", stylesheet)
+
     def test_every_api_path_in_the_source_matches_a_server_route(self):
         """A typo in a path would otherwise only surface as a 404 at runtime."""
         used = {match.rstrip("/")
@@ -204,6 +216,56 @@ class EndpointContractTests(unittest.TestCase):
             )
 
 
+class ProjectOrderingTests(unittest.TestCase):
+    def test_a_new_map_is_saved_at_the_top_of_the_project_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            maps = root / "maps"
+            runs = root / "runs"
+            maps.mkdir()
+            runs.mkdir()
+            (maps / "first.png").write_bytes(b"existing")
+            (maps / "second.png").write_bytes(b"existing")
+            order_path = runs / ".project_order.json"
+            order_path.write_text('["first", "second"]', encoding="utf-8")
+
+            with patch.object(server, "MAPS_DIR", maps), \
+                    patch.object(server, "RUNS_DIR", runs), \
+                    patch.object(server, "PROJECT_ORDER_PATH", order_path):
+                response = server.app.test_client().post(
+                    "/api/upload",
+                    data={"file": (io.BytesIO(b"new map"), "new.png")},
+                    content_type="multipart/form-data",
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(server._project_order(), ["new", "first", "second"])
+                self.assertEqual([path.stem for path in server.map_files()],
+                                 ["new", "first", "second"])
+
+    def test_upload_does_not_inherit_an_orphaned_run_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            maps = root / "maps"
+            runs = root / "runs"
+            maps.mkdir()
+            runs.mkdir()
+            (runs / "new").mkdir()
+            (runs / "new" / "step1_semantics.json").write_text("{}", encoding="utf-8")
+            order_path = runs / ".project_order.json"
+
+            with patch.object(server, "MAPS_DIR", maps), \
+                    patch.object(server, "RUNS_DIR", runs), \
+                    patch.object(server, "PROJECT_ORDER_PATH", order_path):
+                response = server.app.test_client().post(
+                    "/api/upload",
+                    data={"file": (io.BytesIO(b"new map"), "new.png")},
+                    content_type="multipart/form-data",
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.get_json()["name"], "new_1.png")
+                self.assertFalse((runs / "new_1").exists())
+
+
 class EditorCoverageTests(unittest.TestCase):
     """Every reviewable step gets its own panel in the focused view."""
 
@@ -212,7 +274,7 @@ class EditorCoverageTests(unittest.TestCase):
 
     def test_each_step_has_an_editor(self):
         for name in ("readingEditorHtml", "maskDecisionHtml", "textEditorHtml", "lineEditorHtml",
-                     "aggregationGateHtml", "simplificationDecisionHtml", "patternDecisionHtml",
+                     "lineDrawingEditorHtml", "aggregationGateHtml", "simplificationDecisionHtml", "patternDecisionHtml",
                      "brailleDecisionHtml", "legendDecisionHtml", "exportEditorHtml"):
             self.assertIn(name, self.controls)
 
@@ -228,7 +290,7 @@ class EditorCoverageTests(unittest.TestCase):
             1: ["readingEditorHtml"],
             2: ["maskDecisionHtml"],
             3: ["textEditorHtml"],
-            4: ["lineEditorHtml"],
+            4: ["lineEditorHtml", "lineDrawingEditorHtml"],
             5: ["aggregationGateHtml"],
             6: ["simplificationDecisionHtml"],
             7: ["patternDecisionHtml"],
@@ -279,7 +341,8 @@ class EditorCoverageTests(unittest.TestCase):
     def test_individual_mode_keeps_its_step_list_while_a_step_runs(self):
         render = self.controls[self.controls.index("export function renderControls()"):
                                self.controls.index("export function editorDetails")]
-        self.assertIn("started ? individualRunHtml(map) : setupHtml(true, true)", render)
+        self.assertIn("setupHtml(!started, !started, !started || state.runSetupOpen)", render)
+        self.assertIn("if (started) body += individualRunHtml(map)", render)
         self.assertNotIn("stepPanelHtml(map)", render)
         individual = self.controls[self.controls.index("function individualStepDotsHtml(map)"):
                                    self.controls.index("/** Re-rendering mid-edit")]
@@ -301,7 +364,8 @@ class EditorCoverageTests(unittest.TestCase):
     def test_run_all_and_individual_runs_share_the_same_step_ui(self):
         render = self.controls[self.controls.index("export function renderControls()"):
                                self.controls.index("export function editorDetails")]
-        self.assertIn("started ? individualRunHtml(map) : setupHtml(true, true)", render)
+        self.assertIn("setupHtml(!started, !started, !started || state.runSetupOpen)", render)
+        self.assertIn("if (started) body += individualRunHtml(map)", render)
         self.assertNotIn("state.individualRun ? individualRunHtml", render)
         flow = self.controls[self.controls.index("function individualRunHtml(map)"):
                              self.controls.index("/** Re-rendering mid-edit")]
@@ -323,7 +387,7 @@ class EditorCoverageTests(unittest.TestCase):
     def test_entering_individual_mode_saves_setup_and_runs_only_step_one(self):
         block = self.controls[self.controls.index("async function showIndividualSteps"):]
         block = block[:block.index("/** Resume a paused run")]
-        self.assertIn("await savePreflight()", block)
+        self.assertIn("await commitRunSetup()", block)
         self.assertIn("state.individualRun = true", block)
         self.assertIn("rememberIndividualMode(state.selected, true)", block)
         self.assertIn('await startJob(["1"])', block)
@@ -349,6 +413,27 @@ class EditorCoverageTests(unittest.TestCase):
         self.assertIn("state.individualRun = individualModeFor(selectedMap())", workspace)
         self.assertIn("requested.length === 1", state_source)
 
+    def test_fresh_map_ignores_stale_individual_mode_and_opens_setup(self):
+        state_source = (MINIMAL_DIR / "state.js").read_text(encoding="utf-8")
+        workspace = (MINIMAL_DIR / "workspace.js").read_text(encoding="utf-8")
+        self.assertIn("const hasProgress = STEP_DEFS.some", state_source)
+        self.assertIn('if (!hasProgress && map?.job?.status !== "running") return false',
+                      state_source)
+        self.assertIn("completedCount(selectedMap()) === 0", workspace)
+
+    def test_run_setup_is_expandable_above_progress_during_and_after_runs(self):
+        render = self.controls[self.controls.index("export function renderControls()"):
+                               self.controls.index("export function editorDetails")]
+        setup = self.controls[self.controls.index("function setupHtml"):
+                              self.controls.index("function individualStepDotsHtml")]
+        stylesheet = (STATIC / "minimal.css").read_text(encoding="utf-8")
+        self.assertIn('class="run-setup-disclosure"', setup)
+        self.assertIn('id="run-setup-disclosure"', setup)
+        self.assertLess(render.index("setupHtml("), render.index("individualRunHtml(map)"))
+        self.assertIn('$("run-setup-disclosure")?.addEventListener("toggle"', self.controls)
+        self.assertIn("state.runSetupOpen = event.currentTarget.open", self.controls)
+        self.assertIn(".run-setup-disclosure", stylesheet)
+
     def test_run_setup_edits_the_complete_output_spec(self):
         for control_id in ("output-medium", "page-size", "page-orientation",
                            "page-margin", "braille-standard", "advanced-output-spec"):
@@ -360,9 +445,26 @@ class EditorCoverageTests(unittest.TestCase):
         self.assertIn('id="max-area-textures"', self.controls)
         self.assertIn('class="setup-fields"', self.controls)
         self.assertIn('readonly aria-readonly="true"', self.controls)
-        self.assertIn("constants: { ...(state.spec.constants || {}), ...patch.constants }",
+        self.assertIn("constants: { ...(current.constants || {}), ...patch.constants }",
                       self.controls)
         self.assertNotIn('option("auto", orientation', self.controls)
+
+    def test_run_setup_changes_are_drafted_until_the_apply_button_is_used(self):
+        setup = self.controls[self.controls.index("function setupHtml"):
+                              self.controls.index("function individualStepDotsHtml")]
+        draft_flow = self.controls[self.controls.index("function markRunSetupDirty"):
+                                   self.controls.index("/* ----------------------------------------------------------- step panel")]
+        self.assertIn('id="apply-run-setup"', setup)
+        self.assertIn("Changes are not applied yet.", setup)
+        self.assertIn("state.runSetupDraft || state.spec", setup)
+        self.assertIn("function stageSpec(patch, rerender = false)", draft_flow)
+        self.assertIn("state.runSetupDraft = {", draft_flow)
+        self.assertIn("await saveSpecText(draft)", draft_flow)
+        self.assertIn("await savePreflight()", draft_flow)
+        self.assertIn('$("apply-run-setup")?.addEventListener("click", applyRunSetupChanges)',
+                      self.controls)
+        self.assertIn("selected model starts with the next job", draft_flow)
+        self.assertNotIn("function saveSpec(", self.controls)
 
     def test_every_step_uses_the_same_unnumbered_preview_card(self):
         visual = (MINIMAL_DIR / "visual.js").read_text(encoding="utf-8")
@@ -384,6 +486,13 @@ class EditorCoverageTests(unittest.TestCase):
         self.assertIn("See full reading", self.controls)
         self.assertNotIn("Step 1 interpretation", self.controls)
         self.assertIn(".reading-summary", stylesheet)
+
+    def test_step_one_more_chip_reveals_every_legend_category(self):
+        self.assertIn('class="reading-extra-chip" hidden', self.controls)
+        self.assertIn('class="reading-more-chip" type="button"', self.controls)
+        self.assertIn('querySelectorAll(".reading-extra-chip")', self.controls)
+        self.assertIn("extra.hidden = false", self.controls)
+        self.assertIn("button.remove()", self.controls)
 
     def test_an_out_of_scope_map_offers_only_step_1(self):
         self.assertIn("scopeBlockHtml", self.controls)
@@ -431,6 +540,23 @@ class EditorCoverageTests(unittest.TestCase):
         self.assertIn("Use this level &amp; continue", simplification)
         self.assertIn(".simplification-decision", stylesheet)
 
+    def test_step_4_can_draw_undo_and_discard_manual_lines(self):
+        lines = (MINIMAL_DIR / "editors" / "lines.js").read_text(encoding="utf-8")
+        visual = (MINIMAL_DIR / "visual.js").read_text(encoding="utf-8")
+        stylesheet = (STATIC / "minimal.css").read_text(encoding="utf-8")
+        for control_id in ("draw-new-line", "undo-drawn-line", "discard-drawn-lines",
+                           "save-drawn-lines"):
+            self.assertIn(f'id="{control_id}"', lines)
+        self.assertNotIn("Draw or join paths in detailed view", lines)
+        self.assertIn("manual_rivers.push", visual)
+        self.assertIn("state.lineDrawing.addedIds.push", visual)
+        self.assertIn('addEventListener("pointermove"', visual)
+        self.assertIn('class="line-draw-cursor"', visual)
+        self.assertIn(".map-overlay.is-line-drawing", stylesheet)
+        self.assertIn("cursor: none", stylesheet)
+        self.assertIn("undoDrawnLine", lines)
+        self.assertIn("discardDrawnLines", lines)
+
     def test_step_6_shows_only_the_simplified_map_with_all_layer_switches(self):
         steps = (MINIMAL_DIR / "steps.js").read_text(encoding="utf-8")
         visual = (MINIMAL_DIR / "visual.js").read_text(encoding="utf-8")
@@ -442,6 +568,13 @@ class EditorCoverageTests(unittest.TestCase):
         for label in ("Colors", "Labels", "Lines", "Boundaries"):
             self.assertIn(f'layerButton("{label.lower() if label != "Colors" else "map"}", "{label}")',
                           visual)
+
+    def test_step_6_boundaries_include_the_reviewed_coastline_fallback(self):
+        visual = (MINIMAL_DIR / "visual.js").read_text(encoding="utf-8")
+        self.assertIn('["border", "border_or_coast", "coastline"]', visual)
+        self.assertIn("generatedBoundaries.length", visual)
+        self.assertIn("review?.fixed_features", visual)
+        self.assertIn('class="boundary-path"', visual)
 
     def test_step_7_is_a_pattern_decision_with_hybrid_and_distance_modes(self):
         patterns = (MINIMAL_DIR / "editors" / "patterns.js").read_text(encoding="utf-8")
@@ -528,6 +661,33 @@ class EditorCoverageTests(unittest.TestCase):
             encoding="utf-8"))
         self.assertIn(".legend-decision", stylesheet)
 
+    def test_step_9_text_updates_braille_on_the_page_while_typing(self):
+        legend = (MINIMAL_DIR / "editors" / "legend.js").read_text(encoding="utf-8")
+        braille = (MINIMAL_DIR / "editors" / "braille.js").read_text(encoding="utf-8")
+        steps = (MINIMAL_DIR / "steps.js").read_text(encoding="utf-8")
+        self.assertIn('artifact: "step9_legend_base.png"', steps)
+        self.assertIn("export function grade1Preview", braille)
+        self.assertIn("entry.braille_text = grade1Preview(field.value)", legend)
+        self.assertIn("title.braille_text = grade1Preview(titleText.value, true)", legend)
+        self.assertGreaterEqual(legend.count("bindLegendOverlay();"), 4)
+        self.assertIn('id="legend-title-preview"', legend)
+        self.assertIn('class="braille-rendered-text"', legend)
+        self.assertIn('dominant-baseline="hanging"', legend)
+        self.assertIn("legendSwatchUrl(state.selected, box.id, state.colourView)", legend)
+        self.assertIn("liveTextValues", legend)
+        self.assertIn("Object.assign(layout.entries[index], item)", legend)
+        self.assertGreaterEqual(legend.count('patchItem("title"'), 3)
+        self.assertIn('const target = id === "title" ? "title" : id', legend)
+        self.assertIn("patchItem(box.target || box.id", legend)
+        self.assertNotIn('|| "legend-title", {', legend)
+
+    def test_step_9_title_editor_appears_before_legend_entries(self):
+        legend = (MINIMAL_DIR / "editors" / "legend.js").read_text(encoding="utf-8")
+        toolbox = legend[legend.index("function legendToolboxBody"):
+                         legend.index("export function legendDecisionHtml")]
+        self.assertLess(toolbox.index('class="braille-title-box"'),
+                        toolbox.index('class="braille-list"'))
+
     def test_completed_steps_two_to_four_use_the_focused_review_views(self):
         steps = (MINIMAL_DIR / "steps.js").read_text(encoding="utf-8")
         visual = (MINIMAL_DIR / "visual.js").read_text(encoding="utf-8")
@@ -545,7 +705,8 @@ class EditorCoverageTests(unittest.TestCase):
         self.assertEqual(step4.count("artifact:"), 1)
         self.assertIn('caption: "Segmented map"', step4)
         self.assertIn('overlay: "segmented-lines"', step4)
-        self.assertIn("Display lines", visual)
+        self.assertNotIn("Display lines", visual)
+        self.assertNotIn('aria-label="Segmented map layers"', visual)
 
     def test_export_is_large_and_requires_step9_approval(self):
         export = (MINIMAL_DIR / "editors" / "exportpdf.js").read_text(encoding="utf-8")
@@ -594,6 +755,25 @@ class EditorCoverageTests(unittest.TestCase):
         self.assertIn('src="/images/brush.png"', mask)
         self.assertNotIn("maskEditorHtml", mask)
 
+    def test_mask_eraser_is_black_and_cursor_matches_the_brush_radius(self):
+        mask = (MINIMAL_DIR / "editors" / "mask.js").read_text(encoding="utf-8")
+        stylesheet = (STATIC / "minimal.css").read_text(encoding="utf-8")
+        self.assertIn('class="mask-mode-erase"', mask)
+        self.assertIn(".mask-mode-erase input:checked", stylesheet)
+        self.assertIn("color: #000", stylesheet)
+        self.assertIn('className = "mask-brush-cursor"', mask)
+        self.assertIn("state.maskBrush.radius * 2", mask)
+        self.assertIn("canvas.clientWidth", mask)
+        self.assertIn("canvas.clientHeight", mask)
+        cursor_sizing = mask[mask.index("function sizeMaskBrushCursor"):
+                             mask.index("function refreshMaskBrushCursorSize")]
+        self.assertNotIn("getBoundingClientRect", cursor_sizing)
+        self.assertIn('addEventListener("pointermove"', mask)
+        self.assertIn(".mask-brush-cursor.is-visible", stylesheet)
+        self.assertIn("box-sizing: border-box", stylesheet)
+        self.assertIn("border-radius: 50%", stylesheet)
+        self.assertNotIn("cursor: crosshair", stylesheet)
+
     def test_the_right_panel_never_embeds_a_map_preview(self):
         stylesheet = (STATIC / "minimal.css").read_text(encoding="utf-8")
         self.assertNotIn("stepImageSrc", self.controls)
@@ -606,6 +786,19 @@ class EditorCoverageTests(unittest.TestCase):
         self.assertIn("needs-attention", mask)
         self.assertIn(".approve-mask.needs-attention", stylesheet)
         self.assertIn("@keyframes approval-glow", stylesheet)
+
+    def test_step_three_can_toggle_every_detected_text_entry_at_once(self):
+        text_editor = (MINIMAL_DIR / "editors" / "text.js").read_text(encoding="utf-8")
+        stylesheet = (STATIC / "minimal.css").read_text(encoding="utf-8")
+        self.assertIn('id="toggle-all-text"', text_editor)
+        self.assertIn('allOff ? "Turn all on" : "Turn all off"', text_editor)
+        self.assertIn("checkboxes.every", text_editor)
+        self.assertIn("item.include = enableAll", text_editor)
+        self.assertIn("renderMapOverlay()", text_editor)
+        self.assertIn(".label-list-toolbar", stylesheet)
+        label_list = re.search(r"\.label-list \{([^}]*)\}", stylesheet).group(1)
+        self.assertIn("max-height: 260px", label_list)
+        self.assertIn("overflow-y: auto", label_list)
 
 
 class PayloadFieldTests(unittest.TestCase):
@@ -770,6 +963,29 @@ class ViewerToolTests(unittest.TestCase):
         # The grid rides on the sheet, so zoom scales it with the page.
         self.assertIn(".map-canvas.show-grid .page-grid", stylesheet)
 
+    def test_zoom_changes_only_the_map_inside_a_fixed_viewport(self):
+        stylesheet = (STATIC / "minimal.css").read_text(encoding="utf-8")
+        self.assertIn('class="map-viewport-content"', self.visual)
+        self.assertIn('class="map-zoom-space"', self.visual)
+        viewport = re.search(r"\.map-viewport-content \{([^}]*)\}", stylesheet).group(1)
+        self.assertIn("width: max-content", viewport)
+        self.assertIn("align-items: flex-start", viewport)
+        self.assertIn("min-width: 100%", viewport)
+        self.assertIn("min-height: 100%", viewport)
+        desktop_frame = re.search(
+            r"\.map-stage \.map-frame \{([^}]*)\}", stylesheet
+        ).group(1)
+        self.assertIn("height: 0", desktop_frame)
+        self.assertIn("flex: 1 1 0", desktop_frame)
+        self.assertIn("sheet.style.width", self.viewer)
+        self.assertIn("sheet.style.height", self.viewer)
+        self.assertIn("sheet.style.transform = `scale(${scale})`", self.viewer)
+        self.assertIn("zoomSpace.style.width = `${naturalW * scale}px`", self.viewer)
+        self.assertIn("zoomSpace.style.height = `${naturalH * scale}px`", self.viewer)
+        zoom_space = re.search(r"\.map-zoom-space > \.map-canvas \{([^}]*)\}", stylesheet).group(1)
+        self.assertIn("position: absolute", zoom_space)
+        self.assertIn("transform-origin: top left", zoom_space)
+
     def test_fit_shows_the_whole_sheet_not_just_its_width(self):
         viewer = (MINIMAL_DIR / "viewer.js").read_text(encoding="utf-8")
         self.assertIn("availableH", viewer)
@@ -888,6 +1104,18 @@ class VersionSkewTests(unittest.TestCase):
             self.assertTrue(server.restart_required())
         finally:
             server._STARTED_FINGERPRINT = original
+            server._stale_source_check = (0.0, False)
+
+    def test_a_transient_source_read_failure_does_not_latch_a_false_warning(self):
+        original = server._STARTED_FINGERPRINT
+        server._stale_source_check = (0.0, False)
+        try:
+            with patch.object(server, "_source_fingerprint", return_value=None):
+                self.assertFalse(server.restart_required())
+            server._stale_source_check = (0.0, True)
+            with patch.object(server, "_source_fingerprint", return_value=original):
+                self.assertFalse(server.restart_required())
+        finally:
             server._stale_source_check = (0.0, False)
 
 

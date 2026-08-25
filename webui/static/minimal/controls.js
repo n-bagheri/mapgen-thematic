@@ -8,7 +8,7 @@ import {
 } from "./steps.js";
 import {
   currentStepKey, forgetIndividualMode, isRunning, rememberIndividualMode,
-  selectedMap, state, statusFor, toast, withBusy,
+  selectedMap, state, statusFor, statusLine, toast, withBusy,
 } from "./state.js";
 import {
   loadMaps, refreshSelectedData, renderWorkspace, savePreflight, startJob,
@@ -16,7 +16,7 @@ import {
 import { aggregationGateHtml, bindAggregationEditor } from "./editors/aggregation.js";
 import { bindMaskEditor, maskDecisionHtml } from "./editors/mask.js";
 import { bindTextEditor, textEditorHtml } from "./editors/text.js";
-import { bindLineEditor, lineEditorHtml } from "./editors/lines.js";
+import { bindLineEditor, lineDrawingEditorHtml, lineEditorHtml } from "./editors/lines.js";
 import {
   bindSimplificationEditor, simplificationDecisionHtml,
 } from "./editors/simplification.js";
@@ -38,10 +38,10 @@ export function renderControls() {
   const failed = state.job.status === "failed";
   const live = state.job.status === "running" || isRunning(map);
   const blocked = blockingReason(map);
-  const started = live || failed || Boolean(blocked) || completedCount(map) > 0
-    || state.individualRun;
+  const started = live || failed || Boolean(blocked) || completedCount(map) > 0;
   const preflight = !started;
-  let body = started ? individualRunHtml(map) : setupHtml(true, true);
+  let body = setupHtml(!started, !started, !started || state.runSetupOpen);
+  if (started) body += individualRunHtml(map);
   if (blocked) body += scopeBlockHtml(map, blocked);
   if (failed) body += failurePanelHtml(map);
   $("control-content").innerHTML = `
@@ -85,6 +85,7 @@ function readingEditorHtml() {
   }
   const classes = Array.isArray(sem.thematic_classes) ? sem.thematic_classes : [];
   const visibleClasses = classes.slice(0, 6);
+  const hiddenClasses = classes.slice(6);
   const more = Math.max(0, classes.length - visibleClasses.length);
   const detailRows = classes.map((item) => `<li><span>${esc(item.label)}</span>
     ${Number.isFinite(Number(item.approx_area_share_percent))
@@ -105,7 +106,9 @@ function readingEditorHtml() {
         <span class="field-label">Legend categories read</span>
         <div>${visibleClasses.map((item) => `<span>${esc(item.label)}</span>`).join("")
           || '<small>No thematic categories were returned.</small>'}
-          ${more ? `<span class="reading-more-chip">+${more} more</span>` : ""}</div>
+          ${hiddenClasses.map((item) =>
+            `<span class="reading-extra-chip" hidden>${esc(item.label)}</span>`).join("")}
+          ${more ? `<button class="reading-more-chip" type="button" aria-expanded="false">+${more} more</button>` : ""}</div>
       </div>
       ${(sem.description || detailRows) ? `<details class="reading-details">
         <summary>See full reading</summary>
@@ -122,7 +125,7 @@ const STEP_EDITORS = {
   1: [readingEditorHtml],
   2: [maskDecisionHtml],
   3: [textEditorHtml],
-  4: [lineEditorHtml],
+  4: [lineEditorHtml, lineDrawingEditorHtml],
   5: [aggregationGateHtml],
   6: [simplificationDecisionHtml],
   7: [patternDecisionHtml],
@@ -240,6 +243,7 @@ async function resetMap() {
     state.viewStep = null;
     state.activeStep = 1;
     state.individualRun = false;
+    state.runSetupOpen = true;
     state.previewLevel = null;
     state.groupEdit = null;
     state.groupLabels = {};
@@ -281,16 +285,15 @@ const BRAILLE_LABELS = {
   "unified-english-grade1": "Unified English Braille · Grade 1",
 };
 
-let specSaveChain = Promise.resolve();
-
 function modelOptions() {
   if (!state.models.length) return '<option value="">Default pipeline model</option>';
+  const selected = state.runSetupModelDraft || state.model || state.defaultModel;
   return state.models.map((model) => `<option value="${esc(model.id)}"
-    ${model.id === (state.model || state.defaultModel) ? "selected" : ""}>${esc(model.label)}</option>`).join("");
+    ${model.id === selected ? "selected" : ""}>${esc(model.label)}</option>`).join("");
 }
 
-function setupHtml(showRun = true, showIndividual = false) {
-  const spec = state.spec;
+function setupHtml(showRun = true, showIndividual = false, open = false) {
+  const spec = state.runSetupDraft || state.spec;
   const constants = spec?.constants || {};
   const size = state.customPage ? "custom" : pageSizeKey(spec);
   const orientation = spec?.orientation || "portrait";
@@ -301,9 +304,15 @@ function setupHtml(showRun = true, showIndividual = false) {
     .map(([value, label]) => option(value, current, label)).join("");
   const value = (candidate) => Number.isFinite(Number(candidate)) ? Number(candidate) : "";
   return `
-    <section class="setup-card featured">
-      <div class="setup-heading"><h3>Run setup</h3>
-        <span>Model per run · output specification shared by every map</span></div>
+    <details class="run-setup-disclosure" id="run-setup-disclosure" ${open ? "open" : ""}>
+      <summary>
+        <span class="run-setup-copy"><strong>Run setup</strong>
+          <small>Model per run · output specification shared by every map</small></span>
+        <span class="run-setup-summary-value">${state.runSetupDirty
+          ? "Changes pending"
+          : showRun ? "Choose settings and start" : "Review settings"}</span>
+      </summary>
+      <div class="run-setup-body"><section class="setup-card featured">
       <div class="setup-fields"><div class="form-grid" id="preflight-form">
         <label class="field">
           <span>Model</span>
@@ -398,8 +407,16 @@ function setupHtml(showRun = true, showIndividual = false) {
         ${showIndividual ? `<button class="button primary" id="show-step-controls" type="button">
           Run each step individually</button>` : ""}
         <button class="button primary run-button" id="run-all" type="button">Run all</button>
-      </div>` : ""}
-    </section>`;
+      </div>` : `<div class="run-setup-apply-row">
+        <span class="status-copy${state.runSetupDirty ? " warning" : ""}" id="run-setup-apply-status">
+          ${state.runSetupDirty
+            ? "Changes are not applied yet."
+            : "Applied changes affect steps started afterwards."}</span>
+        <button class="button primary small" id="apply-run-setup" type="button"
+          ${state.runSetupDirty ? "" : "disabled"}>Apply setup changes</button>
+      </div>`}
+      </section></div>
+    </details>`;
 }
 
 function individualStepDotsHtml(map) {
@@ -451,45 +468,81 @@ function individualRunHtml(map) {
     ${nextAction}`;
 }
 
+/** Setup edits are drafts until Apply (or either initial Run button) commits
+ * them. This prevents a half-edited form from changing a live pipeline. */
+function markRunSetupDirty(message = "Changes are not applied yet.") {
+  state.runSetupDirty = true;
+  const button = $("apply-run-setup");
+  if (button) button.disabled = false;
+  statusLine("run-setup-apply-status", message, "warning");
+}
+
 /** Re-rendering mid-edit would replace the inputs the user is still typing in,
- *  so only a change of page-size mode asks for one. */
-function saveSpec(patch, rerender = false) {
-  const save = async () => {
-    if (!state.spec) {
-      toast("The output spec could not be read; reload the page.", "error");
-      return;
-    }
-    // Constants are nested in the JSON file. Merge a changed constant instead
-    // of replacing its siblings, then serialize writes so quick edits cannot
-    // land out of order and silently restore an older value.
-    const next = {
-      ...state.spec,
-      ...patch,
-      ...(patch.constants ? {
-        constants: { ...(state.spec.constants || {}), ...patch.constants },
-      } : {}),
-    };
-    try {
-      await saveSpecText(next);
-      state.spec = next;
-      if (rerender) renderControls();
-      toast("Output specification saved.");
-    } catch (error) {
-      toast(error.message, "error");
-      renderControls();  // restore every field from the last valid spec
-    }
+ * so only a change of page-size mode asks for one. */
+function stageSpec(patch, rerender = false) {
+  const current = state.runSetupDraft || state.spec;
+  if (!current) {
+    toast("The output spec could not be read; reload the page.", "error");
+    return;
+  }
+  // Constants are nested in the JSON file. Merge one changed constant without
+  // replacing its siblings in the pending draft.
+  state.runSetupDraft = {
+    ...current,
+    ...patch,
+    ...(patch.constants ? {
+      constants: { ...(current.constants || {}), ...patch.constants },
+    } : {}),
   };
-  const operation = specSaveChain.then(save, save);
-  specSaveChain = operation.catch(() => {});
-  return operation;
+  state.runSetupDirty = true;
+  if (rerender) renderControls();
+  else markRunSetupDirty();
+}
+
+/** Persist both halves of Run setup. Output settings are shared and are read
+ * by later steps; the model is captured only when the next job starts. */
+async function commitRunSetup() {
+  const selectedModel = $("model-select")?.value
+    || state.runSetupModelDraft || state.model || state.defaultModel;
+  const draft = state.runSetupDraft;
+  if (draft) {
+    await saveSpecText(draft);
+    state.spec = draft;
+  }
+  state.runSetupModelDraft = selectedModel;
+  await savePreflight();
+  state.runSetupDraft = null;
+  state.runSetupModelDraft = state.model || selectedModel;
+  state.runSetupDirty = false;
+}
+
+async function applyRunSetupChanges(event) {
+  const button = event?.currentTarget || $("apply-run-setup");
+  await withBusy(button, "Applying…", async () => {
+    await commitRunSetup();
+    statusLine(
+      "run-setup-apply-status",
+      isRunning(selectedMap())
+        ? "Applied. Later steps use the output settings; the selected model starts with the next job."
+        : "Setup changes applied. Completed outputs remain unchanged until rerun.",
+      "success",
+    );
+    toast("Run setup changes applied.");
+  });
+  // withBusy restores the button after a successful commit; keep it disabled
+  // until another field is edited.
+  if (!state.runSetupDirty && button?.isConnected) button.disabled = true;
 }
 
 function bindPageSetup() {
+  $("run-setup-disclosure")?.addEventListener("toggle", (event) => {
+    state.runSetupOpen = event.currentTarget.open;
+  });
   $("advanced-output-spec")?.addEventListener("toggle", (event) => {
     state.specAdvancedOpen = event.currentTarget.open;
   });
   $("output-medium")?.addEventListener("change", (event) => {
-    saveSpec({ medium: event.target.value });
+    stageSpec({ medium: event.target.value });
   });
   $("page-size")?.addEventListener("change", (event) => {
     const size = PAGE_SIZES[event.target.value];
@@ -498,18 +551,18 @@ function bindPageSetup() {
       renderControls();  // reveal the width/height fields; nothing saved yet
       return;
     }
-    saveSpec({ page_width_mm: size[0], page_height_mm: size[1] }, true);
+    stageSpec({ page_width_mm: size[0], page_height_mm: size[1] }, true);
   });
   $("page-orientation")?.addEventListener("change", (event) => {
-    saveSpec({ orientation: event.target.value });
+    stageSpec({ orientation: event.target.value });
   });
   $("page-margin")?.addEventListener("change", (event) => {
-    saveSpec({ margin_mm: Number(event.target.value) });
+    stageSpec({ margin_mm: Number(event.target.value) });
   });
   $("braille-standard")?.addEventListener("change", (event) => {
-    saveSpec({ braille_standard: event.target.value });
+    stageSpec({ braille_standard: event.target.value });
   });
-  const saveCustom = () => saveSpec({
+  const saveCustom = () => stageSpec({
     page_width_mm: Number($("page-width").value),
     page_height_mm: Number($("page-height").value),
   });
@@ -517,7 +570,7 @@ function bindPageSetup() {
   $("page-height")?.addEventListener("change", saveCustom);
   document.querySelectorAll("[data-spec-constant]").forEach((input) => {
     input.addEventListener("change", () => {
-      saveSpec({ constants: { [input.dataset.specConstant]: Number(input.value) } });
+      stageSpec({ constants: { [input.dataset.specConstant]: Number(input.value) } });
     });
   });
 }
@@ -644,9 +697,10 @@ async function retryFailedJob() {
 
 async function runAll() {
   await withBusy($("run-all"), "Starting…", async () => {
-    await savePreflight();
+    await commitRunSetup();
     rememberIndividualMode(state.selected, false);
     state.individualRun = false;
+    state.runSetupOpen = false;
     state.autorun = true;
     const map = selectedMap();
     const missing = INITIAL_BATCH.filter((step) => !map.steps?.[step]);
@@ -658,9 +712,10 @@ async function runAll() {
 async function showIndividualSteps(event) {
   const button = event?.currentTarget || $("show-step-controls");
   await withBusy(button, "Starting Step 1…", async () => {
-    await savePreflight();
+    await commitRunSetup();
     rememberIndividualMode(state.selected, true);
     state.individualRun = true;
+    state.runSetupOpen = false;
     state.autorun = false;
     state.activeStep = 1;
     state.viewStep = null;
@@ -668,10 +723,10 @@ async function showIndividualSteps(event) {
   });
 }
 
-/** Resume a paused run, saving the settings still on screen first. */
+/** Resume a paused run, applying the settings still on screen first. */
 async function resumeRun() {
   await withBusy($("continue-run"), "Starting…", async () => {
-    if ($("model-select")) await savePreflight();
+    if ($("model-select")) await commitRunSetup();
     await continuePipeline();
   });
 }
@@ -816,6 +871,13 @@ async function continueAfterLegendApproval() {
 }
 
 function bindControlEvents() {
+  document.querySelectorAll(".reading-more-chip").forEach((button) => {
+    button.addEventListener("click", () => {
+      button.closest(".reading-class-preview")
+        ?.querySelectorAll(".reading-extra-chip").forEach((extra) => { extra.hidden = false; });
+      button.remove();
+    });
+  });
   document.querySelectorAll("[data-individual-step]").forEach((dot) => {
     dot.addEventListener("click", () => {
       state.viewStep = dot.dataset.individualStep;
@@ -846,7 +908,11 @@ function bindControlEvents() {
     button.addEventListener("click", () => runSingleStep(button.dataset.runStep, button));
   });
   $("show-step-controls")?.addEventListener("click", showIndividualSteps);
-  $("model-select")?.addEventListener("change", (event) => { state.model = event.target.value; });
+  $("model-select")?.addEventListener("change", (event) => {
+    state.runSetupModelDraft = event.target.value;
+    markRunSetupDirty();
+  });
+  $("apply-run-setup")?.addEventListener("click", applyRunSetupChanges);
   $("run-all")?.addEventListener("click", runAll);
   $("continue-run")?.addEventListener("click", resumeRun);
   $("continue-pipeline")?.addEventListener("click", continuePipeline);

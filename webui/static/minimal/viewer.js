@@ -57,14 +57,15 @@ export function snapToGrid(position, pxPerMm = 5) {
   return position.map((value) => Math.round(value / interval) * interval);
 }
 
-/** Wire one toolbar to the frame it sits under.  Zoom drives the frame width,
- *  so the picture and every overlay on it scale together. */
+/** Wire one toolbar to the frame it sits under. Zoom changes only the inner
+ *  map sheet; the stage and its scroll viewport retain their dimensions. */
 export function bindViewer(index, onColourChange) {
   const toolbar = document.querySelector(`.page-view-toolbar[data-viewer="${index}"]`);
   const frame = document.querySelector(`.map-stage[data-view="${index}"] .map-frame`);
+  const zoomSpace = frame?.querySelector(".map-zoom-space");
   const sheet = frame?.querySelector(".map-canvas");
   const image = sheet?.querySelector("img[data-viewer-image]") || sheet?.querySelector("img");
-  if (!toolbar || !frame || !sheet || !image) return;
+  if (!toolbar || !frame || !zoomSpace || !sheet || !image) return;
 
   const range = toolbar.querySelector(".page-zoom-range");
   const readout = toolbar.querySelector(".page-zoom-readout");
@@ -85,17 +86,28 @@ export function bindViewer(index, onColourChange) {
   const apply = (value, label = null) => {
     const currentMin = Math.max(MIN_FIT_ZOOM, Number(range.min) || MIN_ZOOM);
     zoom = Math.min(MAX_ZOOM, Math.max(currentMin, Number(value) || 100));
-    // Natural width is the page at 100%; the sheet carries the overlay too.
-    const natural = Number(sheet.dataset.naturalWidth)
+    // Natural dimensions remain the immutable page/canvas coordinate system.
+    // Only the visual transform changes; a separate space supplies the scaled
+    // scroll extent without resizing or reflowing anything on the paper.
+    const naturalW = Number(sheet.dataset.naturalWidth)
       || image.naturalWidth || sheet.clientWidth || 1;
-    sheet.style.width = `${natural * zoom / 100}px`;
+    const naturalH = Number(sheet.dataset.naturalHeight)
+      || image.naturalHeight || sheet.clientHeight || 1;
+    const scale = zoom / 100;
+    sheet.style.width = `${naturalW}px`;
+    sheet.style.height = `${naturalH}px`;
+    sheet.style.transform = `scale(${scale})`;
+    zoomSpace.style.width = `${naturalW * scale}px`;
+    zoomSpace.style.height = `${naturalH * scale}px`;
     range.value = String(zoom);
     readout.textContent = label || `${Math.round(zoom)}%`;
   };
   const fit = () => {
-    // Collapse the sheet first: once it has been zoomed wider than its
-    // surround, measuring would just report the width the sheet itself forced.
-    sheet.style.width = "";
+    // Collapse only the scroll extent while measuring. The paper itself keeps
+    // its natural dimensions and is never reflowed by a Fit operation.
+    sheet.style.transform = "scale(0)";
+    zoomSpace.style.width = "0px";
+    zoomSpace.style.height = "0px";
     // Fit means the whole sheet is visible, so height constrains it as much as
     // width does -- a portrait page is otherwise cut off below the fold.
     const availableW = Math.max(200, frame.clientWidth - 30);

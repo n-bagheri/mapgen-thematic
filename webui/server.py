@@ -10,6 +10,7 @@ job log. Artifacts are served straight from runs/<stem>/.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -63,15 +64,20 @@ _SOURCE_FILES = (Path(__file__).resolve(), *sorted((ROOT / "mapgen").glob("*.py"
 _STALE_CHECK_SECONDS = 2.0
 
 
-def _source_fingerprint() -> tuple:
+def _source_fingerprint() -> tuple | None:
+    """Hash the loaded sources, ignoring harmless timestamp-only changes.
+
+    Editors and file scanners can briefly replace or lock a source file. A
+    failed read is inconclusive and must not permanently label the running
+    server as stale.
+    """
     marks = []
     for path in _SOURCE_FILES:
         try:
-            stat = path.stat()
+            digest = hashlib.sha256(path.read_bytes()).digest()
         except OSError:
-            marks.append((path.name, None, None))
-        else:
-            marks.append((path.name, stat.st_mtime_ns, stat.st_size))
+            return None
+        marks.append((path.relative_to(ROOT).as_posix(), digest))
     return tuple(marks)
 
 
@@ -80,18 +86,21 @@ _stale_source_check: tuple[float, bool] = (0.0, False)
 
 
 def restart_required() -> bool:
-    """True once the files this process was started from have changed on disk.
+    """True while loaded source differs from the source currently on disk.
 
-    Nothing reloads them, so the answer only ever goes from False to True; the
-    check is throttled because /api/maps is polled about once a second while a
-    job runs.
+    The check is throttled because /api/maps is polled about once a second
+    while a job runs.
     """
     global _stale_source_check
     checked_at, stale = _stale_source_check
     now = time.monotonic()
-    if stale or now - checked_at < _STALE_CHECK_SECONDS:
+    if now - checked_at < _STALE_CHECK_SECONDS:
         return stale
-    stale = _source_fingerprint() != _STARTED_FINGERPRINT
+    current = _source_fingerprint()
+    # A transient read failure says nothing about source freshness. Keep the
+    # last reliable result and try again after the normal throttle interval.
+    if current is not None:
+        stale = current != _STARTED_FINGERPRINT
     _stale_source_check = (now, stale)
     return stale
 
@@ -637,12 +646,17 @@ def api_upload():
     name = re.sub(r"[^\w.\-]", "_", name)
     dest = MAPS_DIR / name
     i = 1
-    while dest.exists():
+    # A removed or interrupted project can leave a run directory behind. Do
+    # not attach those artifacts to a new upload that happens to share its
+    # filename; a new map must always start with an empty Run setup.
+    while dest.exists() or (RUNS_DIR / dest.stem).exists():
         dest = MAPS_DIR / f"{Path(name).stem}_{i}{Path(name).suffix}"
         i += 1
     MAPS_DIR.mkdir(exist_ok=True)
     f.save(dest)
-    existing_order.append(dest.stem)
+    # A freshly added map is the item the reader is about to work on, so keep
+    # it immediately reachable at the top of the library.
+    existing_order.insert(0, dest.stem)
     _save_project_order(list(dict.fromkeys(existing_order)))
     return jsonify({"ok": True, "name": dest.name})
 

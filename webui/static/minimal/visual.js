@@ -111,9 +111,13 @@ function legendPageCanvasHtml(map, view, source, imageId, canvasId) {
   const legendPage = state.data.legend?.page;
   const [legendW, legendH] = (legendPage?.canvas_px || []).map(Number);
   if (![legendW, legendH].every(Number.isFinite) || !legendW || !legendH) return "";
+  const hybridEnabled = state.data.step7Review?.create_hybrid_map === true;
+  const finalName = state.colourView && hybridEnabled
+    ? "step9_legend_hybrid.png" : "step9_legend.png";
   const legend = `<img id="${imageId}" src="${source.url}"
       alt="${esc(view.caption)} for ${esc(map.name)}" data-viewer-image
-      data-artifact="${esc(source.name)}">${overlayMarkup(view)}`;
+      data-artifact="${esc(source.name)}"
+      data-full-size-url="${artifactUrl(map.stem, finalName)}">${overlayMarkup(view)}`;
   if (state.showFinalMap) {
     const [mapW, mapH] = (state.data.braille?.page?.canvas_px || []).map(Number);
     if ([mapW, mapH].every(Number.isFinite) && mapW && mapH) {
@@ -169,13 +173,9 @@ function layerButton(layer, label) {
       aria-pressed="${state.layers[layer]}">${label}</button>`;
 }
 
-/** The layer switches only exist where there is an editable vector overlay. */
+/** Layer switches are shown only for the simplified-map review. Step 4 keeps
+ * its detected lines visible without adding a toolbar beneath the map. */
 function layerToolbar(view) {
-  if (view.overlay === "segmented-lines") {
-    return `<div class="layer-toolbar" aria-label="Segmented map layers">
-      <span>Map overlay</span>${layerButton("segmentedLines", "Display lines")}
-    </div>`;
-  }
   if (view.overlay !== "layers") return "";
   return `<div class="layer-toolbar" aria-label="Simplified map layers">
       <span>Layers</span>
@@ -193,6 +193,7 @@ export function renderVisual() {
   // Step 2 now always uses the decision card, which intentionally has no
   // separate "start painting" button. Selecting it activates its brush.
   state.maskBrush.active = step === 2 && Boolean(state.data.mask);
+  if (step !== 4) state.lineDrawing.active = false;
   const definition = STEP_DEFS.find((item) => item.key === String(step));
   const views = STEP_VIEWS[step] || [];
   const ready = Boolean(map.steps?.[String(step)]) || step === 1;
@@ -221,7 +222,11 @@ export function renderVisual() {
           <h2>${esc(view.caption)}</h2>
         </header>
         ${viewerToolbarHtml(view, index)}
-        <div class="map-frame"${frameId}>${canvas}</div>
+        <div class="map-frame"${frameId}>
+          <div class="map-viewport-content">
+            <div class="map-zoom-space">${canvas}</div>
+          </div>
+        </div>
         ${layerToolbar(view)}
       </article>` };
   }) : [];
@@ -293,6 +298,7 @@ function bindVisualEvents() {
     bindViewer(Number(bar.dataset.viewer), renderVisual);
   });
   bindMaskCanvas();
+  bindLineDrawingSurface();
   bindBrailleOverlay();
   bindLegendOverlay();
 }
@@ -336,6 +342,141 @@ function linePath(points) {
     `${index ? "L" : "M"} ${Number(point[0]).toFixed(2)} ${Number(point[1]).toFixed(2)}`).join(" ");
 }
 
+function lineDrawingMarkup() {
+  return `<path class="line-draft-path" d="${linePath(state.lineDrawing.draft)}"></path>
+    <circle class="line-draw-cursor" cx="0" cy="0" r="0"></circle>`;
+}
+
+function syncLineDrawingUi() {
+  const added = state.lineDrawing.addedIds.length;
+  const draw = $("draw-new-line");
+  if (draw) {
+    draw.textContent = state.lineDrawing.active ? "Stop drawing" : "Draw new lines";
+    draw.setAttribute("aria-pressed", String(state.lineDrawing.active));
+  }
+  const undo = $("undo-drawn-line");
+  if (undo) undo.disabled = !added;
+  const discard = $("discard-drawn-lines");
+  if (discard) discard.disabled = !added && !state.lineDrawing.draft.length;
+  const save = $("save-drawn-lines");
+  if (save) save.disabled = !added;
+  const status = $("line-drawing-status");
+  if (status) {
+    status.textContent = state.lineDrawing.active
+      ? "Drag on the map to draw one line per stroke."
+      : added
+        ? `${added} unsaved drawn stroke${added === 1 ? "" : "s"}`
+        : "Select Draw new lines, then drag on the map.";
+  }
+}
+
+function syncLineDrawingSurface(overlay) {
+  if (!overlay) return;
+  overlay.classList.toggle("is-line-drawing", state.lineDrawing.active);
+  if (!state.lineDrawing.active) {
+    overlay.querySelector(".line-draw-cursor")?.classList.remove("is-visible");
+  }
+}
+
+export function setLineDrawingActive(active) {
+  state.lineDrawing.active = Boolean(active);
+  if (state.lineDrawing.active) {
+    state.panMode = false;
+    state.layers.lines = true;
+    document.querySelectorAll(".map-frame").forEach((frame) => {
+      frame.classList.remove("is-pan-enabled", "is-panning");
+    });
+    document.querySelectorAll(".page-pan-toggle").forEach((button) => {
+      button.setAttribute("aria-pressed", "false");
+    });
+    document.querySelector('[data-layer="lines"]')?.setAttribute("aria-pressed", "true");
+  } else {
+    state.lineDrawing.draft = [];
+  }
+  syncLineDrawingSurface($("map-overlay") || $("segmented-lines-overlay"));
+  updateLayerVisibility();
+  syncLineDrawingUi();
+}
+
+function bindLineDrawingSurface() {
+  const overlay = $("map-overlay") || $("segmented-lines-overlay");
+  const review = state.data.lines;
+  if (!overlay || !review) return;
+  syncLineDrawingSurface(overlay);
+
+  const toPoint = (event) => {
+    const box = overlay.getBoundingClientRect();
+    const width = Number(review.width) || 1;
+    const height = Number(review.height) || 1;
+    if (!box.width || !box.height) return null;
+    return [
+      Math.max(0, Math.min(width - 1, (event.clientX - box.left) / box.width * width)),
+      Math.max(0, Math.min(height - 1, (event.clientY - box.top) / box.height * height)),
+    ];
+  };
+  const updatePointer = (event) => {
+    if (!state.lineDrawing.active) return;
+    const point = toPoint(event);
+    const cursor = overlay.querySelector(".line-draw-cursor");
+    const box = overlay.getBoundingClientRect();
+    if (!point || !cursor || !box.width) return;
+    cursor.setAttribute("cx", point[0]);
+    cursor.setAttribute("cy", point[1]);
+    cursor.setAttribute("r", 7 * Number(review.width || 1) / box.width);
+    cursor.classList.add("is-visible");
+  };
+  const updateDraft = () => {
+    overlay.querySelector(".line-draft-path")
+      ?.setAttribute("d", linePath(state.lineDrawing.draft));
+    syncLineDrawingUi();
+  };
+  overlay.addEventListener("pointerdown", (event) => {
+    if (!state.lineDrawing.active || event.button !== 0) return;
+    event.preventDefault();
+    const point = toPoint(event);
+    if (!point) return;
+    overlay.setPointerCapture(event.pointerId);
+    state.lineDrawing.draft = [point];
+    updatePointer(event);
+    updateDraft();
+  });
+  overlay.addEventListener("pointermove", (event) => {
+    updatePointer(event);
+    const draft = state.lineDrawing.draft;
+    if (!state.lineDrawing.active || !draft.length || draft.length >= 4000) return;
+    const point = toPoint(event);
+    const previous = draft.at(-1);
+    if (point && Math.hypot(point[0] - previous[0], point[1] - previous[1]) >= 1) {
+      draft.push(point);
+      updateDraft();
+    }
+  });
+  const finishStroke = () => {
+    const draft = state.lineDrawing.draft;
+    if (!draft.length) return;
+    if (draft.length >= 2) {
+      const id = `manual-${Date.now().toString(36)}-${state.lineDrawing.addedIds.length}`;
+      review.manual_rivers = review.manual_rivers || [];
+      review.manual_rivers.push({ id, label: "", edit_kind: "drawn", points: draft });
+      state.lineDrawing.addedIds.push(id);
+    }
+    state.lineDrawing.draft = [];
+    renderMapOverlay();
+    renderSegmentedLinesOverlay();
+    syncLineDrawingUi();
+  };
+  overlay.addEventListener("pointerup", finishStroke);
+  overlay.addEventListener("pointercancel", () => {
+    state.lineDrawing.draft = [];
+    updateDraft();
+  });
+  overlay.addEventListener("pointerleave", () => {
+    if (!state.lineDrawing.draft.length) {
+      overlay.querySelector(".line-draw-cursor")?.classList.remove("is-visible");
+    }
+  });
+}
+
 function geometryLines(feature) {
   const geometry = feature?.geometry || {};
   if (geometry.type === "LineString") return [geometry.coordinates || []];
@@ -367,13 +508,19 @@ export function renderMapOverlay() {
   overlay.setAttribute("viewBox", `0 0 ${width} ${height}`);
   overlay.setAttribute("preserveAspectRatio", "none");
 
-  const fixedFeatures = state.data.lineGeo?.features || review?.fixed_features || [];
-  const boundaryPaths = fixedFeatures.flatMap((feature) => {
-    const kind = feature?.properties?.kind;
-    if (!["border", "border_or_coast"].includes(kind)) return [];
-    return geometryLines(feature).map((points) =>
-      `<path class="boundary-path" d="${linePath(points)}"></path>`);
-  }).join("");
+  const boundaryKinds = new Set(["border", "border_or_coast", "coastline"]);
+  const generatedBoundaries = (state.data.lineGeo?.features || [])
+    .filter((feature) => boundaryKinds.has(feature?.properties?.kind));
+  // A map can deliberately retain no Step 6 linework while still having an
+  // extracted geographic outline. Keep that outline available as a view layer
+  // by falling back to Step 4's reviewed fixed features.
+  const boundaryFeatures = generatedBoundaries.length
+    ? generatedBoundaries
+    : (review?.fixed_features || [])
+      .filter((feature) => boundaryKinds.has(feature?.properties?.kind));
+  const boundaryPaths = boundaryFeatures.flatMap((feature) =>
+    geometryLines(feature).map((points) =>
+      `<path class="boundary-path" d="${linePath(points)}"></path>`)).join("");
 
   const extracted = review?.automatic_rivers || [];
   const includeLines = review?.include_rivers !== false;
@@ -396,8 +543,10 @@ export function renderMapOverlay() {
   overlay.innerHTML = `
     <g class="boundary-layer">${boundaryPaths}</g>
     <g class="line-layer">${linePaths}${manualPaths}</g>
-    <g class="label-layer">${labels}</g>`;
+    <g class="label-layer">${labels}</g>
+    ${lineDrawingMarkup()}`;
   updateLayerVisibility();
+  syncLineDrawingSurface(overlay);
 }
 
 /** Step 4 keeps the segmented colours as its sole image. The reviewed rivers
@@ -419,8 +568,9 @@ export function renderSegmentedLinesOverlay() {
   const manual = (review?.manual_rivers || []).map((line) => `
     <path class="line-path${includeLines ? "" : " is-excluded"}"
       d="${linePath(line.points)}"></path>`).join("");
-  overlay.innerHTML = `<g class="line-layer">${automatic}${manual}</g>`;
+  overlay.innerHTML = `<g class="line-layer">${automatic}${manual}</g>${lineDrawingMarkup()}`;
   updateSegmentedLinesVisibility();
+  syncLineDrawingSurface(overlay);
 }
 
 function updateLayerVisibility() {

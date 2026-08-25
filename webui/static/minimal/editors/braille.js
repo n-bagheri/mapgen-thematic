@@ -244,7 +244,7 @@ async function flushPendingText() {
   await Promise.all(saves);
 }
 
-function grade1Preview(value, preserveNewlines = false) {
+export function grade1Preview(value, preserveNewlines = false) {
   const text = String(value || "").normalize("NFKD").replace(/\p{M}/gu, "").replace(/\r/g, "");
   let output = "";
   let numberMode = false;

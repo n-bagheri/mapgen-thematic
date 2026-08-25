@@ -12,8 +12,14 @@ import { renderMapOverlay } from "../visual.js";
 
 export function textEditorHtml() {
   const occurrences = state.data.labels?.occurrences || [];
+  const allOff = occurrences.length > 0 && occurrences.every((item) => item.include === false);
   const body = occurrences.length ? `
     <p class="section-intro">Edit the detected wording or turn off entries you do not want carried into the tactile map. Detected source ink is cleaned automatically before segmentation.</p>
+    <div class="label-list-toolbar">
+      <span>${occurrences.length} detected text entr${occurrences.length === 1 ? "y" : "ies"}</span>
+      <button class="button secondary small" id="toggle-all-text" type="button">
+        ${allOff ? "Turn all on" : "Turn all off"}</button>
+    </div>
     <div class="label-list">
       ${occurrences.map((item) => `
         <div class="label-row${item.include === false ? " is-excluded" : ""}" data-label-id="${esc(item.id)}">
@@ -34,7 +40,15 @@ export function textEditorHtml() {
 export function bindTextEditor() {
   const section = document.querySelector('[data-editor="text"]');
   if (!section) return;
-  section.querySelectorAll(".label-row").forEach((row) => {
+  const rows = [...section.querySelectorAll(".label-row")];
+  const bulkToggle = $("toggle-all-text");
+  const syncBulkToggle = () => {
+    if (!bulkToggle) return;
+    const checkboxes = rows.map((row) => row.querySelector(".label-include"));
+    const allOff = checkboxes.length > 0 && checkboxes.every((checkbox) => !checkbox.checked);
+    bulkToggle.textContent = allOff ? "Turn all on" : "Turn all off";
+  };
+  rows.forEach((row) => {
     const item = state.data.labels?.occurrences?.find((entry) => String(entry.id) === row.dataset.labelId);
     const update = () => {
       if (!item) return;
@@ -43,10 +57,28 @@ export function bindTextEditor() {
       item.remove = true;
       row.classList.toggle("is-excluded", !item.include);
       statusLine("text-save-status", "Unsaved changes");
+      syncBulkToggle();
       renderMapOverlay();
     };
     row.querySelector(".label-text")?.addEventListener("input", update);
     row.querySelector(".label-include")?.addEventListener("change", update);
+  });
+  bulkToggle?.addEventListener("click", () => {
+    const checkboxes = rows.map((row) => row.querySelector(".label-include"));
+    const enableAll = checkboxes.every((checkbox) => !checkbox.checked);
+    rows.forEach((row, index) => {
+      const item = state.data.labels?.occurrences?.find(
+        (entry) => String(entry.id) === row.dataset.labelId);
+      checkboxes[index].checked = enableAll;
+      if (item) {
+        item.include = enableAll;
+        item.remove = true;
+      }
+      row.classList.toggle("is-excluded", !enableAll);
+    });
+    statusLine("text-save-status", "Unsaved changes");
+    syncBulkToggle();
+    renderMapOverlay();
   });
   $("save-text")?.addEventListener("click", saveText);
 }

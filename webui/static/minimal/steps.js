@@ -144,7 +144,7 @@ export const STEP_VIEWS = {
       pageRender: true, originalCompare: true },
   ],
   9: [
-    { artifact: "step9_legend.png", hybrid: "step9_legend_hybrid.png",
+    { artifact: "step9_legend_base.png", hybrid: "step9_legend_base.png",
       caption: "The separate legend page", overlay: "legend",
       legendPage: true, mapLegendCompare: true },
   ],

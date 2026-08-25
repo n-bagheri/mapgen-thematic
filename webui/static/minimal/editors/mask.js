@@ -22,7 +22,7 @@ export function maskDecisionHtml() {
       <p class="section-intro">The detected map area will be adapted to a tactile map. Remove parts
         that should not be included, restore areas that were excluded, or approve the detected mask unchanged.</p>
       <div class="mask-decision-modes" role="radiogroup" aria-label="Mask brush mode">
-        <label><input type="radio" name="mask-mode" value="erase" ${brush.mode === "erase" ? "checked" : ""}>
+        <label class="mask-mode-erase"><input type="radio" name="mask-mode" value="erase" ${brush.mode === "erase" ? "checked" : ""}>
           <span class="mask-mode-icon" aria-hidden="true">
             <svg viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
               <path d="M5.5 24.5 20.1 9.9a3 3 0 0 1 4.2 0l5.8 5.8a3 3 0 0 1 0 4.2L20 30H11l-5.5-5.5Z"/>
@@ -58,6 +58,7 @@ export function bindMaskEditor(onApproved) {
   radius?.addEventListener("input", () => {
     state.maskBrush.radius = Number(radius.value);
     $("mask-radius-value").textContent = `${radius.value}px`;
+    refreshMaskBrushCursorSize();
   });
   $("mask-save")?.addEventListener("click", saveMask);
   $("mask-undo")?.addEventListener("click", undoMaskStroke);
@@ -74,6 +75,7 @@ export function bindMaskCanvas() {
   const holder = $("mask-target");
   if (!holder) return;
   holder.querySelector(".mask-canvas")?.remove();
+  holder.querySelector(".mask-brush-cursor")?.remove();
   holder.classList.toggle("is-masking", state.maskBrush.active);
   const review = state.data.mask;
   if (!review) return;
@@ -84,6 +86,10 @@ export function bindMaskCanvas() {
   canvas.height = Number(review.height) || 1;
   canvas.setAttribute("aria-label", "Current editable geographic mask over the map");
   holder.appendChild(canvas);
+  const brushCursor = document.createElement("div");
+  brushCursor.className = "mask-brush-cursor";
+  brushCursor.setAttribute("aria-hidden", "true");
+  holder.appendChild(brushCursor);
   const context = canvas.getContext("2d");
   const maskImage = new Image();
   let maskReady = false;
@@ -106,6 +112,16 @@ export function bindMaskCanvas() {
     ];
   };
 
+  const positionBrushCursor = (event) => {
+    if (!state.maskBrush.active) return;
+    const box = canvas.getBoundingClientRect();
+    if (!box.width || !box.height) return;
+    brushCursor.style.left = `${(event.clientX - box.left) / box.width * 100}%`;
+    brushCursor.style.top = `${(event.clientY - box.top) / box.height * 100}%`;
+    sizeMaskBrushCursor(canvas, brushCursor);
+    brushCursor.classList.add("is-visible");
+  };
+
   canvas.addEventListener("pointerdown", (event) => {
     if (!state.maskBrush.active || !maskReady) return;
     if (state.maskBrush.strokes.length >= 300) {
@@ -114,11 +130,13 @@ export function bindMaskCanvas() {
     }
     const point = toImagePoint(event);
     if (!point) return;
+    positionBrushCursor(event);
     canvas.setPointerCapture(event.pointerId);
     current = { mode: state.maskBrush.mode, radius: state.maskBrush.radius, points: [point] };
     redrawMask(context, maskImage, current);
   });
   canvas.addEventListener("pointermove", (event) => {
+    positionBrushCursor(event);
     if (!current) return;
     const point = toImagePoint(event);
     // 5000 points is the server ceiling for one stroke; stop well inside it.
@@ -145,7 +163,29 @@ export function bindMaskCanvas() {
   };
   canvas.addEventListener("pointerup", finish);
   canvas.addEventListener("pointercancel", finish);
-  canvas.addEventListener("pointerleave", finish);
+  canvas.addEventListener("pointerleave", () => {
+    brushCursor.classList.remove("is-visible");
+    finish();
+  });
+}
+
+function sizeMaskBrushCursor(canvas, cursor) {
+  // clientWidth/clientHeight exclude the map viewer's CSS zoom transform.
+  // The cursor is inside that same transformed map, so including the zoom here
+  // would scale it twice and make brush-size changes almost invisible at Fit.
+  const scaleX = (canvas.clientWidth || canvas.width) / canvas.width;
+  const scaleY = (canvas.clientHeight || canvas.height) / canvas.height;
+  const localScale = Math.min(scaleX, scaleY);
+  const diameter = state.maskBrush.radius * 2 * localScale;
+  cursor.style.width = `${diameter}px`;
+  cursor.style.height = `${diameter}px`;
+}
+
+function refreshMaskBrushCursorSize() {
+  const holder = $("mask-target");
+  const canvas = holder?.querySelector(".mask-canvas");
+  const cursor = holder?.querySelector(".mask-brush-cursor");
+  if (canvas && cursor) sizeMaskBrushCursor(canvas, cursor);
 }
 
 function drawMaskStroke(context, stroke) {

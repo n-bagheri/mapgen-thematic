@@ -7,7 +7,7 @@ import {
   getStep7Review, getStep8Review, getStep9Review,
   runSteps, saveStep6Params, staleServerAdvice, uploadFile,
 } from "./api.js";
-import { blockingReason } from "./steps.js";
+import { blockingReason, completedCount } from "./steps.js";
 import {
   currentStepKey, individualModeFor, isRunning, navCoversWorkspace, rememberIndividualMode,
   selectedMap, serverNotice, setNav, state, toast,
@@ -86,6 +86,11 @@ export async function selectMap(stem) {
   state.renaming = null;
   state.individualRun = individualModeFor(selectedMap());
   if (state.individualRun) rememberIndividualMode(stem, true);
+  state.runSetupOpen = completedCount(selectedMap()) === 0 && !isRunning(selectedMap());
+  state.runSetupDraft = null;
+  state.runSetupModelDraft = state.model || state.defaultModel;
+  state.runSetupDirty = false;
+  state.customPage = false;
   state.patternGroup = 0;
   state.patternDialog = null;
   state.showOriginalMap = false;
@@ -93,6 +98,7 @@ export async function selectMap(stem) {
   state.panMode = false;
   state.colourView = false;
   state.maskBrush = { active: false, mode: "erase", radius: 12, strokes: [] };
+  state.lineDrawing = { active: false, draft: [], addedIds: [] };
   state.activeStep = null;   // follow the run until the reader opens a step
   if (navCoversWorkspace()) setNav(false);   // otherwise the library stays open
   renderProjectList();
