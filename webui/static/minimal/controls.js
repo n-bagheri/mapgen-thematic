@@ -144,14 +144,20 @@ function stepStackHtml(map, completedOnly = false) {
   const rows = listedSteps.map((step) => {
     const number = Number(step.key);
     const done = Boolean(map.steps?.[step.key]);
+    const expanded = number === open;
     const running = currentStepKey(map) === step.key && state.job.status === "running";
     const statusText = running ? "Running" : done ? "Ready" : "Waiting";
     const statusClass = running ? "running" : done ? "done" : "";
-    const body = done
+    // Editors can be very large (Africa has more than 400 detected text
+    // occurrences). Building every closed editor made the browser request all
+    // of those crop thumbnails on every later-step redraw, delaying the map
+    // and pattern images that are actually visible. Mount only the open step;
+    // opening another row re-renders this stack with that editor hydrated.
+    const body = done && expanded
       ? (STEP_EDITORS[number] || []).map((build) => build(map)).join("")
         || '<p class="section-intro">This step has no settings to review.</p>'
-      : `<p class="section-intro">${esc(step.blurb)}</p>`;
-    return `<details class="step-section" data-step="${step.key}" ${number === open ? "open" : ""}>
+      : done ? "" : `<p class="section-intro">${esc(step.blurb)}</p>`;
+    return `<details class="step-section" data-step="${step.key}" ${expanded ? "open" : ""}>
       <summary>
         <span class="editor-number">${esc(step.number)}</span>
         <span class="editor-title"><strong>${esc(step.title)}</strong>
@@ -161,7 +167,7 @@ function stepStackHtml(map, completedOnly = false) {
       </summary>
       <div class="editor-body">
         ${body}
-        ${stepRunRowHtml(map, step, done, running)}
+        ${expanded || !done ? stepRunRowHtml(map, step, done, running) : ""}
       </div>
     </details>`;
   }).join("");
@@ -900,8 +906,14 @@ function bindControlEvents() {
       document.querySelectorAll(".step-section").forEach((other) => {
         if (other !== details) other.open = false;
       });
-      state.viewStep = details.dataset.step;
-      setActiveStep(details.dataset.step);
+      const step = details.dataset.step;
+      // The row that was rendered open already owns a hydrated editor. A
+      // newly opened row was intentionally emitted without its heavy body, so
+      // redraw only now, after it becomes the active step.
+      if (Number(step) === activeStep(selectedMap())) return;
+      state.viewStep = step;
+      setActiveStep(step);
+      renderControls();
     });
   });
   document.querySelectorAll("[data-run-step]").forEach((button) => {

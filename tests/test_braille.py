@@ -308,6 +308,22 @@ class BrailleConversionTests(unittest.TestCase):
                 self.assertEqual(label["pin_shape"], shape)
                 self.assertEqual(label["render_metrics"]["pin_outer_radius_px"], 20.0)
 
+    def test_text_visibility_rerender_reuses_the_unchanged_page_base(self):
+        with TemporaryDirectory() as directory:
+            out_dir = Path(directory)
+            Image.new("L", (240, 160), 255).save(out_dir / "step8a_cleanup.png")
+            render_braille_layout(out_dir, build_braille_layout(overlay_fixture()))
+            layout = json.loads((out_dir / "braille_labels.json").read_text(encoding="utf-8"))
+            label_id = layout["labels"][0]["id"]
+            base_path = out_dir / "step8_braille_base.png"
+            base_before = base_path.read_bytes()
+
+            label, report = update_braille_label(out_dir, label_id, {"enabled": False})
+
+            self.assertFalse(label["enabled"])
+            self.assertEqual(report["enabled_labels"], 0)
+            self.assertEqual(base_path.read_bytes(), base_before)
+
     def test_deleted_detected_text_stays_deleted_after_a_step8_refresh(self):
         with TemporaryDirectory() as directory:
             out_dir = Path(directory)

@@ -30,7 +30,7 @@ from pydantic import BaseModel, Field
 from .isolate import imread, imwrite
 from .output_spec import OutputSpec
 from .patterns import (DEFAULT_PATTERN_TRANSFORM, GROUPS, ORDERED_RAMPS, PATTERNS,
-                       normalize_pattern_transform,
+                       canonical_pattern_id, normalize_pattern_transform,
                        optimize_adjacent_pattern_variants,
                        optimize_user_pattern_change, render_pattern)
 from .semantics import DEFAULT_MODEL, MapSemantics, _ensure_api_key, require_pipeline_eligible
@@ -240,8 +240,12 @@ def render_hybrid_from_tactile(out_dir: Path, tactile: np.ndarray,
     for group, color in colors.items():
         if color is not None:
             hybrid[groups == group] = color
-    # Exact print stack: category colour, black tactile pattern, white boundary
-    # clearance, then the centered black boundary stroke.
+    # Exact print stack: category colour under the *final* tactile raster.
+    # Step 8A may deliberately repaint pure-black components over Step 8's
+    # compound clearance.  The saved masks describe the earlier boundary
+    # geometry, so they may colour only pixels whose final relief value still
+    # agrees with that stroke.  Otherwise the hybrid would resurrect white
+    # outlines that the relief map has already removed.
     hybrid[tactile < 128] = (0, 0, 0)
     white_mask_path = out_dir / "step8_white_stroke_mask.png"
     if white_mask_path.exists():
@@ -249,16 +253,34 @@ def render_hybrid_from_tactile(out_dir: Path, tactile: np.ndarray,
         if white_mask.shape != tactile.shape:
             white_mask = cv2.resize(white_mask, (tactile.shape[1], tactile.shape[0]),
                                     interpolation=cv2.INTER_NEAREST)
-        hybrid[white_mask > 0] = (255, 255, 255)
+        hybrid[(white_mask > 0) & (tactile >= 128)] = (255, 255, 255)
     black_mask_path = out_dir / "step8_black_stroke_mask.png"
     if black_mask_path.exists():
         black_mask = imread(black_mask_path)[..., 0]
         if black_mask.shape != tactile.shape:
             black_mask = cv2.resize(black_mask, (tactile.shape[1], tactile.shape[0]),
                                     interpolation=cv2.INTER_NEAREST)
-        hybrid[black_mask > 0] = (0, 0, 0)
+        hybrid[(black_mask > 0) & (tactile < 128)] = (0, 0, 0)
     imwrite(out_dir / output_name, hybrid)
     return True
+
+
+def rerender_hybrid_artifacts(out_dir: Path) -> list[str]:
+    """Refresh colour layers without rebuilding unchanged tactile geometry."""
+    rendered: list[str] = []
+    for tactile_name, hybrid_name in (
+        ("step7_tactile.png", "step7_hybrid.png"),
+        ("step8a_cleanup.png", "step8a_hybrid.png"),
+    ):
+        tactile_path = out_dir / tactile_name
+        if not tactile_path.exists():
+            continue
+        tactile = imread(tactile_path)
+        if tactile.ndim == 3:
+            tactile = tactile[..., 0]
+        if render_hybrid_from_tactile(out_dir, tactile, hybrid_name):
+            rendered.append(hybrid_name)
+    return rendered
 
 
 def _point(values: list[float] | tuple[float, float]) -> list[float]:
@@ -468,8 +490,17 @@ def reassign_step7_pattern(out_dir: Path, symbols: dict, group_id: int,
         for assignment_id, assignment in enumerate(assignments)
     }
     if preserve_haptic_distances:
+        water_group_ids = {
+            assignment_id for assignment_id, assignment in enumerate(assignments)
+            if assignment.get("is_water") is True
+            or (not assignment.get("is_thematic", True)
+                and not assignment.get("is_background", False)
+                and canonical_pattern_id(assignment.get("pattern", "plain"))
+                    == "04_waves_sine")
+        }
         optimized, audit = optimize_user_pattern_change(
             assignment_group_map, current, group_id, pattern_id,
+            water_group_ids=water_group_ids,
         )
     else:
         optimized = dict(current)
@@ -621,6 +652,7 @@ def run_step7(image_path: Path, model: str | None = None, runs_dir: Path = Path(
                             "pattern_desc": PATTERNS[water_pattern]["desc"],
                             "rationale": ("visible water uses the wavy pattern" if textured_water
                                           else "white background water is intentionally unfilled"),
+                            "is_water": True,
                             "is_thematic": False, "is_background": not textured_water,
                             "legend_visible": textured_water})
         gid += 1
@@ -651,6 +683,7 @@ def run_step7(image_path: Path, model: str | None = None, runs_dir: Path = Path(
                             "source_members": g["members"], "pattern": g["pattern"],
                             "pattern_desc": PATTERNS[g["pattern"]]["desc"],
                             "rationale": g.get("texture_rationale", g.get("rationale", "")),
+                            "is_water": False,
                             "is_thematic": True, "legend_visible": True})
         gid += 1
 
@@ -670,6 +703,7 @@ def run_step7(image_path: Path, model: str | None = None, runs_dir: Path = Path(
                                                if int(c["index"]) in background_ids],
                             "pattern": "plain", "pattern_desc": PATTERNS["plain"]["desc"],
                             "rationale": "non-thematic background is intentionally unfilled",
+                            "is_water": False,
                             "is_thematic": False, "is_background": True,
                             "legend_visible": False})
         gid += 1
@@ -682,7 +716,8 @@ def run_step7(image_path: Path, model: str | None = None, runs_dir: Path = Path(
             idx_to_group[c["index"]] = gid
             assignments.append({"label": c["label"], "members": [c["index"]], "pattern": "plain",
                                 "pattern_desc": PATTERNS["plain"]["desc"],
-                                "rationale": "uncovered thematic class kept plain", "is_thematic": True,
+                                "rationale": "uncovered thematic class kept plain", "is_water": False,
+                                "is_thematic": True,
                                 "legend_visible": True})
             gid += 1
 

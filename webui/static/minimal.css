@@ -394,19 +394,31 @@ img { max-width: 100%; }
 .intermediate-results-body { display: grid; gap: 16px; padding: 16px; }
 .intermediate-results-body .map-stage { box-shadow: none; }
 
-/* The grid is its own layer so zoom scales it with the page. */
-.page-grid { display: none; position: absolute; inset: 0; z-index: 5; pointer-events: none; }
-.map-canvas.show-grid .page-grid {
+/* The grid is a persistent compositor layer so toggling it never reconstructs
+   or repaints the map image underneath. Zoom still scales it with the page. */
+.page-grid {
   display: block;
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  contain: paint;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateZ(0);
+  transition: none;
+  will-change: opacity;
+  background-repeat: repeat;
   background-image:
-    linear-gradient(to right, rgba(36, 86, 214, .30) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(36, 86, 214, .30) 1px, transparent 1px),
-    linear-gradient(to right, rgba(238, 55, 162, .28) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(238, 55, 162, .28) 1px, transparent 1px);
+    linear-gradient(to right, rgba(36, 86, 214, .48) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(36, 86, 214, .48) 1px, transparent 1px),
+    linear-gradient(to right, rgba(220, 24, 130, .62) 2px, transparent 2px),
+    linear-gradient(to bottom, rgba(220, 24, 130, .62) 2px, transparent 2px);
   background-size:
-    var(--grid-x, 2.8%) 100%, 100% var(--grid-y, 2%),
-    var(--guide-x, 14%) 100%, 100% var(--guide-y, 10%);
+    var(--grid-size, 30px) 100%, 100% var(--grid-size, 30px),
+    var(--guide-size, 150px) 100%, 100% var(--guide-size, 150px);
 }
+.page-grid.is-visible { visibility: visible; opacity: 1; }
 
 .map-overlay { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
 .map-overlay text { fill: #1c2430; stroke: rgba(255, 255, 255, .96); stroke-width: 3px; paint-order: stroke; font-weight: 850; letter-spacing: -.01em; vector-effect: non-scaling-stroke; }
@@ -903,17 +915,20 @@ input[type="range"] { width: 100%; accent-color: var(--forest); }
 .pattern-mode-button[aria-pressed="true"] { border-color: #a9c1e8; background: var(--mint-2); }
 .pattern-mode-button[aria-pressed="true"] .mode-switch { background: var(--forest); }
 .pattern-mode-button[aria-pressed="true"] .mode-switch::after { transform: translateX(13px); }
-.pattern-decision-list { display: grid; gap: 8px; max-height: min(48vh, 520px); overflow-y: auto; padding-right: 3px; }
-.pattern-decision-row { display: grid; grid-template-columns: 58px minmax(90px, 1fr) auto; align-items: center; gap: 9px; padding: 8px; border: 1px solid var(--line); border-radius: 11px; background: #fff; }
-.pattern-swatch { display: block; width: 58px; height: 58px; object-fit: cover; border: 1px solid var(--line-strong); border-radius: 9px; background: #fff; }
+.pattern-decision-list { display: grid; gap: 7px; max-height: min(48vh, 520px); overflow-x: hidden; overflow-y: auto; padding-right: 3px; }
+.pattern-decision-row { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; align-items: center; gap: 6px; min-width: 0; padding: 6px; border: 1px solid var(--line); border-radius: 11px; background: #fff; }
+.pattern-swatch { display: block; width: 44px; height: 44px; object-fit: cover; border: 1px solid var(--line-strong); border-radius: 8px; background: #fff; }
+.pattern-row-copy { min-width: 0; }
 .pattern-decision-row .pattern-row-copy strong,
 .pattern-decision-row .pattern-row-copy small { display: block; }
 .pattern-decision-row .pattern-row-copy strong { overflow: hidden; font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
-.pattern-decision-row .pattern-row-copy small { margin-top: 3px; color: var(--ink-soft); font-size: 8.5px; line-height: 1.3; }
-.pattern-row-actions { display: grid; grid-template-columns: repeat(3, auto); align-items: center; gap: 5px; }
-.pattern-colour { display: grid; width: 34px; height: 32px; place-items: center; overflow: hidden; border: 1px solid var(--line-strong); border-radius: 8px; background: #fff; }
+.pattern-decision-row .pattern-row-copy small { overflow: hidden; margin-top: 2px; color: var(--ink-soft); font-size: 8.5px; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
+.pattern-row-actions { display: flex; min-width: 0; align-items: center; gap: 3px; }
+.pattern-row-actions .button.small { min-height: 28px; padding: 5px 7px; border-radius: 7px; font-size: 10px; }
+.pattern-colour { display: grid; width: 30px; height: 28px; place-items: center; overflow: hidden; border: 1px solid var(--line-strong); border-radius: 7px; background: #fff; cursor: pointer; }
 .pattern-colour:has(input:disabled) { background: repeating-linear-gradient(135deg, #eef0f3 0 5px, #fff 5px 10px); }
-.pattern-colour input[type="color"] { width: 44px; height: 42px; padding: 0; border: 0; background: transparent; }
+.pattern-colour:has(input:disabled), .pattern-colour input[type="color"]:disabled { cursor: not-allowed; }
+.pattern-colour input[type="color"] { width: 40px; height: 38px; padding: 0; border: 0; background: transparent; cursor: pointer; }
 .pattern-review-status { min-height: 17px; margin: 8px 0 5px; text-align: center; }
 
 .pattern-dialog-backdrop { position: fixed; z-index: 75; inset: 0; background: rgba(20, 28, 40, .28); }
@@ -1210,6 +1225,7 @@ input[type="range"] { width: 100%; accent-color: var(--forest); }
 .page-view-toolbar .page-zoom-range { flex: 0 0 110px; width: 110px; accent-color: var(--forest); }
 .page-zoom-readout { min-width: 40px; font-variant-numeric: tabular-nums; font-weight: 700; color: var(--ink); }
 .page-grid-toggle { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; white-space: nowrap; }
+.page-grid-toggle.is-disabled { opacity: .48; cursor: not-allowed; }
 .page-full-size { margin-left: auto; }
 
 /* Every step uses the same preview geometry. A step with several artifacts
@@ -1282,9 +1298,8 @@ input[type="range"] { width: 100%; accent-color: var(--forest); }
   .pattern-picker-trigger { width: 56px; height: 56px; }
   .pattern-picker-menu { grid-template-columns: repeat(5, minmax(40px, 1fr)); }
   .pattern-mode-grid { grid-template-columns: 1fr; }
-  .pattern-decision-row { grid-template-columns: 50px minmax(0, 1fr); }
-  .pattern-swatch { width: 50px; height: 50px; }
-  .pattern-row-actions { grid-column: 1 / -1; justify-content: end; }
+  .pattern-decision-row { grid-template-columns: 40px minmax(0, 1fr) auto; }
+  .pattern-swatch { width: 40px; height: 40px; }
   .pattern-library-grid { grid-template-columns: 1fr; }
   .preflight-actions { align-items: stretch; flex-direction: column-reverse; }
   .preflight-actions .button { width: 100%; }

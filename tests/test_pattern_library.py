@@ -196,8 +196,52 @@ class PatternLibraryTests(unittest.TestCase):
         self.assertEqual(audit["user_constraint"]["pattern"], "01_noise_dots")
         self.assertEqual(
             audit["method"],
-            "global_exhaustive_adjacent_pattern_maximin_with_user_lock",
+            "global_exhaustive_adjacent_pattern_and_family_maximin_with_user_lock",
         )
+        self.assertGreater(audit["family_allocations_evaluated"], 1)
+
+    def test_preserved_reoptimization_never_assigns_sine_waves_to_non_water(self):
+        # This mirrors the legacy Africa failure: a non-water area already had
+        # sine waves after an earlier preserved edit.
+        group_map = np.array([[0, 1, 2, 3, 4]], dtype=np.int32)
+        assignment, audit = optimize_user_pattern_change(
+            group_map,
+            {
+                0: "02_grid_dots",
+                1: "03_lines_vertical",
+                2: "01_noise_dots",
+                3: "solid_black",
+                4: "04_waves_sine",
+            },
+            0,
+            "02_grid_checkers",
+        )
+
+        self.assertNotIn("04_waves_sine", assignment.values())
+        self.assertIn("04_waves_triangle", assignment.values())
+        self.assertEqual(audit["water_group_ids"], [])
+
+    def test_sine_wave_user_lock_requires_a_water_area(self):
+        with self.assertRaisesRegex(ValueError, "only be assigned to water"):
+            optimize_user_pattern_change(
+                np.array([[0, 1]], dtype=np.int32),
+                {0: "03_lines_vertical", 1: "01_noise_dots"},
+                0,
+                "04_waves_sine",
+            )
+
+    def test_visible_water_stays_sine_during_global_reoptimization(self):
+        assignment, audit = optimize_user_pattern_change(
+            np.array([[0, 1, 2]], dtype=np.int32),
+            {0: "04_waves_sine", 1: "03_lines_vertical", 2: "02_grid_dots"},
+            1,
+            "01_noise_dots",
+            water_group_ids={0},
+        )
+
+        self.assertEqual(assignment[0], "04_waves_sine")
+        self.assertNotIn("04_waves_sine", [assignment[1], assignment[2]])
+        self.assertEqual(audit["water_group_ids"], [0])
 
     def test_no_fill_user_choice_can_repeat_without_consuming_a_family(self):
         group_map = np.array([[0, 1, 2]], dtype=np.int32)

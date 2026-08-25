@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import csv
 from functools import lru_cache
-from itertools import product
+from itertools import permutations, product
 from pathlib import Path
 from types import MappingProxyType
 from typing import Mapping
@@ -496,15 +496,16 @@ def optimize_user_pattern_change(
     current_assignment: Mapping[int, str],
     locked_group_id: int,
     locked_pattern: str,
+    water_group_ids: set[int] | frozenset[int] = frozenset(),
 ) -> tuple[dict[int, str], dict]:
-    """Re-optimize a map after one area receives a user-selected pattern.
+    """Globally re-optimize every other area around one locked user choice.
 
-    The selected concrete pattern is an immutable constraint. Other areas keep
-    their existing semantic family whenever possible. If the selected family
-    was already owned by another area, that area takes the family vacated by
-    the selected area (or the first unused family), preserving the one-owner-
-    per-family rule before all remaining SVG variants are optimized globally.
-    ``plain`` is a no-fill choice rather than a pattern family and may repeat.
+    Every valid allocation of the remaining unique texture families is scored,
+    followed by every concrete SVG variant in that allocation.  The result
+    therefore maximizes adjacent haptic distance across the whole map instead
+    of merely retaining the previous family allocation.  Sinusoidal waves are
+    reserved for visible-water groups; non-water wave allocations use only the
+    triangular variant. ``plain`` remains repeatable and outside the embedding.
     """
 
     assignments = {
@@ -520,63 +521,115 @@ def optimize_user_pattern_change(
     unknown = [pattern for pattern in assignments.values() if pattern not in PATTERNS]
     if unknown:
         raise ValueError(f"Unknown current patterns: {sorted(set(unknown))}")
-
-    family_order = tuple(GROUPS)
+    water_groups = {int(group_id) for group_id in water_group_ids}
+    unknown_water_groups = water_groups - set(assignments)
+    if unknown_water_groups:
+        raise ValueError(
+            "Unknown water pattern groups: "
+            + ", ".join(str(group_id) for group_id in sorted(unknown_water_groups))
+        )
     locked_family = PATTERNS[locked_pattern]["group"]
-    old_locked_family = PATTERNS[assignments[locked_group_id]]["group"]
-    allocated_families: dict[int, str] = {}
-    used_families: set[str] = set()
-    if locked_family != "none":
-        allocated_families[locked_group_id] = locked_family
-        used_families.add(locked_family)
-
-    displaced: list[int] = []
-    for group_id in sorted(assignments):
-        if group_id == locked_group_id:
-            continue
-        family = PATTERNS[assignments[group_id]]["group"]
-        if family == "none":
-            allocated_families[group_id] = family
-        elif family not in used_families:
-            allocated_families[group_id] = family
-            used_families.add(family)
-        else:
-            displaced.append(group_id)
-
-    available_families = [
-        family for family in family_order if family not in used_families
-    ]
-    if old_locked_family in available_families:
-        available_families.remove(old_locked_family)
-        available_families.insert(0, old_locked_family)
-    for group_id in displaced:
-        if available_families:
-            family = available_families.pop(0)
-            allocated_families[group_id] = family
-            used_families.add(family)
-        else:
-            allocated_families[group_id] = "none"
-
-    candidates_by_group: dict[int, tuple[str, ...]] = {}
-    for group_id in sorted(assignments):
-        if group_id == locked_group_id:
-            candidates_by_group[group_id] = (locked_pattern,)
-            continue
-        family = allocated_families.get(group_id, "none")
-        candidates_by_group[group_id] = (
-            tuple(GROUPS[family]) if family != "none" else ("plain",)
+    if locked_group_id in water_groups and locked_pattern != "04_waves_sine":
+        raise ValueError(
+            "Visible water must use the sinusoidal wave pattern while "
+            "Preserve haptic distances is on"
+        )
+    if locked_group_id not in water_groups and locked_pattern == "04_waves_sine":
+        raise ValueError(
+            "The sinusoidal wave pattern can only be assigned to water while "
+            "Preserve haptic distances is on"
         )
 
-    optimized, audit = optimize_adjacent_pattern_variants(
-        group_map, candidates_by_group,
+    fixed_candidates: dict[int, tuple[str, ...]] = {locked_group_id: (locked_pattern,)}
+    for group_id in water_groups - {locked_group_id}:
+        fixed_candidates[group_id] = ("04_waves_sine",)
+    for group_id, pattern in assignments.items():
+        if group_id not in fixed_candidates and PATTERNS[pattern]["group"] == "none":
+            fixed_candidates[group_id] = (pattern,)
+
+    used_families = {
+        PATTERNS[candidates[0]]["group"]
+        for candidates in fixed_candidates.values()
+        if PATTERNS[candidates[0]]["group"] != "none"
+    }
+    if len(used_families) != sum(
+        PATTERNS[candidates[0]]["group"] != "none"
+        for candidates in fixed_candidates.values()
+    ):
+        raise ValueError(
+            "The selected pattern conflicts with a pattern family reserved "
+            "for another fixed area"
+        )
+
+    flexible_groups = tuple(
+        group_id for group_id in sorted(assignments)
+        if group_id not in fixed_candidates
     )
+    available_families = tuple(
+        family for family in GROUPS if family not in used_families
+    )
+    if len(flexible_groups) > len(available_families):
+        raise ValueError("Not enough distinct texture families for all Step 7 areas")
+
+    best_assignment: dict[int, str] | None = None
+    best_audit: dict | None = None
+    best_key: tuple[int, float, float, int] | None = None
+    family_allocations_evaluated = 0
+    pattern_combinations_evaluated = 0
+    for family_allocation in permutations(available_families, len(flexible_groups)):
+        candidates_by_group = dict(fixed_candidates)
+        for group_id, family in zip(flexible_groups, family_allocation):
+            candidates = list(GROUPS[family])
+            if family == "waves" and group_id not in water_groups:
+                candidates = [pattern for pattern in candidates
+                              if pattern != "04_waves_sine"]
+            current_pattern = assignments[group_id]
+            if current_pattern in candidates:
+                candidates.remove(current_pattern)
+                candidates.insert(0, current_pattern)
+            candidates_by_group[group_id] = tuple(candidates)
+        optimized, candidate_audit = optimize_adjacent_pattern_variants(
+            group_map, candidates_by_group,
+        )
+        minimum = candidate_audit["minimum_distance"]
+        mean = candidate_audit["mean_distance"]
+        unchanged = sum(
+            optimized[group_id] == assignments[group_id]
+            for group_id in flexible_groups
+        )
+        key = (
+            int(candidate_audit["eligible_pattern_adjacencies"]),
+            float(minimum) if minimum is not None else float("-inf"),
+            float(mean) if mean is not None else float("-inf"),
+            unchanged,
+        )
+        family_allocations_evaluated += 1
+        pattern_combinations_evaluated += candidate_audit["combinations_evaluated"]
+        if best_key is None or key > best_key:
+            best_key = key
+            best_assignment = optimized
+            best_audit = candidate_audit
+
+    if best_assignment is None or best_audit is None:
+        raise RuntimeError("No valid global pattern allocation was evaluated")
+    optimized, audit = best_assignment, best_audit
     audit.update({
-        "method": "global_exhaustive_adjacent_pattern_maximin_with_user_lock",
+        "method": "global_exhaustive_adjacent_pattern_and_family_maximin_with_user_lock",
+        "objective": (
+            "maximize embedded adjacency coverage, then globally maximize minimum "
+            "haptic distance over adjacent patterns"
+        ),
+        "tie_breaker": (
+            "maximize mean eligible adjacency distance, then retain unchanged patterns"
+        ),
+        "family_allocations_evaluated": family_allocations_evaluated,
+        "pattern_combinations_evaluated": pattern_combinations_evaluated,
         "user_constraint": {
             "group_id": locked_group_id,
             "pattern": locked_pattern,
             "family": locked_family,
         },
+        "water_group_ids": sorted(water_groups),
         "families_by_group": {
             str(group_id): PATTERNS[pattern]["group"]
             for group_id, pattern in optimized.items()

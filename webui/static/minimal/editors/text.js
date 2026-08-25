@@ -23,7 +23,8 @@ export function textEditorHtml() {
     <div class="label-list">
       ${occurrences.map((item) => `
         <div class="label-row${item.include === false ? " is-excluded" : ""}" data-label-id="${esc(item.id)}">
-          <img class="label-crop" src="${labelCropUrl(state.selected, item.index)}" alt="">
+          <img class="label-crop" src="${labelCropUrl(state.selected, item.index)}" alt=""
+               loading="lazy" decoding="async" fetchpriority="low">
           <input class="label-text" type="text" value="${esc(item.review_text || item.original_text)}"
                  maxlength="200" aria-label="Overlay text for ${esc(item.original_text)}">
           <span class="row-options">

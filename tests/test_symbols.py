@@ -20,6 +20,8 @@ class OverlayLabelTests(unittest.TestCase):
             imwrite(out_dir / "label_map_gen.png", np.ones((3, 3), np.uint8))
             tactile = np.full((3, 3), 255, np.uint8)
             tactile[0, 0] = 0
+            tactile[1, 1] = 0  # The final relief retains the centered black stroke.
+            tactile[1, 2] = 0  # Step 8A restored pure black over the old clearance.
             white_mask = np.zeros((3, 3), np.uint8)
             white_mask[1, :] = 255
             black_mask = np.zeros((3, 3), np.uint8)
@@ -34,6 +36,23 @@ class OverlayLabelTests(unittest.TestCase):
             self.assertEqual(rendered[0, 0].tolist(), [0, 0, 0])
             self.assertEqual(rendered[1, 0].tolist(), [255, 255, 255])
             self.assertEqual(rendered[1, 1].tolist(), [0, 0, 0])
+            self.assertEqual(rendered[1, 2].tolist(), [0, 0, 0])
+
+    def test_hybrid_never_restores_white_over_final_relief_black(self):
+        with tempfile.TemporaryDirectory() as directory:
+            out_dir = Path(directory)
+            (out_dir / "symbols.json").write_text(json.dumps({
+                "area_assignments": [{"members": [0], "color": "#59F7FF"}],
+            }), encoding="utf-8")
+            imwrite(out_dir / "label_map_gen.png", np.ones((8, 8), np.uint8))
+            tactile = np.zeros((8, 8), np.uint8)
+            imwrite(out_dir / "step8_white_stroke_mask.png",
+                    np.full((8, 8), 255, np.uint8))
+
+            self.assertTrue(render_hybrid_from_tactile(out_dir, tactile, "hybrid.png"))
+
+            hybrid = imread(out_dir / "hybrid.png")
+            self.assertTrue(np.all(hybrid == 0))
 
     def test_step7_resolves_aggregated_source_members_to_group_raster_id(self):
         classes = [

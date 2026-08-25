@@ -30,6 +30,7 @@ export const state = {
   colourView: false,   // relief master, or the hybrid colour render
   showOriginalMap: false, // compare the source and the current finished page
   showFinalMap: false, // compare the tactile map with its separate legend page
+  showGuides: false,   // display the local 6 mm grid and 30 mm guide layer
   snapToGrid: false,   // drags land on the 6 mm braille grid
   panMode: false,      // dragging the middle-panel frame scrolls the zoomed sheet
   autorun: false,

@@ -59,8 +59,8 @@ async function apiBlob(path, options = {}) {
    equal to UI_CONTRACT in webui/server.py. */
 export const UI_CONTRACT = 2;
 
-const RESTART_ADVICE = "The server is running an older version of this project than "
-  + "this page. Stop webui/server.py and start it again.";
+const RESTART_ADVICE = "The server is running older code than this page. In a PowerShell "
+  + "terminal at the Thematic folder, run: .\\restart-mapgen-ui.ps1 — then refresh this page.";
 
 let serverContract = null;
 let serverRestartRequired = false;

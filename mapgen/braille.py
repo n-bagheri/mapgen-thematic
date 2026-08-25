@@ -774,25 +774,44 @@ def _draw_map_furniture(page_canvas: Image.Image, furniture: dict,
     return rendered
 
 
-def render_braille_layout(out_dir: Path, layout: dict) -> dict:
+def render_braille_layout(out_dir: Path, layout: dict, *, rebuild_base: bool = True) -> dict:
     base_path = out_dir / "step8a_cleanup.png"
     if not base_path.exists():
         raise FileNotFoundError("run Step 7 before adding Braille labels")
-    map_canvas = Image.open(base_path).convert("L")
+    with Image.open(base_path) as map_source:
+        map_size = map_source.size
     px_per_mm = float(layout.get("render_px_per_mm", RENDER_PX_PER_MM))
     page = layout.get("page", {})
-    page_size = tuple(int(v) for v in page.get("canvas_px", map_canvas.size))
+    page_size = tuple(int(v) for v in page.get("canvas_px", map_size))
     map_origin = tuple(float(v) for v in page.get("map_origin_px", [0, 0]))
-    if (map_origin[0] + map_canvas.width > page_size[0]
-            or map_origin[1] + map_canvas.height > page_size[1]):
+    if (map_origin[0] + map_size[0] > page_size[0]
+            or map_origin[1] + map_size[1] > page_size[1]):
         raise ValueError("Step 8 page layout cannot contain the tactile map")
-    page_canvas = Image.new("L", page_size, 255)
-    page_canvas.paste(map_canvas, (round(map_origin[0]), round(map_origin[1])))
-    furniture = _draw_map_furniture(page_canvas, page.get("furniture", {}), px_per_mm)
+    preview_base_path = out_dir / "step8_braille_base.png"
+    reuse_base = not rebuild_base and preview_base_path.exists()
+    if reuse_base:
+        with Image.open(preview_base_path) as existing_base:
+            page_canvas = existing_base.convert("L")
+        if page_canvas.size != page_size:
+            reuse_base = False
+    if not reuse_base:
+        with Image.open(base_path) as map_source:
+            map_canvas = map_source.convert("L")
+        page_canvas = Image.new("L", page_size, 255)
+        page_canvas.paste(map_canvas, (round(map_origin[0]), round(map_origin[1])))
+        furniture = _draw_map_furniture(page_canvas, page.get("furniture", {}), px_per_mm)
+    else:
+        saved_furniture = page.get("furniture", {})
+        furniture = {
+            "border": bool(saved_furniture.get("border", {}).get("enabled", False)),
+            "north": bool(saved_furniture.get("north", {}).get("enabled", False)),
+            "scale": "placeholder",
+        }
     dpi = float(page.get("dpi", px_per_mm * 25.4))
     # The base is used by the live SVG preview. It intentionally has no label
     # layer, because that layer is edited in real time in the browser.
-    page_canvas.save(out_dir / "step8_braille_base.png", dpi=(dpi, dpi))
+    if not reuse_base:
+        page_canvas.save(preview_base_path, dpi=(dpi, dpi))
     base_black = np.asarray(page_canvas).copy()
     font_px = max(1, int(round(BRAILLE_FONT_SIZE_PT * 25.4 / 72.0 * px_per_mm)))
     font = ImageFont.truetype(str(braille_font_path()), font_px)
@@ -811,15 +830,21 @@ def render_braille_layout(out_dir: Path, layout: dict) -> dict:
     # The final PNG is a full A4 composition with real print-resolution metadata.
     page_canvas.save(out_dir / "step8_braille.png", dpi=(dpi, dpi))
     hybrid_path = out_dir / "step8a_hybrid.png"
-    if hybrid_path.exists():
+    hybrid_base_path = out_dir / "step8_hybrid_base.png"
+    if hybrid_path.exists() and reuse_base and hybrid_base_path.exists():
+        with Image.open(hybrid_base_path) as existing_hybrid_base:
+            hybrid_pixels = np.asarray(existing_hybrid_base.convert("RGB")).copy()
+        black = np.asarray(page_canvas) < 128
+        hybrid_pixels[black] = (0, 0, 0)
+        Image.fromarray(hybrid_pixels).save(out_dir / "step8_hybrid.png", dpi=(dpi, dpi))
+    elif hybrid_path.exists():
         hybrid_page = Image.new("RGB", page_size, "white")
         with Image.open(hybrid_path) as hybrid_map:
             hybrid_page.paste(hybrid_map.convert("RGB"),
                               (round(map_origin[0]), round(map_origin[1])))
         hybrid_base_pixels = np.asarray(hybrid_page).copy()
         hybrid_base_pixels[base_black < 128] = (0, 0, 0)
-        Image.fromarray(hybrid_base_pixels).save(
-            out_dir / "step8_hybrid_base.png", dpi=(dpi, dpi))
+        Image.fromarray(hybrid_base_pixels).save(hybrid_base_path, dpi=(dpi, dpi))
         # Raised content and Braille remain solid black above the printed base.
         hybrid_pixels = np.asarray(hybrid_page).copy()
         black = np.asarray(page_canvas) < 128
@@ -919,7 +944,7 @@ def update_braille_label(out_dir: Path, label_id: str, patch: dict) -> tuple[dic
         px_per_mm = float(layout.get("render_px_per_mm", RENDER_PX_PER_MM))
         label["position_mm"] = [round(label["position_px"][0] / px_per_mm, 3),
                                 round(label["position_px"][1] / px_per_mm, 3)]
-    report = render_braille_layout(out_dir, layout)
+    report = render_braille_layout(out_dir, layout, rebuild_base=False)
     return label, report
 
 
@@ -959,7 +984,7 @@ def update_braille_title(out_dir: Path, patch: dict) -> tuple[dict, dict]:
         page_width = float(layout.get("page", {}).get("canvas_px", [0, 0])[0])
         px_per_mm = float(layout.get("render_px_per_mm", RENDER_PX_PER_MM))
         title["box_width_px"] = round(min(max(width, 30 * px_per_mm), page_width), 3)
-    report = render_braille_layout(out_dir, layout)
+    report = render_braille_layout(out_dir, layout, rebuild_base=False)
     return title, report
 
 
@@ -978,7 +1003,7 @@ def delete_braille_label(out_dir: Path, label_id: str) -> tuple[dict, dict]:
         deleted = {str(item) for item in layout.get("deleted_label_ids", [])}
         deleted.add(label_id)
         layout["deleted_label_ids"] = sorted(deleted)
-    report = render_braille_layout(out_dir, layout)
+    report = render_braille_layout(out_dir, layout, rebuild_base=False)
     return label, report
 
 
@@ -1080,7 +1105,8 @@ def update_braille_toolbox(out_dir: Path, patch: dict) -> tuple[dict, dict]:
         "furniture": page.get("furniture"),
     })
     page_layout_path.write_text(json.dumps(page_layout, indent=2), encoding="utf-8")
-    report = render_braille_layout(out_dir, layout)
+    rebuild_base = "map_origin_px" in patch or "furniture" in patch
+    report = render_braille_layout(out_dir, layout, rebuild_base=rebuild_base)
     return layout, report
 
 
@@ -1110,5 +1136,5 @@ def add_braille_label(out_dir: Path, text: object = "") -> tuple[dict, dict]:
         "priority": None,
     }
     layout.setdefault("labels", []).insert(0, label)
-    report = render_braille_layout(out_dir, layout)
+    report = render_braille_layout(out_dir, layout, rebuild_base=False)
     return label, report

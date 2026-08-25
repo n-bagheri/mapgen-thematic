@@ -12,10 +12,30 @@ import { state } from "./state.js";
 const MIN_ZOOM = 25;
 const MAX_ZOOM = 200;
 const MIN_FIT_ZOOM = .01;
+const GRID_MM = 6;
+const GUIDE_MM = 30;
+const DEFAULT_MM_PER_PX = 1 / 5;
+
+/** Keep the guide layer independent from image loading.  The canvas carries
+ *  its real physical scale, so both the 6 mm cells and 30 mm major guides are
+ *  correct for source-sized Step 6 maps as well as the 5 px/mm page renders. */
+export function configureGrid(sheet) {
+  if (!sheet) return;
+  const gridAvailable = sheet.dataset.gridEnabled === "true";
+  const mmPerPx = Number(sheet.dataset.mmPerPx) || DEFAULT_MM_PER_PX;
+  const gridPx = GRID_MM / mmPerPx;
+  const guidePx = GUIDE_MM / mmPerPx;
+  sheet.style.setProperty("--grid-size", `${gridPx}px`);
+  sheet.style.setProperty("--guide-size", `${guidePx}px`);
+  sheet.querySelectorAll(".page-grid").forEach((grid) => {
+    grid.classList.toggle("is-visible", gridAvailable && state.showGuides);
+  });
+}
 
 export function viewerToolbarHtml(view, index) {
   const hybridEnabled = state.data.step7Review?.create_hybrid_map === true;
-  const colour = view.hybrid ? `
+  const gridAvailable = Boolean(view.pageLayout || view.pageRender || view.legendPage);
+  const colour = view.hybrid || view.hybridOverlay ? `
     <label class="page-grid-toggle" title="${hybridEnabled
       ? "Show the saved category colors" : "Turn on Create hybrid map in Step 7 first"}">
       <input type="checkbox" data-colour-view ${state.colourView ? "checked" : ""}
@@ -42,10 +62,18 @@ export function viewerToolbarHtml(view, index) {
       <button class="page-zoom-fit" type="button">Fit</button>
       <span class="page-zoom-readout">Fit</span>
       ${colour}
-      <label class="page-grid-toggle"><input class="page-guides-toggle" type="checkbox">
-        <span aria-hidden="true"></span> Grid &amp; guides</label>
-      <label class="page-grid-toggle"><input class="page-snap-toggle" type="checkbox"
-        ${state.snapToGrid ? "checked" : ""}><span aria-hidden="true"></span> Snap to 6 mm grid</label>
+      <label class="page-grid-toggle${gridAvailable ? "" : " is-disabled"}"
+        title="${gridAvailable ? "Show a 6 mm grid with 30 mm major guides"
+          : "Grids and guidelines are available in Steps 7, 8 and 9"}">
+        <input class="page-guides-toggle" type="checkbox"
+        ${gridAvailable && state.showGuides ? "checked" : ""} ${gridAvailable ? "" : "disabled"}>
+        <span aria-hidden="true"></span> Grids and guidelines</label>
+      <label class="page-grid-toggle${gridAvailable ? "" : " is-disabled"}"
+        title="${gridAvailable ? "Snap movements to the 6 mm grid"
+          : "Snap to grid is available in Steps 7, 8 and 9"}">
+        <input class="page-snap-toggle" type="checkbox"
+        ${gridAvailable && state.snapToGrid ? "checked" : ""} ${gridAvailable ? "" : "disabled"}>
+        <span aria-hidden="true"></span> Snap to grid</label>
       <a class="quiet-link page-full-size" data-full-size="${index}" target="_blank" rel="noopener">open full size &#8599;</a>
     </div>`;
 }
@@ -59,13 +87,13 @@ export function snapToGrid(position, pxPerMm = 5) {
 
 /** Wire one toolbar to the frame it sits under. Zoom changes only the inner
  *  map sheet; the stage and its scroll viewport retain their dimensions. */
-export function bindViewer(index, onColourChange) {
+export function bindViewer(index, onViewChange) {
   const toolbar = document.querySelector(`.page-view-toolbar[data-viewer="${index}"]`);
   const frame = document.querySelector(`.map-stage[data-view="${index}"] .map-frame`);
   const zoomSpace = frame?.querySelector(".map-zoom-space");
   const sheet = frame?.querySelector(".map-canvas");
   const image = sheet?.querySelector("img[data-viewer-image]") || sheet?.querySelector("img");
-  if (!toolbar || !frame || !zoomSpace || !sheet || !image) return;
+  if (!toolbar || !frame || !zoomSpace || !sheet) return;
 
   const range = toolbar.querySelector(".page-zoom-range");
   const readout = toolbar.querySelector(".page-zoom-readout");
@@ -90,9 +118,9 @@ export function bindViewer(index, onColourChange) {
     // Only the visual transform changes; a separate space supplies the scaled
     // scroll extent without resizing or reflowing anything on the paper.
     const naturalW = Number(sheet.dataset.naturalWidth)
-      || image.naturalWidth || sheet.clientWidth || 1;
+      || image?.naturalWidth || sheet.clientWidth || 1;
     const naturalH = Number(sheet.dataset.naturalHeight)
-      || image.naturalHeight || sheet.clientHeight || 1;
+      || image?.naturalHeight || sheet.clientHeight || 1;
     const scale = zoom / 100;
     sheet.style.width = `${naturalW}px`;
     sheet.style.height = `${naturalH}px`;
@@ -112,8 +140,8 @@ export function bindViewer(index, onColourChange) {
     // width does -- a portrait page is otherwise cut off below the fold.
     const availableW = Math.max(200, frame.clientWidth - 30);
     const availableH = Math.max(200, frame.clientHeight - 30);
-    const naturalW = Number(sheet.dataset.naturalWidth) || image.naturalWidth || availableW;
-    const naturalH = Number(sheet.dataset.naturalHeight) || image.naturalHeight || availableH;
+    const naturalW = Number(sheet.dataset.naturalWidth) || image?.naturalWidth || availableW;
+    const naturalH = Number(sheet.dataset.naturalHeight) || image?.naturalHeight || availableH;
     const fittedZoom = Math.min(100, availableW / naturalW * 100, availableH / naturalH * 100);
     // High-resolution scans can need far less than the normal 25% floor. Fit
     // establishes the smallest useful zoom for this image, so the whole sheet
@@ -162,36 +190,46 @@ export function bindViewer(index, onColourChange) {
   frame.addEventListener("pointercancel", stopPanning, { capture: true });
 
   toolbar.querySelector(".page-guides-toggle").addEventListener("change", (event) => {
-    sheet.classList.toggle("show-grid", event.target.checked);
+    state.showGuides = event.target.checked;
+    document.querySelectorAll(".map-canvas").forEach((canvas) => {
+      configureGrid(canvas);
+    });
+    document.querySelectorAll(".page-guides-toggle").forEach((box) => {
+      box.checked = !box.disabled && state.showGuides;
+    });
   });
   toolbar.querySelector(".page-snap-toggle").addEventListener("change", (event) => {
     state.snapToGrid = event.target.checked;
-    document.querySelectorAll(".page-snap-toggle").forEach((box) => { box.checked = state.snapToGrid; });
+    document.querySelectorAll(".page-snap-toggle").forEach((box) => {
+      box.checked = !box.disabled && state.snapToGrid;
+    });
   });
-  toolbar.querySelector("[data-colour-view]")?.addEventListener("change", () => {
-    state.colourView = !state.colourView;
-    onColourChange?.();
+  toolbar.querySelector("[data-colour-view]")?.addEventListener("change", async (event) => {
+    const checkbox = event.currentTarget;
+    const previous = state.colourView;
+    state.colourView = checkbox.checked;
+    checkbox.disabled = true;
+    const changed = await onViewChange?.("colour");
+    if (changed === false) {
+      state.colourView = previous;
+      checkbox.checked = previous;
+    }
+    if (checkbox.isConnected) checkbox.disabled = false;
   });
   toolbar.querySelector("[data-original-view]")?.addEventListener("click", () => {
     state.showOriginalMap = !state.showOriginalMap;
-    onColourChange?.();
+    onViewChange?.("original");
   });
   toolbar.querySelector("[data-final-map-view]")?.addEventListener("click", () => {
     state.showFinalMap = !state.showFinalMap;
-    onColourChange?.();
+    onViewChange?.("final-map");
   });
   const fullSize = toolbar.querySelector("[data-full-size]");
-  if (fullSize) fullSize.href = image.dataset.fullSizeUrl || image.src;
+  if (fullSize && image) fullSize.href = image.dataset.fullSizeUrl || image.src;
 
-  // A 6 mm grid with 30 mm guides, expressed against the real page size.
-  const widthMm = (Number(sheet.dataset.naturalWidth) || image.naturalWidth || 1050) / 5;
-  const heightMm = (Number(sheet.dataset.naturalHeight) || image.naturalHeight || 1485) / 5;
-  sheet.style.setProperty("--grid-x", `${6 / widthMm * 100}%`);
-  sheet.style.setProperty("--grid-y", `${6 / heightMm * 100}%`);
-  sheet.style.setProperty("--guide-x", `${30 / widthMm * 100}%`);
-  sheet.style.setProperty("--guide-y", `${30 / heightMm * 100}%`);
-
-  if (image.complete && image.naturalWidth) fit();
-  else image.addEventListener("load", fit, { once: true });
+  configureGrid(sheet);
+  if (image?.complete && image.naturalWidth) fit();
+  else if (image) image.addEventListener("load", fit, { once: true });
+  else fit();
   syncPanMode();
 }

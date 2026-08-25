@@ -20,6 +20,7 @@ import sys
 import threading
 import time
 import traceback
+from functools import lru_cache
 from pathlib import Path
 
 from PIL import Image
@@ -47,6 +48,33 @@ app = Flask(__name__, static_folder=str(Path(__file__).parent / "static"), stati
 
 _lock = threading.Lock()
 _jobs: dict[str, dict] = {}  # stem -> job record
+_label_crop_cache_lock = threading.Lock()
+
+
+@lru_cache(maxsize=4)
+def _cached_label_crop_inputs(labels_name: str, labels_mtime_ns: int,
+                              image_name: str, image_mtime_ns: int):
+    """Decode one map's label-review inputs once per artifact version.
+
+    A large map can have hundreds of label crops. Decoding the multi-megabyte
+    source raster independently for each thumbnail starves unrelated preview
+    requests. The modification times make this cache self-invalidating after a
+    Step 3 rerun, while the small bound prevents old projects retaining memory.
+    """
+    from mapgen.isolate import imread
+
+    labels = json.loads(Path(labels_name).read_text(encoding="utf-8")).get("labels", [])
+    return labels, imread(Path(image_name))
+
+
+def _label_crop_inputs(labels_path: Path, image_path: Path):
+    key = (str(labels_path.resolve()), labels_path.stat().st_mtime_ns,
+           str(image_path.resolve()), image_path.stat().st_mtime_ns)
+    # functools.lru_cache may compute the same cold key more than once when
+    # requests arrive concurrently. Serializing the cache call prevents the
+    # Africa label list from launching several full-size decodes at once.
+    with _label_crop_cache_lock:
+        return _cached_label_crop_inputs(*key)
 
 # The focused view in webui/static/minimal and this file are one contract: the
 # page posts actions and reads review flags that only a server of the same
@@ -1105,14 +1133,11 @@ def api_labelcrop(stem: str, index: int):
     image_path = run_dir / "map_text_input.png"
     if not labels_path.exists() or not image_path.exists():
         abort(404, "label review inputs are unavailable")
-    labels = json.loads(labels_path.read_text(encoding="utf-8")).get("labels", [])
+    labels, image = _label_crop_inputs(labels_path, image_path)
     if index < 0 or index >= len(labels):
         abort(404, "unknown label occurrence")
 
     import cv2
-    from mapgen.isolate import imread
-
-    image = imread(image_path)
     height, width = image.shape[:2]
     x0, y0, x1, y1 = [int(round(v)) for v in labels[index]["box"]]
     box_w, box_h = max(1, x1 - x0), max(1, y1 - y0)
@@ -1497,6 +1522,10 @@ def _pattern_editor_payload(symbols: dict) -> dict:
             "pattern": pattern,
             "pattern_desc": assignment.get("pattern_desc", PATTERNS[pattern]["desc"]),
             "pattern_family": PATTERNS[pattern]["group"],
+            "is_water": bool(assignment.get("is_water", False)
+                             or (not assignment.get("is_thematic", True)
+                                 and not assignment.get("is_background", False)
+                                 and pattern == "04_waves_sine")),
             "rationale": assignment.get("rationale", ""),
             "editable": pattern not in {"plain", "solid_black"},
             "transform": normalize_pattern_transform(assignment.get("transform")),
@@ -1505,6 +1534,7 @@ def _pattern_editor_payload(symbols: dict) -> dict:
         "pattern": pattern,
         "pattern_desc": metadata["desc"],
         "pattern_family": metadata["group"],
+        "water_only": pattern == "04_waves_sine",
         "editable": pattern not in {"plain", "solid_black"},
     } for pattern, metadata in PATTERNS.items()]
     return {
@@ -1559,40 +1589,58 @@ def api_pattern_transforms_get(stem: str):
     return jsonify(_pattern_editor_payload(symbols))
 
 
+@lru_cache(maxsize=256)
+def _pattern_preview_png(pattern_id: str,
+                         transform_items: tuple[tuple[str, float], ...] = ()) -> bytes:
+    """Render one small editor swatch once per pattern/transform combination.
+
+    The focused UI may mount the same swatch in both a category row and its
+    edit dialog.  Rasterising the Illustrator SVG for every HTTP request made
+    those identical views contend with the finished-map preview.  The cache
+    key contains the complete normalized transform, so a user edit naturally
+    gets a new image without explicit invalidation.
+    """
+    import cv2
+    from mapgen.patterns import render_pattern
+
+    transform = dict(transform_items) if transform_items else None
+    preview = render_pattern(pattern_id, (128, 128), 5.0, transform)
+    ok, encoded = cv2.imencode(".png", preview)
+    if not ok:
+        raise RuntimeError("could not render pattern preview")
+    return encoded.tobytes()
+
+
 @app.get("/api/pattern-library-preview/<pattern_id>")
 def api_pattern_library_preview(pattern_id: str):
-    import cv2
-    from mapgen.patterns import PATTERNS, render_pattern
+    from mapgen.patterns import PATTERNS
 
     if pattern_id not in PATTERNS:
         abort(404, "unknown tactile pattern")
-    preview = render_pattern(pattern_id, (128, 128), 5.0)
-    ok, encoded = cv2.imencode(".png", preview)
-    if not ok:
+    try:
+        png = _pattern_preview_png(pattern_id)
+    except RuntimeError:
         abort(500, "could not render pattern preview")
-    response = send_file(io.BytesIO(encoded.tobytes()), mimetype="image/png")
+    response = send_file(io.BytesIO(png), mimetype="image/png")
     response.headers["Cache-Control"] = "public, max-age=86400"
     return response
 
 
 @app.get("/api/pattern-preview/<stem>/<int:group_id>")
 def api_pattern_preview(stem: str, group_id: int):
-    import cv2
-    from mapgen.patterns import normalize_pattern_transform, render_pattern
+    from mapgen.patterns import normalize_pattern_transform
 
     _, symbols = _step7_symbols(stem)
     assignments = symbols.get("area_assignments", [])
     if group_id < 0 or group_id >= len(assignments):
         abort(404, "unknown Step 7 area")
     assignment = assignments[group_id]
-    preview = render_pattern(
-        assignment["pattern"], (128, 128), 5.0,
-        normalize_pattern_transform(assignment.get("transform")),
-    )
-    ok, encoded = cv2.imencode(".png", preview)
-    if not ok:
+    transform = normalize_pattern_transform(assignment.get("transform"))
+    try:
+        png = _pattern_preview_png(assignment["pattern"], tuple(transform.items()))
+    except RuntimeError:
         abort(500, "could not render pattern preview")
-    response = send_file(io.BytesIO(encoded.tobytes()), mimetype="image/png")
+    response = send_file(io.BytesIO(png), mimetype="image/png")
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     return response
 
@@ -1859,21 +1907,19 @@ def api_category_colors(stem: str):
         current = {"colors": {label: value.upper() for label, value in colors.items()}}
         path.write_text(json.dumps(current, indent=2), encoding="utf-8")
         if (run_dir / "symbols.json").exists():
-            from mapgen.symbols import rerender_step7_artifacts
+            from mapgen.symbols import rerender_hybrid_artifacts
             symbols = json.loads((run_dir / "symbols.json").read_text(encoding="utf-8"))
             for assignment in symbols.get("area_assignments", []):
                 color = current["colors"].get(assignment.get("label"))
                 assignment.pop("color", None)
                 if color:
                     assignment["color"] = color
-            rerender_step7_artifacts(run_dir, symbols)
-            from mapgen.boundaries import run_step8
-            from mapgen.cleanup import run_step8a
-            run_step8(image, runs_dir=RUNS_DIR)
-            run_step8a(image, runs_dir=RUNS_DIR)
-            if (run_dir / "step8a_cleanup.png").exists():
-                from mapgen.braille import load_step7_page_layout
-                load_step7_page_layout(run_dir)
+            (run_dir / "symbols.json").write_text(
+                json.dumps(symbols, indent=2, ensure_ascii=False), encoding="utf-8")
+            # Colours sit underneath the unchanged tactile raster. Rebuilding
+            # pattern geometry, boundaries, and component cleanup here made a
+            # single colour-picker change unnecessarily take several seconds.
+            rerender_hybrid_artifacts(run_dir)
             review = _step7_review_payload(stem)
             review["approved"] = False
             _save_step7_review(stem, review)

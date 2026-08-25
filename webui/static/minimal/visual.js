@@ -1,11 +1,12 @@
 "use strict";
 
-import { $, artifactUrl, esc, mapUrl } from "./api.js";
+import { $, artifactUrl, esc, legendSwatchUrl, mapUrl } from "./api.js";
 import { STEP_DEFS, STEP_VIEWS, viewedStep } from "./steps.js";
-import { state } from "./state.js";
+import { state, toast } from "./state.js";
 import { bindMaskCanvas } from "./editors/mask.js";
 import { bindBrailleOverlay } from "./editors/braille.js";
 import { bindLegendOverlay } from "./editors/legend.js";
+import { cachedPreviewUrl, preloadPreviews } from "./preview-cache.js";
 import { bindViewer, viewerToolbarHtml } from "./viewer.js";
 
 /* The left pane shows one step at a time: whichever step the reader opened on
@@ -14,6 +15,17 @@ import { bindViewer, viewerToolbarHtml } from "./viewer.js";
 
 function selectedFromState() {
   return state.maps.find((map) => map.stem === state.selected) || null;
+}
+
+/** Step 6 needs several expensive full-resolution passes. Keep its approved
+ * Step 5 input visible from the moment the job starts, then replace it as soon
+ * as the selected simplified raster exists. */
+function preparingStep6(map, step = activeStep(map)) {
+  return step === 6
+    && Boolean(map.steps?.["5"])
+    && !map.steps?.["6"]
+    && state.job?.status === "running"
+    && (state.job.steps || []).map(String).includes("6");
 }
 
 export function activeStep(map) {
@@ -25,7 +37,16 @@ export function activeStep(map) {
 export function simplifiedArtifactName() {
   const level = Number(state.previewLevel);
   const variant = state.data.presets?.variants?.[String(level)];
-  return variant?.preview_artifact || "label_map_gen_preview.png";
+  if (variant?.preview_artifact) return variant.preview_artifact;
+  // During a first Step 6 run the presets payload is not refreshed until the
+  // whole five-level job ends. As soon as the first (selected) pass completes,
+  // use its immutable cache file: later passes overwrite the canonical PNG and
+  // could otherwise race the browser into showing the wrong slider level.
+  if (level && state.job?.status === "running"
+      && (state.job.steps || []).map(String).includes("6")) {
+    return `step6_preset_${level}_label_map_gen_preview.png`;
+  }
+  return "label_map_gen_preview.png";
 }
 
 /** Resolve one STEP_VIEWS entry to the file the browser should request. */
@@ -35,12 +56,42 @@ function viewSource(map, view) {
     return { url: state.aggregationPreviewUrl, name: view.artifact };
   }
   if (view.dynamic === "simplified") {
+    if (preparingStep6(map, 6)) {
+      return {
+        url: cachedPreviewUrl(map.stem, "step5_aggregation_preview.png"),
+        name: "step5_aggregation_preview.png",
+        preparing: true,
+      };
+    }
     const name = simplifiedArtifactName();
-    return { url: artifactUrl(map.stem, name), name, fallback: artifactUrl(map.stem, "step6_debug.png") };
+    return {
+      url: cachedPreviewUrl(map.stem, name),
+      name,
+      fallback: artifactUrl(map.stem, "step6_debug.png"),
+    };
   }
   const hybridEnabled = state.data.step7Review?.create_hybrid_map === true;
   const name = state.colourView && hybridEnabled && view.hybrid ? view.hybrid : view.artifact;
-  return { url: artifactUrl(map.stem, name), name };
+  return { url: cachedPreviewUrl(map.stem, name), name };
+}
+
+/** Physical canvas scale used by the viewer's 6 mm grid.  Simplified-map
+ * previews retain the source raster dimensions, whereas page previews use the
+ * render density saved by their pipeline step. */
+function gridScaleAttribute(view) {
+  const gridEnabled = Boolean(view.pageLayout || view.pageRender || view.legendPage);
+  if (!gridEnabled) return "";
+  let mmPerPx = 0;
+  if (view.pageLayout) {
+    mmPerPx = 1 / (Number(state.data.pageLayout?.render_px_per_mm) || 5);
+  } else if (view.pageRender) {
+    mmPerPx = 1 / (Number(state.data.braille?.render_px_per_mm) || 5);
+  } else if (view.legendPage) {
+    mmPerPx = 1 / (Number(state.data.legend?.render_px_per_mm) || 5);
+  }
+  return mmPerPx > 0 && Number.isFinite(mmPerPx)
+    ? ` data-grid-enabled="true" data-mm-per-px="${mmPerPx}"`
+    : ' data-grid-enabled="true"';
 }
 
 function tactilePageCanvasHtml(map, view, source, imageId, canvasId) {
@@ -58,6 +109,7 @@ function tactilePageCanvasHtml(map, view, source, imageId, canvasId) {
   if (state.showOriginalMap) {
     const gap = Math.max(30, Math.round(pageW * .04));
     return `<div class="map-canvas step7-comparison-canvas"${canvasId}
+        ${gridScaleAttribute(view)}
         data-natural-width="${pageW * 2 + gap}" data-natural-height="${pageH}"
         style="aspect-ratio:${pageW * 2 + gap} / ${pageH};--compare-gap:${gap}px">
       <div class="step7-original-sheet">
@@ -68,6 +120,7 @@ function tactilePageCanvasHtml(map, view, source, imageId, canvasId) {
     </div>`;
   }
   return `<div class="map-canvas step7-page-canvas"${canvasId}
+      ${gridScaleAttribute(view)}
       data-natural-width="${pageW}" data-natural-height="${pageH}"
       style="aspect-ratio:${pageW} / ${pageH}">
     ${tactile}<div class="page-grid" aria-hidden="true"></div>
@@ -88,6 +141,7 @@ function renderedPageCanvasHtml(map, view, source, imageId, canvasId) {
   if (state.showOriginalMap) {
     const gap = Math.max(30, Math.round(pageW * .04));
     return `<div class="map-canvas step7-comparison-canvas step8-comparison-canvas"${canvasId}
+        ${gridScaleAttribute(view)}
         data-natural-width="${pageW * 2 + gap}" data-natural-height="${pageH}"
         style="aspect-ratio:${pageW * 2 + gap} / ${pageH};--compare-gap:${gap}px">
       <div class="step7-original-sheet">
@@ -99,6 +153,7 @@ function renderedPageCanvasHtml(map, view, source, imageId, canvasId) {
     </div>`;
   }
   return `<div class="map-canvas step8-page-canvas"${canvasId}
+      ${gridScaleAttribute(view)}
       data-natural-width="${pageW}" data-natural-height="${pageH}"
       style="aspect-ratio:${pageW} / ${pageH}">
     ${output}<div class="page-grid" aria-hidden="true"></div>
@@ -131,6 +186,7 @@ function legendPageCanvasHtml(map, view, source, imageId, canvasId) {
       const hybridEnabled = state.data.step7Review?.create_hybrid_map === true;
       const finalName = state.colourView && hybridEnabled ? "step8_hybrid.png" : "step8_braille.png";
       return `<div class="map-canvas step7-comparison-canvas step9-comparison-canvas"${canvasId}
+          ${gridScaleAttribute(view)}
           data-natural-width="${displayW}" data-natural-height="${displayH}"
           style="aspect-ratio:${displayW} / ${displayH};--compare-gap:${gap}px;
                  grid-template-columns:${state.showOriginalMap ? `${displayMapW}fr ` : ""}${displayMapW}fr ${displayLegendW}fr">
@@ -146,6 +202,7 @@ function legendPageCanvasHtml(map, view, source, imageId, canvasId) {
     }
   }
   return `<div class="map-canvas step9-page-canvas"${canvasId}
+      ${gridScaleAttribute(view)}
       data-natural-width="${legendW}" data-natural-height="${legendH}"
       style="aspect-ratio:${legendW} / ${legendH}">
     ${legend}<div class="page-grid" aria-hidden="true"></div>
@@ -196,7 +253,7 @@ export function renderVisual() {
   if (step !== 4) state.lineDrawing.active = false;
   const definition = STEP_DEFS.find((item) => item.key === String(step));
   const views = STEP_VIEWS[step] || [];
-  const ready = Boolean(map.steps?.[String(step)]) || step === 1;
+  const ready = Boolean(map.steps?.[String(step)]) || step === 1 || preparingStep6(map, step);
 
   const renderedViews = ready ? views.map((view, index) => {
     const source = viewSource(map, view);
@@ -209,9 +266,11 @@ export function renderVisual() {
       ? tactilePageCanvasHtml(map, view, source, imageId, canvasId)
       : view.pageRender ? renderedPageCanvasHtml(map, view, source, imageId, canvasId)
         : view.legendPage ? legendPageCanvasHtml(map, view, source, imageId, canvasId) : "";
-    const canvas = pageCanvas || `<div class="map-canvas"${canvasId}>
+    const canvas = pageCanvas || `<div class="map-canvas"${canvasId}${gridScaleAttribute(view)}>
           <img id="${imageId}" src="${source.url}" alt="${esc(view.caption)} for ${esc(map.name)}"
                data-viewer-image data-artifact="${esc(source.name)}"
+               ${source.preparing
+                 ? 'data-step6-preparing="true" data-overlay-disabled="true"' : ""}
                ${source.fallback ? `data-fallback="${source.fallback}"` : ""}>
           ${overlayMarkup(view)}
           <div class="page-grid" aria-hidden="true"></div>
@@ -219,7 +278,8 @@ export function renderVisual() {
     return { intermediate: view.intermediate === true, html: `
       <article class="map-stage" data-view="${index}"${view.optional ? ' data-optional="1"' : ""}>
         <header class="stage-heading">
-          <h2>${esc(view.caption)}</h2>
+          <h2>${esc(view.caption)}${source.preparing
+            ? ' <small class="preview-preparing">Preparing simplified preview&hellip;</small>' : ""}</h2>
         </header>
         ${viewerToolbarHtml(view, index)}
         <div class="map-frame"${frameId}>
@@ -288,6 +348,9 @@ function bindVisualEvents() {
       simplifiedImage.dataset.overlayDisabled = "true";
     }, { once: true });
     if (simplifiedImage.complete && simplifiedImage.naturalWidth) renderMapOverlay();
+    if (simplifiedImage.dataset.step6Preparing === "true") {
+      watchPreparingStep6Preview(simplifiedImage);
+    }
   }
   const segmentedImage = $("segmented-image");
   if (segmentedImage) {
@@ -295,7 +358,15 @@ function bindVisualEvents() {
     if (segmentedImage.complete && segmentedImage.naturalWidth) renderSegmentedLinesOverlay();
   }
   document.querySelectorAll(".page-view-toolbar").forEach((bar) => {
-    bindViewer(Number(bar.dataset.viewer), renderVisual);
+    bindViewer(Number(bar.dataset.viewer), async (change) => {
+      if (change !== "colour") {
+        renderVisual();
+        return true;
+      }
+      const changed = await refreshStepImages();
+      if (!changed) toast("The selected colour preview could not be loaded.", "error");
+      return changed;
+    });
   });
   bindMaskCanvas();
   bindLineDrawingSurface();
@@ -316,15 +387,39 @@ export async function refreshStepImages() {
     const image = $(id);
     if (!image) return;
     const next = viewSource(map, view).url;
-    await new Promise((resolve) => {
-      const preload = new Image();
-      preload.addEventListener("load", resolve, { once: true });
-      preload.addEventListener("error", resolve, { once: true });
-      preload.src = next;
-    });
-    image.src = next;
+    if (!view.hybridOverlay && image.getAttribute("src") !== next) {
+      const loaded = await new Promise((resolve) => {
+        const preload = new Image();
+        preload.addEventListener("load", () => resolve(true), { once: true });
+        preload.addEventListener("error", () => resolve(false), { once: true });
+        preload.src = next;
+      });
+      if (!loaded) return;
+      image.src = next;
+    }
+    const fullSize = image.closest(".map-stage")?.querySelector("[data-full-size]");
+    if (view.legendPage) {
+      const hybridEnabled = state.data.step7Review?.create_hybrid_map === true;
+      const finalName = state.colourView && hybridEnabled
+        ? "step9_legend_hybrid.png" : "step9_legend.png";
+      image.dataset.fullSizeUrl = artifactUrl(map.stem, finalName);
+      if (fullSize) fullSize.href = image.dataset.fullSizeUrl;
+    } else if (fullSize && !image.dataset.fullSizeUrl) {
+      fullSize.href = next;
+    }
     refreshed = true;
   }));
+  // Step 9 keeps the editable legend on a blank page base. Its category
+  // samples live in the SVG overlay and editor list, so a colour toggle must
+  // refresh those layers even though the underlying PNG URL does not change.
+  if ($("legend-overlay") && state.data.legend) {
+    document.querySelectorAll("[data-legend-row]").forEach((row) => {
+      const image = row.querySelector("img");
+      if (image) image.src = legendSwatchUrl(
+        state.selected, row.dataset.legendRow, state.colourView);
+    });
+    bindLegendOverlay();
+  }
   return refreshed;
 }
 
@@ -340,6 +435,38 @@ function linePath(points) {
   if (!Array.isArray(points) || points.length < 2) return "";
   return points.map((point, index) =>
     `${index ? "L" : "M"} ${Number(point[0]).toFixed(2)} ${Number(point[1]).toFixed(2)}`).join(" ");
+}
+
+/** Probe the immutable selected-level file off-screen while Step 6 continues
+ * building its other variants. A missing file never replaces the ready Step 5
+ * image; the swap happens only after both the response and image decode work. */
+async function watchPreparingStep6Preview(image) {
+  const stem = state.selected;
+  const level = Number(state.previewLevel) || 3;
+  const name = `step6_preset_${level}_label_map_gen_preview.png`;
+  const maxAttempts = 180;  // 135 seconds at the normal retry cadence
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    if (!image.isConnected || state.selected !== stem) return;
+    const [url] = await preloadPreviews(stem, [name]);
+    if (url) {
+      const decoded = await new Promise((resolve) => {
+        const next = new Image();
+        next.addEventListener("load", () => resolve(true), { once: true });
+        next.addEventListener("error", () => resolve(false), { once: true });
+        next.src = url;
+      });
+      if (!decoded || !image.isConnected || state.selected !== stem) return;
+      delete image.dataset.overlayDisabled;
+      image.src = url;
+      image.dataset.artifact = name;
+      delete image.dataset.step6Preparing;
+      image.closest(".map-stage")?.querySelector(".preview-preparing")?.remove();
+      const fullSize = image.closest(".map-stage")?.querySelector("[data-full-size]");
+      if (fullSize) fullSize.href = url;
+      return;
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 750));
+  }
 }
 
 function lineDrawingMarkup() {

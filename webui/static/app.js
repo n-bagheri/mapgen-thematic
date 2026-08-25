@@ -2967,7 +2967,9 @@ function setupPatternTransformEditor(stepOutput, stem, patternData) {
       <p>Choose a fill for this area. The choice stays fixed while every other area is re-optimized.</p>
       <div class="pattern-library-grid">
         ${(patternData.library || []).length ? patternData.library.map((item) => `
-          <button type="button" class="pattern-library-choice" data-pattern-id="${esc(item.pattern)}">
+          <button type="button" class="pattern-library-choice" data-pattern-id="${esc(item.pattern)}"
+            data-pattern-family="${esc(item.pattern_family)}"
+            data-water-only="${item.water_only ? "true" : "false"}">
             <img src="/api/pattern-library-preview/${encodeURIComponent(item.pattern)}"
               alt="${esc(item.pattern_desc)} swatch">
             <span><strong>${esc(item.pattern_desc)}</strong>
@@ -3012,6 +3014,22 @@ function setupPatternTransformEditor(stepOutput, stem, patternData) {
   const doneButton = dialog.querySelector(".pattern-done");
   const controls = [...dialog.querySelectorAll("[data-transform-key]")];
   const linkScale = dialog.querySelector(".pattern-link-scale input");
+  const hasWater = (patternData.groups || []).some((group) => group.is_water);
+
+  const syncChoiceAvailability = (group) => {
+    picker.querySelectorAll(".pattern-library-choice").forEach((choice) => {
+      const waterConflict = group.is_water
+        ? choice.dataset.patternId !== "04_waves_sine"
+        : choice.dataset.waterOnly === "true"
+          || hasWater && choice.dataset.patternFamily === "waves";
+      choice.disabled = waterConflict;
+      choice.title = waterConflict
+        ? (group.is_water ? "Water uses the sinusoidal wave pattern"
+          : "The sinusoidal wave pattern is reserved for water")
+        : "";
+      choice.classList.toggle("selected", choice.dataset.patternId === group.pattern);
+    });
+  };
 
   const valuesFromControls = () => Object.fromEntries(
     [...new Set(controls.map((input) => input.dataset.transformKey))].map((key) => [
@@ -3128,11 +3146,8 @@ function setupPatternTransformEditor(stepOutput, stem, patternData) {
     resetButton.hidden = true;
     doneButton.textContent = "Close";
     picker.hidden = false;
-    picker.querySelectorAll(".pattern-library-choice").forEach((choice) => {
-      choice.disabled = false;
-      choice.classList.toggle("selected", choice.dataset.patternId === group.pattern);
-    });
-    status.textContent = "Choose any library pattern, no fill, or pure black.";
+    syncChoiceAvailability(group);
+    status.textContent = "Choose a pattern; sinusoidal waves are reserved for water.";
     status.className = "pattern-transform-status";
     dialog.hidden = false;
     layout.classList.add("editor-open");
@@ -3164,9 +3179,7 @@ function setupPatternTransformEditor(stepOutput, stem, patternData) {
       } catch (error) {
         status.textContent = error.message;
         status.className = "pattern-transform-status error";
-        picker.querySelectorAll(".pattern-library-choice").forEach((button) => {
-          button.disabled = false;
-        });
+        syncChoiceAvailability(group);
       }
     };
   });

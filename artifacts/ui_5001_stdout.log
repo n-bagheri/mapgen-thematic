@@ -1,3 +1,4 @@
 MapGen UI on http://127.0.0.1:5001  (project root: C:\Users\nbagheri\Desktop\updated_thematic\Thematic)
+UI contract 2. Updating the checkout does not reload a running server -- stop and start this process after a git pull.
  * Serving Flask app 'server'
  * Debug mode: off

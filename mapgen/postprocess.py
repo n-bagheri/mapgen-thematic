@@ -655,7 +655,13 @@ def run_step6_presets(image_path: Path, model: str | None = None,
         base["simplification_level"] = canonical_params.get("simplification_level", 3)
     selected = base.get("simplification_level")
     selected = int(selected) if selected in SIMPLIFICATION_PRESETS else 3
-    for level in SIMPLIFICATION_PRESETS:
+    # Produce the reader's current choice first.  Every preset is still built
+    # in this job, but the canonical preview becomes useful after one pass
+    # instead of waiting behind up to four unrelated variants.  The focused UI
+    # can display this file while the remaining slider choices finish caching.
+    levels = [selected, *(level for level in SIMPLIFICATION_PRESETS
+                          if level != selected)]
+    for level in levels:
         run_step6(image_path, model=model, runs_dir=runs_dir,
                       params_override=step6_preset_params(level, base))
         _cache_step6_preset(out_dir, level)

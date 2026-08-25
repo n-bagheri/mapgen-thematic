@@ -60,6 +60,40 @@ class CategoryColorsApiTests(unittest.TestCase):
                 self.assertEqual(client.get("/api/category-colors/demo").get_json(),
                                  {"colors": {"Forest": "#59F7FF"}})
 
+    def test_color_change_only_rerenders_hybrid_layers(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            maps_dir = root / "maps"
+            runs_dir = root / "runs"
+            maps_dir.mkdir()
+            run_dir = runs_dir / "demo"
+            run_dir.mkdir(parents=True)
+            Image.new("RGB", (2, 2), "white").save(maps_dir / "demo.png")
+            (run_dir / "symbols.json").write_text(json.dumps({
+                "area_assignments": [{
+                    "label": "Forest", "pattern": "01_noise_dots", "members": [0],
+                }],
+            }), encoding="utf-8")
+
+            with (patch.object(server, "MAPS_DIR", maps_dir),
+                  patch.object(server, "RUNS_DIR", runs_dir),
+                  patch("mapgen.symbols.rerender_hybrid_artifacts") as rerender_hybrid,
+                  patch("mapgen.symbols.rerender_step7_artifacts") as rerender_tactile,
+                  patch("mapgen.boundaries.run_step8") as rerender_boundaries,
+                  patch("mapgen.cleanup.run_step8a") as rerender_cleanup):
+                response = server.app.test_client().post(
+                    "/api/category-colors/demo",
+                    json={"colors": {"Forest": "#112233"}},
+                )
+
+            self.assertEqual(response.status_code, 200)
+            rerender_hybrid.assert_called_once_with(run_dir)
+            rerender_tactile.assert_not_called()
+            rerender_boundaries.assert_not_called()
+            rerender_cleanup.assert_not_called()
+            saved_symbols = json.loads((run_dir / "symbols.json").read_text(encoding="utf-8"))
+            self.assertEqual(saved_symbols["area_assignments"][0]["color"], "#112233")
+
 
 if __name__ == "__main__":
     unittest.main()

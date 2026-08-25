@@ -1,11 +1,14 @@
 "use strict";
 
-import { $, activateStep6Preset, artifactUrl, esc, resetFrom, saveStep6Params } from "../api.js";
+import { $, activateStep6Preset, esc, resetFrom, saveStep6Params } from "../api.js";
 import { DETAIL_NAMES, LINE_KINDS } from "../steps.js";
 import { state, toast, withBusy } from "../state.js";
 import { editorDetails } from "../controls.js";
+import { cachedPreviewUrl } from "../preview-cache.js";
 import { loadMaps, refreshSelectedData, renderWorkspace, startJob } from "../workspace.js";
 import { simplifiedArtifactName } from "../visual.js";
+
+let presetImageGeneration = 0;
 
 /* Step 6 pre-builds five levels of detail and caches each one, so the slider
    is a preview rather than a re-run.  Applying a level swaps the active
@@ -84,14 +87,33 @@ export function bindSimplificationEditor(onApproved) {
     const image = $("simplified-image");
     if (image) {
       image.dataset.overlayDisabled = "";
-      const source = artifactUrl(state.selected, simplifiedArtifactName());
-      image.src = source;
+      const source = cachedPreviewUrl(state.selected, simplifiedArtifactName());
+      swapSimplificationPreview(image, source);
       const fullSize = image.closest(".map-stage")?.querySelector("[data-full-size]");
       if (fullSize) fullSize.href = source;
     }
   });
   $("apply-preset")?.addEventListener("click", () => applyPreset(onApproved));
   $("rebuild-simplification")?.addEventListener("click", rebuildSimplification);
+}
+
+/** Load the next level off-screen and retain the current visible preview until
+ * it is ready. This avoids a blank middle panel while a browser decodes PNGs. */
+function swapSimplificationPreview(image, source) {
+  const generation = ++presetImageGeneration;
+  const next = new Image();
+  image.classList.add("is-updating");
+  next.addEventListener("load", () => {
+    if (generation !== presetImageGeneration || !image.isConnected) return;
+    image.src = source;
+    image.classList.remove("is-updating");
+  }, { once: true });
+  next.addEventListener("error", () => {
+    if (generation !== presetImageGeneration) return;
+    image.classList.remove("is-updating");
+    toast("The selected simplification preview could not be loaded.", "error");
+  }, { once: true });
+  next.src = source;
 }
 
 function updatePresetStats(level) {

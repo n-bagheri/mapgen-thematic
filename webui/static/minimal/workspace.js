@@ -7,13 +7,14 @@ import {
   getStep7Review, getStep8Review, getStep9Review,
   runSteps, saveStep6Params, staleServerAdvice, uploadFile,
 } from "./api.js";
-import { blockingReason, completedCount } from "./steps.js";
+import { blockingReason, completedCount, viewedStep } from "./steps.js";
 import {
   currentStepKey, individualModeFor, isRunning, navCoversWorkspace, rememberIndividualMode,
   selectedMap, serverNotice, setNav, state, toast,
 } from "./state.js";
 import { renderProjectList } from "./library.js";
 import { continuePipeline, renderControls } from "./controls.js";
+import { clearPreviewCache, preloadPreviews } from "./preview-cache.js";
 import { renderVisual } from "./visual.js";
 
 /* Loading, run control, and the polling loop.  Everything the panes draw comes
@@ -70,6 +71,7 @@ export async function selectMap(stem) {
   if (state.pollTimer) window.clearTimeout(state.pollTimer);
   state.pollTimer = null;
   state.selected = stem;
+  clearPreviewCache();
   state.generation += 1;
   state.data = {};
   state.job = selectedMap()?.job || { status: "idle" };
@@ -148,6 +150,34 @@ export async function refreshSelectedData() {
     || Number(state.data.step6?.params?.simplification_level)
     || 3;
   if (!state.model) state.model = state.defaultModel;
+  // Prime only the picture the reader is about to see. Waiting for every
+  // slider variant here held the entire workspace behind five independent
+  // image requests. The remaining variants warm in the background so slider
+  // movement is still instant once the Step 6 decision appears.
+  const previews = [];
+  const foreground = [];
+  const visibleStep = viewedStep(map, state.activeStep);
+  if (map.steps?.["5"]) {
+    previews.push("step5_aggregation_preview.png");
+    if (visibleStep === 5 || visibleStep === 6 && !map.steps?.["6"]) {
+      foreground.push("step5_aggregation_preview.png");
+    }
+  }
+  const activeVariant = state.data.presets?.variants?.[String(state.previewLevel)];
+  Object.values(state.data.presets?.variants || {}).forEach((variant) => {
+    previews.push(variant?.preview_artifact);
+  });
+  if (visibleStep === 6 && activeVariant?.preview_artifact) {
+    foreground.push(activeVariant.preview_artifact);
+  }
+  if (map.steps?.["7"]) {
+    previews.push("step8a_cleanup.png");
+    if (state.data.step7Review?.create_hybrid_map) previews.push("step8a_hybrid.png");
+  }
+  await preloadPreviews(stem, foreground);
+  // preloadPreviews absorbs individual request failures. Deliberately do not
+  // await this warm-up: it must never delay rendering the foreground image.
+  void preloadPreviews(stem, previews.filter((name) => !foreground.includes(name)));
 }
 
 export function renderWorkspace(revealActive = false) {
@@ -183,8 +213,17 @@ export async function savePreflight() {
 
 export async function startJob(steps) {
   if (!steps?.length) return;
+  clearPreviewCache(state.selected);
   await runSteps(state.selected, steps, state.model || state.defaultModel);
   state.job = { status: "running", steps, current: null, log: [] };
+  // /api/run has already invalidated the requested Step 6 output, while the
+  // local map snapshot still describes the pre-run files until the first poll.
+  // Reflect that immediately so the middle panel uses its ready Step 5 input
+  // as a stable placeholder instead of requesting just-deleted Step 6 PNGs.
+  if (steps.map(String).includes("6")) {
+    const map = selectedMap();
+    if (map?.steps) map.steps["6"] = false;
+  }
   state.viewStep = null;  // a fresh run follows itself again
   state.activeStep = Number(steps[0]);
   renderWorkspace(true);
@@ -337,8 +376,13 @@ function startPolling(immediate = false) {
         toast(map.step9_review_ready
           ? "Your tactile map and its legend are ready to export."
           : "The legend page is ready for final review.");
-      } else if (map?.steps?.["6"]) {
-        state.activeStep = 6;
+      } else {
+        // A single-step or manually resumed job does not enter the automatic
+        // decision branches above. Follow the result it just completed instead
+        // of falling back to Step 6 after every later job.
+        const latest = ["8", "7", "6", "5", "4", "3", "2", "1"]
+          .find((step) => map?.steps?.[step]);
+        if (latest) state.activeStep = Number(latest);
       }
       renderWorkspace(true);
     } catch (error) {

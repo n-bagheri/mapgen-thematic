@@ -7,6 +7,7 @@ import {
 import { state, statusLine, toast, withBusy } from "../state.js";
 import { renderControls } from "../controls.js";
 import { loadMaps, refreshSelectedData } from "../workspace.js";
+import { clearPreviewCache } from "../preview-cache.js";
 import { refreshStepImages } from "../visual.js";
 import { snapToGrid } from "../viewer.js";
 
@@ -180,8 +181,11 @@ export function bindBrailleEditor(onApproved) {
       toast("New text added at the top of the list. Drag it into place.");
     });
   });
-  $("braille-all-off")?.addEventListener("click", (event) =>
-    patchLayout({ all_text_enabled: false }, event.currentTarget).then(() => renderControls()));
+  $("braille-all-off")?.addEventListener("click", (event) => {
+    setAllTextEnabled(false);
+    bindBrailleOverlay();
+    patchLayout({ all_text_enabled: false }, event.currentTarget);
+  });
 
   const titleText = $("braille-title-text");
   titleText?.addEventListener("input", () => {
@@ -201,8 +205,11 @@ export function bindBrailleEditor(onApproved) {
       patchTitle({ text: value });
     }, 350));
   });
-  $("braille-title-enabled")?.addEventListener("change", (event) =>
-    patchTitle({ enabled: event.target.checked }));
+  $("braille-title-enabled")?.addEventListener("change", (event) => {
+    if (state.data.braille?.title) state.data.braille.title.enabled = event.target.checked;
+    bindBrailleOverlay();
+    patchTitle({ enabled: event.target.checked });
+  });
   $("braille-title-align")?.addEventListener("change", (event) =>
     patchTitle({ align: event.target.value }));
   $("fix-text-to-map")?.addEventListener("click", (event) => {
@@ -289,7 +296,6 @@ function patchLabel(labelId, patch) {
       const result = await saveBrailleLabel(state.selected, labelId, patch);
       applyLabel(result.label);
       markReviewDirty();
-      await refreshStepImages();
       bindBrailleOverlay();
       statusLine("braille-status", `${result.enabled_labels} labels displayed.`, "success");
     } catch (error) {
@@ -306,7 +312,6 @@ function patchTitle(patch) {
       const result = await saveBrailleTitle(state.selected, patch);
       if (state.data.braille) state.data.braille.title = result.title;
       markReviewDirty();
-      await refreshStepImages();
       bindBrailleOverlay();
       statusLine("braille-status", "Title updated.", "success");
     } catch (error) {
@@ -329,7 +334,12 @@ function patchLayout(patch, button = null) {
         furniture: result.layout.page?.furniture,
       };
       markReviewDirty();
-      await refreshStepImages();
+      const baseChanged = Object.hasOwn(patch, "map_origin_px")
+        || Object.hasOwn(patch, "furniture");
+      if (baseChanged) {
+        clearPreviewCache(state.selected);
+        await refreshStepImages();
+      }
       bindBrailleOverlay();
       statusLine("braille-status", "Page arrangement updated.", "success");
     } catch (error) {
@@ -375,8 +385,21 @@ function applyLabel(label) {
 async function reloadBraille() {
   await loadMaps();
   await refreshSelectedData();
-  await refreshStepImages();
   bindBrailleOverlay();
+}
+
+function setAllTextEnabled(enabled) {
+  const layout = state.data.braille;
+  if (!layout) return;
+  if (layout.title) layout.title.enabled = enabled;
+  (layout.labels || []).forEach((label) => { label.enabled = enabled; });
+  const titleToggle = $("braille-title-enabled");
+  if (titleToggle) titleToggle.checked = enabled;
+  document.querySelectorAll("[data-braille-row]").forEach((row) => {
+    row.classList.toggle("is-hidden", !enabled);
+    const toggle = row.querySelector(".braille-enabled");
+    if (toggle) toggle.checked = enabled;
+  });
 }
 
 /* -------------------------------------------------------- page overlay --- */

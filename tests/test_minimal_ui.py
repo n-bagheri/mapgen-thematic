@@ -188,6 +188,24 @@ class EndpointContractTests(unittest.TestCase):
         steps = (MINIMAL_DIR / "steps.js").read_text(encoding="utf-8")
         self.assertIn('artifact: "step8_braille_base.png"', steps)
 
+    def test_step_8_text_toggles_do_not_reload_the_unchanged_map_base(self):
+        editor = (MINIMAL_DIR / "editors" / "braille.js").read_text(encoding="utf-8")
+        label_patch = editor[editor.index("function patchLabel"):
+                             editor.index("function patchTitle")]
+        title_patch = editor[editor.index("function patchTitle"):
+                             editor.index("function patchLayout")]
+        layout_patch = editor[editor.index("function patchLayout"):
+                              editor.index("async function removeLabel")]
+        self.assertNotIn("refreshStepImages()", label_patch)
+        self.assertNotIn("refreshStepImages()", title_patch)
+        self.assertIn('Object.hasOwn(patch, "map_origin_px")', layout_patch)
+        self.assertIn('Object.hasOwn(patch, "furniture")', layout_patch)
+        self.assertIn("if (baseChanged)", layout_patch)
+        all_off = editor[editor.index('$("braille-all-off")'):
+                         editor.index("const titleText")]
+        self.assertIn("setAllTextEnabled(false)", all_off)
+        self.assertNotIn("renderControls()", all_off)
+
     def test_project_management_is_available_from_the_library(self):
         library = (MINIMAL_DIR / "library.js").read_text(encoding="utf-8")
         for name in ("renameMap", "reorderMaps", "deleteMap"):
@@ -310,9 +328,22 @@ class EditorCoverageTests(unittest.TestCase):
         self.assertNotEqual(sides[1].strip(), "0", "step contents would sit flush left")
 
     def test_opening_a_step_drives_the_left_pane(self):
-        self.assertIn("setActiveStep(details.dataset.step)", self.controls)
+        self.assertIn("setActiveStep(step)", self.controls)
         # One step open at a time, so the left pane is never ambiguous.
         self.assertIn("other.open = false", self.controls)
+
+    def test_closed_steps_do_not_mount_hidden_editors_or_label_crops(self):
+        """A later step must not compete with hundreds of hidden Step 3 images."""
+        stack = self.controls[self.controls.index("function stepStackHtml"):
+                              self.controls.index("function stepRunRowHtml")]
+        text_editor = (MINIMAL_DIR / "editors" / "text.js").read_text(encoding="utf-8")
+        self.assertIn("const expanded = number === open", stack)
+        self.assertIn("const body = done && expanded", stack)
+        self.assertIn("expanded || !done ? stepRunRowHtml", stack)
+        self.assertIn("renderControls()", self.controls[
+            self.controls.index('document.querySelectorAll(".step-section")'):])
+        self.assertIn('loading="lazy"', text_editor)
+        self.assertIn('fetchpriority="low"', text_editor)
 
     def test_each_step_can_be_run_on_its_own(self):
         self.assertIn("data-run-step=", self.controls)
@@ -383,6 +414,14 @@ class EditorCoverageTests(unittest.TestCase):
         self.assertIn("state.activeStep = Number(current)", workspace)
         self.assertIn("currentStepKey(map) ||", workspace)
         self.assertIn("state.viewStep = dot.dataset.individualStep", self.controls)
+
+    def test_finished_manual_job_opens_its_latest_completed_step(self):
+        workspace = (MINIMAL_DIR / "workspace.js").read_text(encoding="utf-8")
+        polling = workspace[workspace.index("function startPolling") :]
+        self.assertIn('const latest = ["8", "7", "6", "5", "4", "3", "2", "1"]',
+                      polling)
+        self.assertIn("if (latest) state.activeStep = Number(latest)", polling)
+        self.assertNotIn('else if (map?.steps?.["6"])', polling)
 
     def test_entering_individual_mode_saves_setup_and_runs_only_step_one(self):
         block = self.controls[self.controls.index("async function showIndividualSteps"):]
@@ -588,6 +627,16 @@ class EditorCoverageTests(unittest.TestCase):
         for action in ("data-edit-pattern", "data-change-pattern", "data-pattern-colour"):
             self.assertIn(action, patterns)
         self.assertIn(".pattern-decision", stylesheet)
+        self.assertIn("overflow-x: hidden", stylesheet)
+        self.assertIn(".pattern-colour input[type=\"color\"]", stylesheet)
+        self.assertIn("cursor: pointer", stylesheet)
+        self.assertIn("item.water_only", patterns)
+        self.assertIn("group.is_water", patterns)
+        self.assertIn('waterConflict ? "disabled" : ""', patterns)
+        detailed = (STATIC / "app.js").read_text(encoding="utf-8")
+        self.assertIn('data-water-only=', detailed)
+        self.assertIn("syncChoiceAvailability", detailed)
+        self.assertIn('choice.dataset.waterOnly === "true"', detailed)
         self.assertNotIn("pageEditorHtml", self.controls)
 
     def test_step_7_shows_only_the_finished_master_on_the_output_page(self):
@@ -666,6 +715,7 @@ class EditorCoverageTests(unittest.TestCase):
         braille = (MINIMAL_DIR / "editors" / "braille.js").read_text(encoding="utf-8")
         steps = (MINIMAL_DIR / "steps.js").read_text(encoding="utf-8")
         self.assertIn('artifact: "step9_legend_base.png"', steps)
+        self.assertIn("hybridOverlay: true", steps)
         self.assertIn("export function grade1Preview", braille)
         self.assertIn("entry.braille_text = grade1Preview(field.value)", legend)
         self.assertIn("title.braille_text = grade1Preview(titleText.value, true)", legend)
@@ -680,6 +730,19 @@ class EditorCoverageTests(unittest.TestCase):
         self.assertIn('const target = id === "title" ? "title" : id', legend)
         self.assertIn("patchItem(box.target || box.id", legend)
         self.assertNotIn('|| "legend-title", {', legend)
+
+    def test_step_9_colour_toggle_refreshes_editable_legend_layers(self):
+        visual = (MINIMAL_DIR / "visual.js").read_text(encoding="utf-8")
+        viewer = (MINIMAL_DIR / "viewer.js").read_text(encoding="utf-8")
+        refresh = visual[visual.index("export async function refreshStepImages"):
+                         visual.index("export function setActiveStep")]
+        self.assertIn("view.hybrid || view.hybridOverlay", viewer)
+        self.assertIn('if ($("legend-overlay") && state.data.legend)', refresh)
+        self.assertIn("if (!view.hybridOverlay", refresh)
+        self.assertIn("legendSwatchUrl(", refresh)
+        self.assertIn("bindLegendOverlay()", refresh)
+        self.assertIn('"step9_legend_hybrid.png" : "step9_legend.png"', refresh)
+        self.assertLess(refresh.index("legendSwatchUrl("), refresh.index("bindLegendOverlay()"))
 
     def test_step_9_title_editor_appears_before_legend_entries(self):
         legend = (MINIMAL_DIR / "editors" / "legend.js").read_text(encoding="utf-8")
@@ -773,6 +836,56 @@ class EditorCoverageTests(unittest.TestCase):
         self.assertIn("box-sizing: border-box", stylesheet)
         self.assertIn("border-radius: 50%", stylesheet)
         self.assertNotIn("cursor: crosshair", stylesheet)
+
+    def test_step_five_and_six_previews_are_preloaded_before_the_view_changes(self):
+        workspace = (MINIMAL_DIR / "workspace.js").read_text(encoding="utf-8")
+        visual = (MINIMAL_DIR / "visual.js").read_text(encoding="utf-8")
+        simplification = (MINIMAL_DIR / "editors" / "simplification.js").read_text(encoding="utf-8")
+        cache = (MINIMAL_DIR / "preview-cache.js").read_text(encoding="utf-8")
+        self.assertIn("await preloadPreviews(stem, foreground)", workspace)
+        self.assertIn("void preloadPreviews(stem, previews.filter", workspace)
+        self.assertLess(workspace.index("await preloadPreviews(stem, foreground)"),
+                        workspace.index("void preloadPreviews(stem, previews.filter"))
+        self.assertIn('previews.push("step5_aggregation_preview.png")', workspace)
+        self.assertIn("clearPreviewCache(state.selected)", workspace)
+        self.assertIn("cachedPreviewUrl(map.stem, name)", visual)
+        dynamic = visual[visual.index('if (view.dynamic === "simplified")'):
+                         visual.index("const hybridEnabled", visual.index('if (view.dynamic === "simplified")'))]
+        self.assertIn("url: cachedPreviewUrl(map.stem, name)", dynamic)
+        self.assertNotIn("url: artifactUrl(map.stem, name)", dynamic)
+        self.assertIn("function swapSimplificationPreview", simplification)
+        self.assertIn("const next = new Image()", simplification)
+        self.assertIn("image.src = source", simplification)
+        self.assertIn("URL.createObjectURL", cache)
+        self.assertIn("URL.revokeObjectURL", cache)
+
+    def test_step_seven_preview_and_mode_toggles_keep_the_map_visible(self):
+        workspace = (MINIMAL_DIR / "workspace.js").read_text(encoding="utf-8")
+        patterns = (MINIMAL_DIR / "editors" / "patterns.js").read_text(encoding="utf-8")
+        self.assertIn('previews.push("step8a_cleanup.png")', workspace)
+        self.assertIn('previews.push("step8a_hybrid.png")', workspace)
+        mode = patterns[patterns.index("async function updateReviewMode"):
+                        patterns.index("async function choosePattern")]
+        self.assertIn("if (wasColourView && !state.colourView) await refreshStepImages()", mode)
+        self.assertIn("syncPatternModeControls()", mode)
+        self.assertIn("syncPatternViewerControls()", mode)
+        self.assertNotIn("renderControls()", mode)
+        self.assertNotIn("renderVisual()", mode)
+        self.assertNotIn("refreshStepImages, renderVisual", patterns)
+
+    def test_step_seven_edits_keep_pattern_rows_mounted_and_colour_picker_enabled(self):
+        patterns = (MINIMAL_DIR / "editors" / "patterns.js").read_text(encoding="utf-8")
+        colour_save = patterns[patterns.index("function saveColours"):
+                               patterns.index("async function approveAndContinue")]
+        refresh = patterns[patterns.index("async function refreshAfterRender"):]
+        self.assertIn("pendingColourSave", colour_save)
+        self.assertNotIn("changedPicker.disabled", colour_save)
+        self.assertIn("if (!pendingColourSave && state.selected === request.stem)", colour_save)
+        self.assertIn("if (!pendingColourSave) loadMaps().catch", colour_save)
+        self.assertNotIn("await loadMaps()", colour_save)
+        self.assertNotIn("renderControls()", refresh)
+        self.assertIn("refreshPatternRows(groups)", refresh)
+        self.assertIn("data-pattern-preview", patterns)
 
     def test_the_right_panel_never_embeds_a_map_preview(self):
         stylesheet = (STATIC / "minimal.css").read_text(encoding="utf-8")
@@ -943,11 +1056,77 @@ class ViewerToolTests(unittest.TestCase):
         self.assertIn("viewerToolbarHtml(view, index)", self.visual)
         self.assertIn("bindViewer(Number(bar.dataset.viewer)", self.visual)
 
+    def test_display_colours_swaps_only_after_the_next_image_loads(self):
+        binding = self.visual[self.visual.index('document.querySelectorAll(".page-view-toolbar")'):
+                              self.visual.index("bindMaskCanvas()")]
+        refresh = self.visual[self.visual.index("export async function refreshStepImages"):
+                              self.visual.index("export function setActiveStep")]
+        self.assertIn('if (change !== "colour")', binding)
+        self.assertIn("const changed = await refreshStepImages()", binding)
+        self.assertIn("const loaded = await new Promise", refresh)
+        self.assertIn("if (!loaded) return", refresh)
+        self.assertLess(refresh.index("if (!loaded) return"), refresh.index("image.src = next"))
+        self.assertIn('onViewChange?.("colour")', self.viewer)
+        self.assertIn("checkbox.disabled = true", self.viewer)
+
     def test_dragging_can_snap_to_the_braille_grid(self):
         self.assertIn("6 * pxPerMm", self.viewer)
         for name in ("braille.js", "legend.js", "page.js"):
             source = (MINIMAL_DIR / "editors" / name).read_text(encoding="utf-8")
             self.assertIn("snapToGrid(", source, name)
+
+    def test_grid_guides_toggle_a_prebuilt_layer_without_reloading_the_viewer(self):
+        stylesheet = (STATIC / "minimal.css").read_text(encoding="utf-8")
+        handler = self.viewer[self.viewer.index('toolbar.querySelector(".page-guides-toggle")'):
+                              self.viewer.index('toolbar.querySelector(".page-snap-toggle")')]
+        self.assertIn("state.showGuides = event.target.checked", handler)
+        self.assertIn("configureGrid(canvas)", handler)
+        self.assertNotIn("onViewChange", handler)
+        grid = re.search(r"\.page-grid \{([^}]*)\}", stylesheet).group(1)
+        self.assertIn("opacity: 0", grid)
+        self.assertIn("visibility: hidden", grid)
+        self.assertIn("contain: paint", grid)
+        self.assertIn("will-change: opacity", grid)
+        self.assertNotIn("display: none", grid)
+        self.assertIn(".page-grid.is-visible { visibility: visible; opacity: 1; }", stylesheet)
+
+    def test_grid_uses_real_pipeline_scale_and_does_not_wait_for_an_image(self):
+        configure = self.viewer[self.viewer.index("export function configureGrid"):
+                                self.viewer.index("export function viewerToolbarHtml")]
+        self.assertIn("const GRID_MM = 6", self.viewer)
+        self.assertIn("const GUIDE_MM = 30", self.viewer)
+        self.assertIn("GRID_MM / mmPerPx", configure)
+        self.assertIn("GUIDE_MM / mmPerPx", configure)
+        self.assertIn('sheet.dataset.mmPerPx', configure)
+        self.assertIn('grid.classList.toggle("is-visible", gridAvailable && state.showGuides)',
+                      configure)
+        guard = self.viewer[self.viewer.index("export function bindViewer"):
+                            self.viewer.index("const range")]
+        self.assertNotIn("!image", guard)
+        self.assertIn('state.data.pageLayout?.render_px_per_mm', self.visual)
+        self.assertIn('data-grid-enabled="true"', self.visual)
+        self.assertIn('data-mm-per-px=', self.visual)
+
+    def test_grid_control_is_enabled_only_for_steps_seven_through_nine(self):
+        toolbar = self.viewer[self.viewer.index("export function viewerToolbarHtml"):
+                              self.viewer.index("export function snapToGrid")]
+        self.assertIn("view.pageLayout || view.pageRender || view.legendPage", toolbar)
+        self.assertIn('gridAvailable && state.showGuides', toolbar)
+        self.assertIn('gridAvailable ? "" : "disabled"', toolbar)
+        configure = self.viewer[self.viewer.index("export function configureGrid"):
+                                self.viewer.index("export function viewerToolbarHtml")]
+        self.assertIn('sheet.dataset.gridEnabled === "true"', configure)
+        self.assertIn("gridAvailable && state.showGuides", configure)
+
+    def test_snap_control_is_enabled_only_for_steps_seven_through_nine(self):
+        toolbar = self.viewer[self.viewer.index("export function viewerToolbarHtml"):
+                              self.viewer.index("export function snapToGrid")]
+        self.assertIn('gridAvailable && state.snapToGrid ? "checked" : ""', toolbar)
+        self.assertIn('Snap to grid is available in Steps 7, 8 and 9', toolbar)
+        self.assertIn('<span aria-hidden="true"></span> Snap to grid</label>', toolbar)
+        handler = self.viewer[self.viewer.index('toolbar.querySelector(".page-snap-toggle")'):
+                              self.viewer.index('toolbar.querySelector("[data-colour-view]")')]
+        self.assertIn("box.checked = !box.disabled && state.snapToGrid", handler)
 
     def test_a_page_is_framed_the_way_the_detailed_page_frames_one(self):
         """A recessed surround with the sheet centred inside it, so the page
@@ -961,7 +1140,7 @@ class ViewerToolTests(unittest.TestCase):
         self.assertIn("box-shadow", sheet)
         self.assertIn("background: #fff", sheet)
         # The grid rides on the sheet, so zoom scales it with the page.
-        self.assertIn(".map-canvas.show-grid .page-grid", stylesheet)
+        self.assertIn(".page-grid.is-visible", stylesheet)
 
     def test_zoom_changes_only_the_map_inside_a_fixed_viewport(self):
         stylesheet = (STATIC / "minimal.css").read_text(encoding="utf-8")
@@ -1007,11 +1186,12 @@ class ViewerToolTests(unittest.TestCase):
         self.assertIn('.page-pan-toggle[aria-pressed="true"]', stylesheet)
 
     def test_colour_view_is_offered_only_where_a_colour_render_exists(self):
-        self.assertIn("view.hybrid ?", self.viewer)
+        self.assertIn("view.hybrid || view.hybridOverlay ?", self.viewer)
         steps = (MINIMAL_DIR / "steps.js").read_text(encoding="utf-8")
         marker = "export const STEP_VIEWS = {"
         block = steps[steps.index(marker):]
-        self.assertEqual(len(re.findall(r"hybrid:", block)), 3)  # steps 7, 8 and 9
+        self.assertEqual(len(re.findall(r"hybrid:", block)), 2)  # raster swaps: Steps 7 and 8
+        self.assertEqual(block.count("hybridOverlay: true"), 1)   # editable overlay: Step 9
 
 
 class VersionSkewTests(unittest.TestCase):
