@@ -70,8 +70,8 @@ export function bindMaskEditor(onApproved) {
  * in memory. Excluded pixels are greyed immediately, matching the detailed
  * view; the server receives the same image-coordinate strokes on Apply. */
 export function bindMaskCanvas() {
-  // The review works in map_area.png coordinates, so the brush has to sit on
-  // that picture -- Step 2's first panel -- and not on the uploaded source.
+  // Review uses full source-image coordinates so omitted geography outside an
+  // automatic tight crop can still be restored with the brush.
   const holder = $("mask-target");
   if (!holder) return;
   holder.querySelector(".mask-canvas")?.remove();
@@ -100,7 +100,7 @@ export function bindMaskCanvas() {
   maskImage.addEventListener("error", () => {
     statusLine("mask-save-status", "The current mask could not be displayed.", "error");
   }, { once: true });
-  maskImage.src = artifactUrl(state.selected, "map_mask.png");
+  maskImage.src = artifactUrl(state.selected, "map_mask_full.png");
 
   let current = null;
   const toImagePoint = (event) => {

@@ -37,9 +37,11 @@ from .semantics import (
     API_TIMEOUT_MS,
     encode_for_model,
     DEFAULT_MODEL,
+    LegendEncodingKind,
     MapSemantics,
     _ensure_api_key,
     require_pipeline_eligible,
+    semantics_artifact_is_current,
 )
 
 LAYOUT_RETRIES = 1  # a deadline or 5xx on this call is usually transient
@@ -1419,8 +1421,20 @@ def drop_frame_label_boxes(
     labels (logos, notes) legitimately sit on the picture and are never
     touched, and neither are the dedicated legend/title/scale/north boxes.
     """
-    suspects = [i for i, (name, _) in enumerate(furniture)
-                if name.startswith("other:") and FRAME_LABEL_RE.search(name)]
+    h, w = img.shape[:2]
+
+    def generic_ruler(name: str, box: tuple[int, int, int, int]) -> bool:
+        """Recognise an unlabeled frame strip without guessing at real notes."""
+        if name.lower() not in {"other:other", "other:unknown", "other:unlabeled"}:
+            return False
+        x0, y0, x1, y1 = box
+        bw, bh = max(0, x1 - x0), max(0, y1 - y0)
+        return ((bw >= 0.35 * w and bh <= 0.04 * h)
+                or (bh >= 0.35 * h and bw <= 0.04 * w))
+
+    suspects = [i for i, (name, box) in enumerate(furniture)
+                if name.startswith("other:")
+                and (FRAME_LABEL_RE.search(name) or generic_ruler(name, box))]
     if not suspects:
         return furniture, []
     scale = max(1, max(img.shape[:2]) // 800)
@@ -1501,15 +1515,19 @@ def derive_palette_from_map(
     return rows
 
 
+def _is_area_fill_entry(entry) -> bool:
+    return entry.is_thematic and entry.kind == LegendEncodingKind.area_fill
+
+
 def _dedupe_thematic(entries) -> tuple[list, list[str]]:
-    """Keep the first occurrence of each thematic label (OCR repeats rows)."""
+    """Keep the first occurrence of each thematic area-fill label."""
     warnings: list[str] = []
     seen: set[str] = set()
     kept = []
     for entry in entries:
-        if entry.is_thematic:
+        if _is_area_fill_entry(entry):
             if entry.label in seen:
-                warnings.append(f"ignored duplicate thematic legend entry '{entry.label}'")
+                warnings.append(f"ignored duplicate thematic area-fill legend entry '{entry.label}'")
                 continue
             seen.add(entry.label)
         kept.append(entry)
@@ -1518,10 +1536,10 @@ def _dedupe_thematic(entries) -> tuple[list, list[str]]:
 
 def _detect_for_entries(legend_img: np.ndarray, legend_entries, ordered: bool):
     """Run swatch detection for a transcription; trims trailing extras."""
-    thematic = [entry for entry in legend_entries if entry.is_thematic]
+    thematic = [entry for entry in legend_entries if _is_area_fill_entry(entry)]
     expected = len(thematic)
     if expected == 0:
-        return thematic, [], ["Step 1 transcribed no thematic swatch entries"]
+        return thematic, [], ["Step 1 transcribed no thematic area-fill swatch entries"]
     rects, warnings = detect_swatches(
         legend_img, expected, labels=[entry.label for entry in thematic], ordered=ordered)
     if len(rects) > expected:
@@ -1531,7 +1549,7 @@ def _detect_for_entries(legend_img: np.ndarray, legend_entries, ordered: bool):
         # the thematic entries as one unbroken block at the start and the
         # surplus is no larger than the trailing non-thematic entries.
         trailing = len(legend_entries) - expected
-        leading_block = all(entry.is_thematic for entry in legend_entries[:expected])
+        leading_block = all(_is_area_fill_entry(entry) for entry in legend_entries[:expected])
         surplus = len(rects) - expected
         if leading_block and trailing >= surplus:
             warnings.append(
@@ -1590,7 +1608,7 @@ def _resolve_legend_box(
     if not semantics.legend_present:
         return None, False, semantics, []
 
-    expected = sum(entry.is_thematic for entry in semantics.legend_entries)
+    expected = sum(_is_area_fill_entry(entry) for entry in semantics.legend_entries)
     box, warnings = recover_legend_box(
         img, layout, expected, semantics.data_ordering.value == "ordered")
     if box is not None:
@@ -1608,7 +1626,7 @@ def _resolve_legend_box(
         if not fresh.legend_present:
             all_warnings.append(f"Step 1 redraw {attempt + 1} read no legend")
             continue
-        fresh_expected = sum(entry.is_thematic for entry in fresh.legend_entries)
+        fresh_expected = sum(_is_area_fill_entry(entry) for entry in fresh.legend_entries)
         box, recovery_warnings = recover_legend_box(
             img, layout, fresh_expected, fresh.data_ordering.value == "ordered")
         all_warnings.append(
@@ -1639,7 +1657,7 @@ def run_step2(image_path: Path, model: str | None = None, runs_dir: Path = Path(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     sem_path = out_dir / "step1_semantics.json"
-    if sem_path.exists():
+    if sem_path.exists() and semantics_artifact_is_current(sem_path):
         sem = MapSemantics.model_validate_json(sem_path.read_text(encoding="utf-8"))
     else:
         sem = interpret_map(image_path, model=selected_model)
@@ -1717,6 +1735,11 @@ def run_step2(image_path: Path, model: str | None = None, runs_dir: Path = Path(
     tx0, ty0, tx1, ty1 = tight
     map_area = img[ty0:ty1, tx0:tx1]
     imwrite(out_dir / "map_area.png", map_area)
+    # Mask review is performed against the uploaded page, not this tight crop.
+    # Keep full-image review copies while retaining the cropped artifacts used
+    # by every downstream pipeline stage.
+    imwrite(out_dir / "map_mask_full_auto.png", mask)
+    imwrite(out_dir / "map_mask_full.png", mask)
     cropped_mask = mask[ty0:ty1, tx0:tx1]
     # Retain an untouched automatic baseline for the Step 2 mask-review tool.
     # Re-running Step 2 intentionally starts a fresh review against the new
@@ -1788,7 +1811,7 @@ def run_step2(image_path: Path, model: str | None = None, runs_dir: Path = Path(
             paper = legend_paper_lab(
                 to_lab(legend_img), strip=max(2, min(legend_img.shape[:2]) // 50))
             thematic_rects = iter(rects)
-            for entry in legend_entries:
+            for entry in thematic_entries:
                 row = {
                     "label": entry.label,
                     "is_thematic": entry.is_thematic,
@@ -1796,15 +1819,14 @@ def run_step2(image_path: Path, model: str | None = None, runs_dir: Path = Path(
                     "rgb": None, "lab": None, "hex": None,
                     "swatch_bbox_orig": None,
                 }
-                if entry.is_thematic:
-                    rect = next(thematic_rects)
-                    x, y, sw_, sh_ = rect
-                    rgb, lab_v = sample_swatch(legend_img, rect, paper)
-                    row.update({
-                        "rgb": rgb, "lab": lab_v,
-                        "hex": "#{:02x}{:02x}{:02x}".format(*rgb),
-                        "swatch_bbox_orig": [lx0 + x, ly0 + y, sw_, sh_],
-                    })
+                rect = next(thematic_rects)
+                x, y, sw_, sh_ = rect
+                rgb, lab_v = sample_swatch(legend_img, rect, paper)
+                row.update({
+                    "rgb": rgb, "lab": lab_v,
+                    "hex": "#{:02x}{:02x}{:02x}".format(*rgb),
+                    "swatch_bbox_orig": [lx0 + x, ly0 + y, sw_, sh_],
+                })
                 classes.append(row)
 
             # A swatch that samples as bare paper is a detection landing on

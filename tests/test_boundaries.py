@@ -176,6 +176,7 @@ class BoundarySelectionTests(unittest.TestCase):
                 "legend_title": "Classes",
                 "legend_entries": [{
                     "label": "Crops", "color_hint": "green", "is_thematic": True,
+                    "kind": "area_fill",
                 }],
                 "water_present": True,
                 "thematic_classes": [{

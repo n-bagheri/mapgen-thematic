@@ -57,7 +57,7 @@ async function apiBlob(path, options = {}) {
 /* This view and webui/server.py ship together: the page posts actions and reads
    review flags that a server from an earlier checkout does not have.  Keep this
    equal to UI_CONTRACT in webui/server.py. */
-export const UI_CONTRACT = 2;
+export const UI_CONTRACT = 3;
 
 const RESTART_ADVICE = "The server is running older code than this page. In a PowerShell "
   + "terminal at the Thematic folder, run: .\\restart-mapgen-ui.ps1 — then refresh this page.";

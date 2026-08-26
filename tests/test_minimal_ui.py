@@ -1023,13 +1023,14 @@ class StepViewTests(unittest.TestCase):
         self.assertIn("export function setActiveStep", visual)
 
     def test_the_mask_brush_sits_on_the_image_its_coordinates_use(self):
-        """maskreview reports map_area.png pixels, so the brush must be drawn
-        on that picture and not on the uploaded source."""
-        self.assertIn('artifact: "map_area.png"', self.steps)
+        """Mask review uses source-image pixels so a brush can restore content
+        that fell outside Step 2's automatic tight crop."""
+        step2 = self.steps[self.steps.index("  2: ["):self.steps.index("  3: [")]
+        self.assertIn("source: true", step2)
         self.assertIn('overlay: "mask"', self.steps)
         mask = (MINIMAL_DIR / "editors" / "mask.js").read_text(encoding="utf-8")
         self.assertIn('$("mask-target")', mask)
-        self.assertIn('artifactUrl(state.selected, "map_mask.png")', mask)
+        self.assertIn('artifactUrl(state.selected, "map_mask_full.png")', mask)
         self.assertIn("redrawMask(context, maskImage, current)", mask)
         self.assertIn("maskPixels.data[offset] >= 128", mask)
         self.assertIn("overlay.data[offset + 3] = 165", mask)

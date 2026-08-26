@@ -25,6 +25,7 @@ def semantics_payload():
         "legend_title": "Classes",
         "legend_entries": [{
             "label": "Forest", "color_hint": "green", "is_thematic": True,
+            "kind": "area_fill",
         }],
         "water_present": False,
         "thematic_classes": [{

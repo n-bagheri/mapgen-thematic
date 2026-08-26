@@ -11,6 +11,7 @@ from mapgen.isolate import (
     LAYOUT_PROMPT,
     LayoutResponseError,
     MapLayout,
+    _detect_for_entries,
     _layout_furniture,
     _resolve_legend_box,
     _validate_layout_root,
@@ -558,6 +559,7 @@ class LegendBoxRecoveryTests(unittest.TestCase):
             "legend_present": True, "legend_title": None,
             "legend_entries": [{
                 "label": label, "color_hint": "green", "is_thematic": True,
+                "kind": "area_fill",
             } for label in labels],
             "water_present": False,
             "thematic_classes": [{
@@ -593,6 +595,52 @@ class LegendBoxRecoveryTests(unittest.TestCase):
         self.assertEqual(recover.call_args_list[0].args[2], 2)
         self.assertEqual(recover.call_args_list[1].args[2], 15)
         self.assertTrue(any("legend table recovered" in warning for warning in warnings))
+
+
+
+class LegendAreaFillPaletteTests(unittest.TestCase):
+    def test_only_thematic_area_fills_count_toward_expected_swatch_count(self):
+        entries = MapSemantics.model_validate({
+            "map_type": "area_class_chorochromatic", "in_scope": True,
+            "data_ordering": "qualitative", "map_language": "English",
+            "subject": "synthetic", "description": "synthetic", "title": None,
+            "legend_present": True, "legend_title": None,
+            "legend_entries": [{
+                "label": "forest", "color_hint": "green",
+                "is_thematic": True, "kind": "area_fill",
+            }, {
+                "label": "river", "color_hint": "blue",
+                "is_thematic": True, "kind": "line",
+            }, {
+                "label": "capital", "color_hint": "black",
+                "is_thematic": True, "kind": "point_symbol",
+            }, {
+                "label": "grassland", "color_hint": "yellow",
+                "is_thematic": True, "kind": "area_fill",
+            }],
+            "water_present": False,
+            "thematic_classes": [{
+                "label": "forest", "priority": 1, "approx_area_share_percent": 50,
+            }, {
+                "label": "grassland", "priority": 2, "approx_area_share_percent": 50,
+            }],
+            "non_thematic": [], "lines": [],
+            "overlay_text": {
+                "has_city_labels": False, "capital_city": None,
+                "has_region_labels": False, "has_line_labels": False, "notes": "",
+            },
+        }).legend_entries
+
+        with patch("mapgen.isolate.detect_swatches", return_value=(
+                [(1, 2, 3, 4), (5, 6, 7, 8)], [])) as detect:
+            area_fills, rects, warnings = _detect_for_entries(
+                np.zeros((20, 20, 3), np.uint8), entries, ordered=False)
+
+        self.assertEqual([entry.label for entry in area_fills], ["forest", "grassland"])
+        self.assertEqual(len(rects), 2)
+        self.assertEqual(warnings, [])
+        self.assertEqual(detect.call_args.args[1], 2)
+        self.assertEqual(detect.call_args.kwargs["labels"], ["forest", "grassland"])
 
 
 
@@ -772,6 +820,18 @@ class FrameLabelBoxTests(unittest.TestCase):
         self.assertEqual(kept, furniture)
         self.assertEqual(warnings, [])
 
+    def test_unlabeled_ruler_strip_crossing_map_content_is_dropped(self):
+        page = self._page()
+        furniture = [
+            ("other:other", (70, 250, 730, 270)),
+            ("other:other", (600, 450, 680, 510)),
+        ]
+
+        kept, warnings = drop_frame_label_boxes(page, furniture)
+
+        self.assertEqual(kept, [("other:other", (600, 450, 680, 510))])
+        self.assertTrue(any("dropped 1" in warning for warning in warnings))
+
 
 
 class Step2GateSafetyTests(unittest.TestCase):
@@ -808,6 +868,57 @@ class Step2GateSafetyTests(unittest.TestCase):
 
             self.assertTrue((run_dir / "classes.json").exists())
             self.assertTrue((run_dir / "geometry.json").exists())
+
+    def test_stale_legend_entry_contract_is_reread_before_step2(self):
+        import json, tempfile
+        from pathlib import Path
+        from mapgen.isolate import run_step2
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            image = root / "synthetic.png"
+            page = np.full((100, 100, 3), (50, 160, 80), np.uint8)
+            cv2.imwrite(str(image), page)
+            runs = root / "runs"
+            run_dir = runs / image.stem
+            run_dir.mkdir(parents=True)
+            stale = {
+                "map_type": "area_class_chorochromatic", "in_scope": True,
+                "data_ordering": "qualitative", "map_language": "English",
+                "subject": "s", "description": "d", "title": None,
+                "legend_present": True, "legend_title": None,
+                "legend_entries": [{
+                    "label": "forest", "color_hint": "green", "is_thematic": True,
+                }],
+                "water_present": False,
+                "thematic_classes": [{
+                    "label": "forest", "priority": 1, "approx_area_share_percent": 100,
+                }],
+                "non_thematic": [], "lines": [],
+                "overlay_text": {"has_city_labels": False, "capital_city": None,
+                                 "has_region_labels": False,
+                                 "has_line_labels": False, "notes": ""},
+            }
+            (run_dir / "step1_semantics.json").write_text(
+                json.dumps(stale), encoding="utf-8")
+            refreshed = MapSemantics.model_validate({
+                **stale,
+                "legend_present": False,
+                "legend_entries": [],
+            })
+            layout = MapLayout.model_validate({
+                "map_areas": [{"box_2d": [0, 0, 1000, 1000], "label": "map"}],
+                "legend": None, "title": None, "scale_bar": None,
+                "north_arrow": None, "other": [],
+            })
+
+            with patch("mapgen.semantics.interpret_map", return_value=refreshed) as read_step1, \
+                    patch("mapgen.isolate.detect_layout", return_value=layout):
+                run_step2(image, model="gemma-test", runs_dir=runs, step1_retries=0)
+
+            read_step1.assert_called_once_with(image, model="gemma-test")
+            refreshed_raw = json.loads((run_dir / "step1_semantics.json").read_text())
+            self.assertEqual(refreshed_raw["legend_entries"], [])
 
 
 

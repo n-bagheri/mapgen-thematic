@@ -19,6 +19,7 @@ def _semantics(lines):
         "legend_title": "Precipitation",
         "legend_entries": [{
             "label": "low", "color_hint": "yellow", "is_thematic": True,
+            "kind": "area_fill",
         }],
         "water_present": False,
         "thematic_classes": [{

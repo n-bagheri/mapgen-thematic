@@ -81,7 +81,7 @@ def _label_crop_inputs(labels_path: Path, image_path: Path):
 # vintage implements.  Bump this whenever an endpoint the focused view depends
 # on gains or changes a field, so a page served from a newer checkout can name
 # the mismatch instead of failing later with an "unsupported field" refusal.
-UI_CONTRACT = 2
+UI_CONTRACT = 3
 
 # Every source file this process was started from.  `app.run` deliberately runs
 # without the reloader, so a pipeline job is never killed mid-step -- which also
@@ -155,7 +155,8 @@ STEP_ARTIFACTS = {
 STEP_EXTRA = {
     1: (),
     2: ("step2_layout.json", "map_area.png", "map_mask.png", "map_mask_auto.png",
-        "map_mask_review.json", "map_text_input.png", "legend.png"),
+        "map_mask_full.png", "map_mask_full_auto.png", "map_mask_review.json",
+        "map_text_input.png", "legend.png"),
     3: ("step3_raw.json", "step3_raw.sha256", "step3_craft.json",
         "step3_craft.sha256", "step3_lines_raw.json", "step3_lines_raw.sha256",
         "line_guidance.json", "text_mask.png", "label_review.json",
@@ -900,29 +901,83 @@ def api_artifact(stem: str, name: str):
     return response
 
 
-def _mask_review_paths(stem: str) -> tuple[Path, Path, Path, Path]:
-    if find_map(stem) is None:
+def _mask_review_paths(stem: str) -> tuple[Path, Path, Path, Path, Path]:
+    image_path = find_map(stem)
+    if image_path is None:
         abort(404, "unknown map")
     run_dir = RUNS_DIR / stem
     map_path = run_dir / "map_area.png"
     mask_path = run_dir / "map_mask.png"
     auto_path = run_dir / "map_mask_auto.png"
+    full_path = run_dir / "map_mask_full.png"
+    full_auto_path = run_dir / "map_mask_full_auto.png"
     geometry_path = run_dir / "geometry.json"
     if not map_path.exists() or not mask_path.exists() or not geometry_path.exists():
         abort(409, "run Step 2 before reviewing the geographic mask")
-    # Older Step 2 results predate the review baseline.  Treat their existing
-    # mask as the restore baseline rather than blocking a project mid-pipeline.
-    if not auto_path.exists():
-        shutil.copyfile(mask_path, auto_path)
-    return run_dir, map_path, mask_path, auto_path
+    from mapgen.isolate import imread, imwrite
+    import numpy as np
+
+    source_shape = imread(image_path).shape[:2]
+    geometry = json.loads(geometry_path.read_text(encoding="utf-8"))
+    crop = [int(value) for value in geometry.get("map_crop", [])]
+    if len(crop) != 4:
+        abort(409, "Step 2 geometry has no valid map crop; rerun Step 2")
+
+    def expand(cropped_path: Path, destination: Path) -> None:
+        x0, y0, x1, y1 = crop
+        cropped = imread(cropped_path)[..., 0]
+        if cropped.shape != (y1 - y0, x1 - x0):
+            abort(409, "Step 2 mask and map crop disagree; rerun Step 2")
+        full = np.zeros(source_shape, np.uint8)
+        full[y0:y1, x0:x1] = cropped
+        imwrite(destination, full)
+
+    # Upgrade an existing Step 2 result in place. New runs write both files
+    # directly, but legacy runs only have the cropped pipeline mask.
+    if not full_path.exists():
+        expand(mask_path, full_path)
+    if not full_auto_path.exists():
+        if not auto_path.exists():
+            shutil.copyfile(mask_path, auto_path)
+        expand(auto_path, full_auto_path)
+    return run_dir, image_path, full_path, full_auto_path, geometry_path
+
+
+def _write_reviewed_mask_products(
+    image_path: Path, run_dir: Path, full_mask, full_automatic, geometry_path: Path,
+) -> tuple[int, int, int, int]:
+    """Rebuild cropped pipeline inputs from the reviewed full-page mask."""
+    import numpy as np
+    from mapgen.isolate import imread, imwrite, prepare_text_input
+
+    ys, xs = np.where(full_mask > 0)
+    if not len(xs):
+        abort(400, "the reviewed mask cannot remove the entire map")
+    tight = (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)
+    x0, y0, x1, y1 = tight
+    source = imread(image_path)
+    map_area = source[y0:y1, x0:x1]
+    cropped_mask = full_mask[y0:y1, x0:x1]
+    cropped_automatic = full_automatic[y0:y1, x0:x1]
+    imwrite(run_dir / "map_mask_full.png", full_mask)
+    imwrite(run_dir / "map_area.png", map_area)
+    imwrite(run_dir / "map_mask.png", cropped_mask)
+    imwrite(run_dir / "map_mask_auto.png", cropped_automatic)
+
+    geometry = json.loads(geometry_path.read_text(encoding="utf-8"))
+    geometry["map_crop"] = list(tight)
+    geometry_path.write_text(json.dumps(geometry, indent=2), encoding="utf-8")
+    imwrite(run_dir / "map_text_input.png", prepare_text_input(
+        map_area, tight, geometry.get("furniture", []), cropped_mask))
+    return tight
 
 
 @app.get("/api/maskreview/<stem>")
 def api_maskreview_get(stem: str):
     from mapgen.isolate import imread
 
-    run_dir, map_path, mask_path, auto_path = _mask_review_paths(stem)
-    image = imread(map_path)
+    run_dir, image_path, mask_path, auto_path, _ = _mask_review_paths(stem)
+    image = imread(image_path)
     mask = imread(mask_path)[..., 0]
     automatic = imread(auto_path)[..., 0]
     review_path = run_dir / "map_mask_review.json"
@@ -932,6 +987,7 @@ def api_maskreview_get(stem: str):
         review = {}
     return jsonify({
         "width": int(image.shape[1]), "height": int(image.shape[0]),
+        "source_name": image_path.name,
         "kept_pixels": int((mask > 0).sum()),
         "automatic_pixels": int((automatic > 0).sum()),
         "reviewed": int(review.get("strokes_saved", 0)) > 0,
@@ -943,9 +999,9 @@ def api_maskreview_get(stem: str):
 def api_maskreview_post(stem: str):
     import cv2
     import numpy as np
-    from mapgen.isolate import imread, imwrite, prepare_text_input
+    from mapgen.isolate import imread
 
-    run_dir, map_path, mask_path, auto_path = _mask_review_paths(stem)
+    run_dir, image_path, mask_path, auto_path, geometry_path = _mask_review_paths(stem)
     data = request.get_json(silent=True) or {}
     if not isinstance(data, dict) or set(data) - {"strokes", "reset", "approve"}:
         abort(400, "mask review accepts strokes, reset, or approve")
@@ -1031,12 +1087,8 @@ def api_maskreview_post(stem: str):
                 "kept_pixels": int((mask > 0).sum()),
             }, indent=2), encoding="utf-8")
 
-        imwrite(mask_path, mask)
-        image = imread(map_path)
-        geometry = json.loads((run_dir / "geometry.json").read_text(encoding="utf-8"))
-        furniture = geometry.get("furniture", [])
-        imwrite(run_dir / "map_text_input.png", prepare_text_input(
-            image, geometry["map_crop"], furniture, mask))
+        _write_reviewed_mask_products(
+            image_path, run_dir, mask, automatic, geometry_path)
 
         invalidated = []
         for step in _canonical_steps_from(3):

@@ -23,6 +23,7 @@ def _semantics(map_type: str, legend_present: bool = True) -> dict:
             "label": "Low",
             "color_hint": "yellow",
             "is_thematic": True,
+            "kind": "area_fill",
         }] if legend_present else []),
         "water_present": False,
         "thematic_classes": [{

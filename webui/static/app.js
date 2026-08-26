@@ -2171,9 +2171,9 @@ function setupMaskReview(stepOutput, stem, review) {
   let strokes = [];
   let active = null;
   const source = new Image(); const mask = new Image(); const automatic = new Image();
-  source.src = artifactUrl(stem, "map_area.png");
-  mask.src = artifactUrl(stem, "map_mask.png");
-  automatic.src = artifactUrl(stem, "map_mask_auto.png");
+  source.src = mapImageUrl(review.source_name);
+  mask.src = artifactUrl(stem, "map_mask_full.png");
+  automatic.src = artifactUrl(stem, "map_mask_full_auto.png");
   const load = (image) => new Promise((resolve, reject) => { image.onload = resolve; image.onerror = reject; });
   Promise.all([load(source), load(mask), load(automatic)]).then(() => {
     canvas.width = review.width; canvas.height = review.height;

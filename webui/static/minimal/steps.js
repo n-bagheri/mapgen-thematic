@@ -111,7 +111,7 @@ export const STEP_VIEWS = {
     { source: true, caption: "The source map, as you uploaded it" },
   ],
   2: [
-    { artifact: "map_area.png", caption: "Map area — paint here to correct the mask",
+    { source: true, caption: "Map area — paint here to correct the mask",
       overlay: "mask" },
     { artifact: "step2_layout_debug.png", caption: "Raw AI layout, before any refinement",
       optional: true, intermediate: true },

@@ -70,10 +70,22 @@ class LineKind(str, Enum):
     other = "other"
 
 
+class LegendEncodingKind(str, Enum):
+    area_fill = "area_fill"
+    line = "line"
+    point_symbol = "point_symbol"
+    other = "other"
+
+
 class LegendEntry(BaseModel):
     label: str = Field(description="Legend text for this entry, verbatim")
     color_hint: str = Field(description="Approximate color name as seen (e.g. 'pale yellow'); a hint only")
     is_thematic: bool = Field(description="False for water, no-data, or other non-thematic entries")
+    kind: LegendEncodingKind = Field(
+        description=("Visual encoding: area_fill for a color/pattern filling geographic "
+                     "regions; line for a line feature; point_symbol for a marker/icon; "
+                     "other for any other symbol")
+    )
 
 
 class ThematicClass(BaseModel):
@@ -232,6 +244,11 @@ fill the response schema. Rules:
   transcribed verbatim from top to bottom. Never include "Legend", the legend
   title, units, explanatory headings, or source text as entries. Mark swatch
   rows that are not the mapped theme (water, no data) as is_thematic=false.
+- For every legend entry, set kind by its visual encoding: area_fill for a
+  color or pattern filling geographic regions; line for a line-based feature;
+  point_symbol for a marker or icon; other for anything else. is_thematic and
+  kind are separate: a thematic line or point symbol is still thematic, but it
+  is not an area_fill.
 - A legend can be printed as a large data table: when rows anywhere on the
   sheet carry a small color chip keyed to the map colors, that table IS the
   legend -- set legend_present=true and transcribe each chip row as an entry,
@@ -274,6 +291,10 @@ fill the response schema. Rules:
     lines list.
 - overlay_text: describe what kinds of text sit ON the map area. Name the
   capital city only if it is actually labelled on the map.
+- Always return non_thematic, lines, and overlay_text. Use empty lists when no
+  non-thematic features or lines apply. For overlay_text, return every boolean,
+  capital_city=null when absent, and notes="" when there is nothing to add.
+  Never end the response after thematic_classes.
 - description: a thorough prose description a sighted person would give a
   blind colleague: territory shown, spatial arrangement of the classes, where
   each dominates, notable patterns, islands, and anything unusual.
@@ -454,6 +475,7 @@ def generate_json(contents, schema, model: str | None = None, temperature: float
         status(f"requesting model {resolved} (timeout {API_TIMEOUT_MS // 1000}s)")
     try:
         empty_retry = False
+        validation_retry_note: str | None = None
         for attempt in range(retries + 1):
             try:
                 # A malformed answer from a sampling call is retried
@@ -473,9 +495,12 @@ def generate_json(contents, schema, model: str | None = None, temperature: float
                     config_args["max_output_tokens"] = 16384
                 else:
                     config_args["response_schema"] = schema
+                attempt_contents = request_contents
+                if validation_retry_note:
+                    attempt_contents = [*request_contents, validation_retry_note]
                 response = client.models.generate_content(
                     model=resolved,
-                    contents=request_contents,
+                    contents=attempt_contents,
                     config=types.GenerateContentConfig(**config_args),
                 )
                 parsed = response.parsed
@@ -504,6 +529,19 @@ def generate_json(contents, schema, model: str | None = None, temperature: float
                     marker in upper for marker in ("INTERNAL", "UNAVAILABLE", "SERVICE UNAVAILABLE"))
                 empty = isinstance(exc, EmptyModelResponse)
                 empty_retry = empty
+                missing_fields = []
+                if isinstance(exc, ValidationError):
+                    missing_fields = [
+                        ".".join(str(part) for part in error["loc"])
+                        for error in exc.errors()
+                        if error.get("type") == "missing"
+                    ]
+                incomplete = bool(missing_fields)
+                validation_retry_note = (
+                    "Your previous JSON object was incomplete. Return a new complete "
+                    "object from scratch and include every required schema field. "
+                    "In particular, do not omit: " + ", ".join(missing_fields) + "."
+                ) if incomplete else None
                 malformed = (
                     empty
                     or isinstance(exc, (ValidationError, json.JSONDecodeError))
@@ -517,6 +555,7 @@ def generate_json(contents, schema, model: str | None = None, temperature: float
                         "rate limited" if rate_limited
                         else "timed out" if timed_out
                         else "returned an empty response" if empty
+                        else "returned incomplete JSON" if incomplete
                         else "returned malformed JSON" if malformed
                         else "service error"
                     )
@@ -640,6 +679,11 @@ def semantics_artifact_is_current(path: Path) -> bool:
             return False
         language = raw.get("map_language")
         if not isinstance(language, str) or not language.strip():
+            return False
+        entries = raw.get("legend_entries")
+        if not isinstance(entries, list) or any(
+                not isinstance(entry, dict) or "kind" not in entry
+                for entry in entries):
             return False
         sem = MapSemantics.model_validate(raw)
     except (OSError, json.JSONDecodeError, ValidationError):

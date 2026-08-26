@@ -28,6 +28,7 @@ def _semantics(language: str = "unknown", map_type: str = "area_class_chorochrom
             "label": "dry climate",
             "color_hint": "yellow",
             "is_thematic": True,
+            "kind": "area_fill",
         }] if legend_present else []),
         "water_present": True,
         "thematic_classes": [{
@@ -72,6 +73,12 @@ class SemanticsArtifactTests(unittest.TestCase):
         self.write(payload)
         self.assertFalse(semantics_artifact_is_current(self.artifact))
 
+    def test_legacy_artifact_without_legend_entry_kind_requires_rerun(self):
+        payload = _semantics()
+        del payload["legend_entries"][0]["kind"]
+        self.write(payload)
+        self.assertFalse(semantics_artifact_is_current(self.artifact))
+
     def test_incomplete_semantics_does_not_count_as_run(self):
         self.write({"map_language": "unknown"})
         self.assertFalse(semantics_artifact_is_current(self.artifact))
@@ -83,6 +90,47 @@ class SemanticsArtifactTests(unittest.TestCase):
     def test_invalid_json_does_not_count_as_run(self):
         self.artifact.write_text("not json", encoding="utf-8")
         self.assertFalse(semantics_artifact_is_current(self.artifact))
+
+
+class LegendEncodingTests(unittest.TestCase):
+    def test_all_fill_legend_entries_are_preserved_as_area_fills(self):
+        payload = _semantics()
+        payload["legend_entries"] = [{
+            "label": "dry climate", "color_hint": "yellow",
+            "is_thematic": True, "kind": "area_fill",
+        }, {
+            "label": "humid climate", "color_hint": "green",
+            "is_thematic": True, "kind": "area_fill",
+        }]
+
+        semantics = MapSemantics.model_validate(payload)
+
+        self.assertEqual([entry.kind.value for entry in semantics.legend_entries],
+                         ["area_fill", "area_fill"])
+
+    def test_mixed_legend_entries_keep_their_independent_encoding_kinds(self):
+        payload = _semantics()
+        payload["legend_entries"] = [{
+            "label": "forest", "color_hint": "green",
+            "is_thematic": True, "kind": "area_fill",
+        }, {
+            "label": "migration route", "color_hint": "black",
+            "is_thematic": True, "kind": "line",
+        }, {
+            "label": "capital", "color_hint": "black",
+            "is_thematic": True, "kind": "point_symbol",
+        }, {
+            "label": "map frame", "color_hint": "black",
+            "is_thematic": False, "kind": "other",
+        }]
+
+        semantics = MapSemantics.model_validate(payload)
+
+        self.assertEqual(
+            [(entry.is_thematic, entry.kind.value) for entry in semantics.legend_entries],
+            [(True, "area_fill"), (True, "line"), (True, "point_symbol"),
+             (False, "other")],
+        )
 
 
 class ScopePolicyTests(unittest.TestCase):
@@ -197,6 +245,39 @@ class GenerateJsonSalvageTests(unittest.TestCase):
         from mapgen.semantics import EmptyModelResponse
         with self.assertRaises(EmptyModelResponse):
             self._run([self._response(None), self._response(None)], retries=1)
+
+    def test_missing_required_sections_are_named_on_retry(self):
+        from unittest.mock import MagicMock, patch
+        from mapgen import semantics
+
+        incomplete = _semantics()
+        for field in ("non_thematic", "lines", "overlay_text"):
+            incomplete.pop(field)
+        complete = _semantics()
+        client = MagicMock()
+        client.models.generate_content.side_effect = [
+            self._response(json.dumps(incomplete)),
+            self._response(json.dumps(complete)),
+        ]
+
+        with patch.object(semantics, "_ensure_api_key"), \
+                patch("google.genai.Client", return_value=client):
+            result = semantics.generate_json(
+                ["prompt"], MapSemantics, model="gemma-test", retries=1)
+
+        self.assertEqual(result.subject, complete["subject"])
+        retry_contents = client.models.generate_content.call_args_list[1].kwargs["contents"]
+        reminder = retry_contents[-1]
+        self.assertIn("non_thematic", reminder)
+        self.assertIn("lines", reminder)
+        self.assertIn("overlay_text", reminder)
+        self.assertIn("every required schema field", reminder)
+
+    def test_step1_prompt_explicitly_requires_trailing_semantic_sections(self):
+        from mapgen.semantics import PROMPT
+
+        self.assertIn("Always return non_thematic, lines, and overlay_text", PROMPT)
+        self.assertIn("Never end the response after thematic_classes", PROMPT)
 
     def test_cap_truncated_list_is_closed_after_its_last_complete_element(self):
         item = '{"text": "KEPT", "kind": "city", "box_2d": [1, 2, 3, 4]}'
