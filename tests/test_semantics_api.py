@@ -128,6 +128,35 @@ class Step1GateApiTests(unittest.TestCase):
         finally:
             server._jobs.pop("sample", None)
 
+    def test_successful_step1_rerun_retires_stale_step2_and_later_artifacts(self):
+        with TemporaryDirectory() as directory:
+            maps_dir, runs_dir = self.make_project(
+                Path(directory), _semantics("isopleth"))
+            run_dir = runs_dir / "sample"
+            stale = (
+                "step2_layout.json", "classes.json", "geometry.json",
+                "step9_legend.png", "step6_preset_3_step6_debug.png",
+            )
+            for name in stale:
+                (run_dir / name).write_text("stale", encoding="utf-8")
+            result = MapSemantics.model_validate(_semantics("isopleth"))
+            record = {
+                "status": "running", "steps": [1], "current": None,
+                "model": server.DEFAULT_MODEL, "log": [], "error": None,
+            }
+            server._jobs["sample"] = record
+            try:
+                with patch.object(server, "RUNS_DIR", runs_dir), \
+                        patch.object(server, "_run_single_step", return_value=result):
+                    server._job_worker(
+                        "sample", maps_dir / "sample.png", [1], server.DEFAULT_MODEL)
+
+                self.assertTrue((run_dir / "step1_semantics.json").exists())
+                self.assertTrue(all(not (run_dir / name).exists() for name in stale))
+                self.assertTrue(any("stale downstream" in line for line in record["log"]))
+            finally:
+                server._jobs.pop("sample", None)
+
     def test_run_remaining_stops_after_successful_choropleth_step1(self):
         semantics = MapSemantics.model_validate(_semantics("choropleth"))
         record = {
@@ -155,6 +184,8 @@ class Step1GateApiTests(unittest.TestCase):
                 "status": "running", "steps": [1, 2], "current": None,
                 "model": server.DEFAULT_MODEL, "log": [], "error": None,
             }
+            stale_step2 = runs_dir / "sample" / "classes.json"
+            stale_step2.write_text('{"classes": []}', encoding="utf-8")
             server._jobs["sample"] = record
             try:
                 with patch.object(server, "MAPS_DIR", maps_dir), \
@@ -171,6 +202,7 @@ class Step1GateApiTests(unittest.TestCase):
                                     for line in record["log"]))
                 self.assertTrue(any("choropleth" in line and "out of scope" in line
                                     for line in record["log"]))
+                self.assertTrue(stale_step2.exists())
             finally:
                 server._jobs.pop("sample", None)
 

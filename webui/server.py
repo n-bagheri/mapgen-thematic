@@ -187,6 +187,29 @@ def _canonical_steps_from(step: int) -> tuple[int, ...]:
     normalized = _canonical_step(step)
     return CANONICAL_STEP_ORDER[CANONICAL_STEP_ORDER.index(normalized):]
 
+
+def _invalidate_run_from(stem: str, from_step: int) -> list[str]:
+    """Remove artifacts that depend on an earlier step's newly saved result."""
+    run_dir = RUNS_DIR / stem
+    invalidated: list[str] = []
+    seen: set[Path] = set()
+    for step in _canonical_steps_from(from_step):
+        for name in STEP_ARTIFACTS[step] + STEP_EXTRA[step]:
+            artifact = run_dir / name
+            if artifact in seen:
+                continue
+            seen.add(artifact)
+            if artifact.exists():
+                artifact.unlink()
+                invalidated.append(name)
+    if from_step <= 6:
+        for artifact in run_dir.glob("step6_preset_*"):
+            if artifact.is_file():
+                artifact.unlink()
+                invalidated.append(artifact.name)
+    return invalidated
+
+
 def _project_order() -> list[str]:
     try:
         value = json.loads(PROJECT_ORDER_PATH.read_text(encoding="utf-8"))
@@ -566,6 +589,12 @@ def _job_worker(stem: str, image: Path, steps: list[int | str], model: str) -> N
                     "WARN: Step 1 rerun failed, but the existing valid Step 1 "
                     f"result was retained ({type(step_exc).__name__}: {step_exc})"
                 )
+            if s == 1 and result is not None and not retained_step1:
+                invalidated = _invalidate_run_from(stem, 2)
+                if invalidated:
+                    log(
+                        f"retired {len(invalidated)} stale downstream artifact(s) "
+                        "after the new Step 1 reading")
             if s == 1 and result is not None and not result.in_scope:
                 log(
                     f"PIPELINE STOPPED: map type '{result.map_type.value}' is out of scope; "

@@ -313,7 +313,8 @@ def main(argv: list[str] | None = None) -> int:
 
     p2 = sub.add_parser("step2", help="isolate map area + legend, sample class colors")
     p2.add_argument("images", nargs="+", help="map image file(s)")
-    p2.add_argument("--model", default=None, help="override model id for the layout call")
+    p2.add_argument("--model", default=None,
+                    help="override model id for the layout call (defaults to Gemma 4)")
     p2.set_defaults(func=cmd_step2)
 
     p3 = sub.add_parser("step3", help="detect, classify and mask overlay text")

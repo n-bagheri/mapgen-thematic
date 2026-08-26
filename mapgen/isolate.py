@@ -1,6 +1,7 @@
 """Step 2 -- Isolating the main map area and legend.
 
-Hybrid approach: Gemini supplies coarse layout bounding boxes (map components
+Hybrid approach: the selected vision-language model supplies coarse layout
+bounding boxes (map components
 including islands, legend, furniture); classic CV refines them to pixel
 precision, builds the map content mask, detects legend swatches, and samples
 their colors. Legend labels are NOT re-OCR'd here: Step 1 already transcribed
@@ -24,18 +25,20 @@ from __future__ import annotations
 import json
 import re
 import mimetypes
-import os
+import time
 from pathlib import Path
+from typing import Callable
 
 import cv2
 import numpy as np
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from .semantics import (
+    API_TIMEOUT_MS,
     encode_for_model,
-    generate_json,
     DEFAULT_MODEL,
     MapSemantics,
+    _ensure_api_key,
     require_pipeline_eligible,
 )
 
@@ -43,34 +46,40 @@ LAYOUT_RETRIES = 1  # a deadline or 5xx on this call is usually transient
 
 # --------------------------------------------------------------------------- layout call
 
-LAYOUT_PROMPT = """\nLocate the layout elements of this thematic map image. Return bounding boxes
+LAYOUT_PROMPT = """\
+Locate the layout elements of this thematic map image. Return bounding boxes
 as [y_min, x_min, y_max, x_max], normalized to 0-1000.
 
-- map_areas: ONE tight box per geographically detached component of the mapped
-  territory (mainland, islands, overseas or displaced components), including
-  water shown as part of the map picture. Exclude page margins.
-- A detached component that uses the same thematic colors and legend as the
-  main map belongs in map_areas, never in other, even when it was moved closer
-  for page layout (e.g. Corsica on a France map).
-- An inset map is only an independently framed secondary map with its own
-  scale, title, or different extent. An unframed detached island is not one.
-- legend: one tight box around the legend (swatches + labels + heading).
-  A legend whose color swatches are keyed inside a large data table is still
-  the legend: box the whole table as legend, never as other. null if absent.
+- map_areas: return ONE SEPARATE BOX for EACH geographically detached component
+  of the mapped territory. Include the mainland, islands, overseas territories,
+  and displaced territorial components, as well as water shown as part of the
+  map picture. Keep each box tight and exclude surrounding page margins.
+- Detached components that use the same thematic colors, legend, and symbology
+  as the main territory belong in map_areas, NOT in other. This remains true
+  when an island is moved closer to the mainland for page layout. For example,
+  Corsica on a thematic map of France must be a separate map_areas entry.
+- Before calling a detached colored shape an inset, compare its colors and
+  symbols with the main map. If it uses the same thematic legend, classify it
+  as a detached mapped-territory component. Never return it in other.
+- Call something an inset map only when it is an independently framed secondary
+  map, normally with its own scale, title, locator context, or different extent.
+  An unframed detached island is not an inset.
+- legend: tight box around the legend (color swatches + their labels + the
+  legend heading). null if there is no legend.
+- A legend is whatever keys the map's colors, however it is printed. It is
+  still the legend when the swatches sit inside a large data table with many
+  columns and hundreds of rows of supporting detail: box the whole table.
+  Return it as legend, never in other, whenever it carries color swatches
+  that match colors used on the map.
 - title, scale_bar, north_arrow: when present, else null.
-- other: inset maps, notes, and logos, each with a short label. Never box the
-  frame's grid letters or numbers (coordinate labels), tick marks, or text
-  that lies on the map itself.
+- other: inset maps, notes, logos, coordinate labels or anything else that is
+  not map content, each with a short label.
 """
 
 
 class LayoutBox(BaseModel):
-    # The length bounds are load-bearing: with the schema supplied as text
-    # (the Gemma path), Pydantic is the only validator, and box_to_px unpacks
-    # exactly four values.  A wrong-length box must fail validation so the
-    # model call retries instead of crashing Step 2 mid-run.
-    box_2d: list[int] = Field(min_length=4, max_length=4,
-                              description="[y_min, x_min, y_max, x_max] normalized to 0-1000")
+    box_2d: list[int] = Field(
+        description="[y_min, x_min, y_max, x_max] normalized to 0-1000")
     label: str
 
 
@@ -92,39 +101,92 @@ class MapLayout(BaseModel):
         if isinstance(data, dict) and "map_areas" not in data and data.get("map_area"):
             data = {**data, "map_areas": [data["map_area"]]}
             data.pop("map_area", None)
-        # Gemma answers the singular box fields with a one-element list about as
-        # often as with the object the schema asks for, and the whole layout
-        # call then fails validation over a wrapper.  Unwrap it: with several
-        # boxes keep the largest, which is the legend itself rather than one of
-        # the panels a fragmented answer splits it into.
-        if isinstance(data, dict):
-            data = {**data}
-            for field in ("legend", "title", "scale_bar", "north_arrow"):
-                value = data.get(field)
-                if isinstance(value, list):
-                    boxes = [b for b in value if isinstance(b, dict) and b.get("box_2d")]
-                    data[field] = max(
-                        boxes,
-                        key=lambda b: ((b["box_2d"][2] - b["box_2d"][0])
-                                       * (b["box_2d"][3] - b["box_2d"][1])),
-                    ) if boxes else None
         return data
 
 
+class LayoutResponseError(ValueError):
+    """The native structured layout response had an ambiguous root shape."""
+
+
+def _validate_layout_root(data: object) -> MapLayout:
+    """Validate one layout, accepting only the known one-item root wrapper."""
+    if isinstance(data, MapLayout):
+        return data
+    if isinstance(data, list):
+        if len(data) != 1:
+            raise LayoutResponseError(
+                f"Step 2 returned {len(data)} layouts; expected exactly one")
+        data = data[0]
+        if not isinstance(data, (dict, MapLayout)):
+            raise LayoutResponseError(
+                "Step 2 returned a one-item list, but its item was not a layout object")
+    return MapLayout.model_validate(data)
+
+
+def _parse_layout_response(response: object) -> MapLayout:
+    parsed = getattr(response, "parsed", None)
+    if parsed is not None:
+        return _validate_layout_root(parsed)
+    raw_text = getattr(response, "text", None)
+    if raw_text is None:
+        raise LayoutResponseError("Step 2 returned no layout JSON")
+    return _validate_layout_root(json.loads(raw_text))
+
+
 def detect_layout(image_path: Path, model: str | None = None) -> MapLayout:
+    from google import genai
     from google.genai import types
 
+    _ensure_api_key()
     # The boxes come back normalized to 0-1000 and are mapped onto the original
     # pixels below, so showing the model a downscaled copy costs no accuracy and
     # keeps a large scan from timing out on upload and inference.
     data, mime = encode_for_model(image_path)
-    # generate_json owns every model call: the shared deadline, the retry
-    # classification, and the Gemma path that supplies the response schema as
-    # text because Gemma's server-side response_schema option stalls into
-    # DEADLINE_EXCEEDED.  Step 1 has always gone through it; Step 2 must too.
-    return generate_json(
-        [types.Part.from_bytes(data=data, mime_type=mime), LAYOUT_PROMPT],
-        MapLayout, model=model, temperature=0.0, retries=LAYOUT_RETRIES)
+    # Step 2 is normally launched by the UI, which passes its selected model
+    # explicitly.  A direct Python/CLI call with no model must use the same
+    # Gemma default; never consult GEMINI_MODEL here and silently switch to a
+    # Gemini model that the user did not select.
+    resolved = model or DEFAULT_MODEL
+    client = genai.Client(http_options=types.HttpOptions(timeout=API_TIMEOUT_MS))
+    last: Exception | None = None
+    try:
+        for attempt in range(LAYOUT_RETRIES + 1):
+            try:
+                response = client.models.generate_content(
+                    model=resolved,
+                    contents=[types.Part.from_bytes(data=data, mime_type=mime), LAYOUT_PROMPT],
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=MapLayout,
+                        temperature=0.0,
+                    ),
+                )
+                return _parse_layout_response(response)
+            except Exception as exc:  # noqa: BLE001 - classify API/layout failures
+                last = exc
+                upper = f"{type(exc).__name__} {exc}".upper()
+                code = getattr(exc, "code", None)
+                retryable = (
+                    code in {408, 429, 500, 502, 503, 504}
+                    or any(marker in upper for marker in (
+                        "TIMEOUT", "TIMED OUT", "RESOURCE_EXHAUSTED", "INTERNAL",
+                        "UNAVAILABLE", "SERVICE UNAVAILABLE",
+                    ))
+                    or isinstance(exc, (
+                        LayoutResponseError, ValidationError, json.JSONDecodeError,
+                    ))
+                )
+                if attempt >= LAYOUT_RETRIES or not retryable:
+                    raise
+                if not isinstance(exc, (
+                        LayoutResponseError, ValidationError, json.JSONDecodeError)):
+                    time.sleep(2.0)
+    finally:
+        client.close()
+
+    if last is not None:
+        raise last
+    raise RuntimeError(f"{resolved} returned no Step 2 layout")
 
 
 # --------------------------------------------------------------------------- cv helpers
@@ -180,6 +242,21 @@ def box_to_px(box: LayoutBox, w: int, h: int, pad_frac: float = 0.0) -> tuple[in
         max(0, int(x0 / 1000 * w) - px), max(0, int(y0 / 1000 * h) - py),
         min(w, int(x1 / 1000 * w) + px), min(h, int(y1 / 1000 * h) + py),
     )
+
+
+def _layout_furniture(
+    layout: MapLayout, w: int, h: int,
+    recovered_legend_box: tuple[int, int, int, int] | None = None,
+) -> list[tuple[str, tuple[int, int, int, int]]]:
+    furniture = [(name, box_to_px(box, w, h)) for name, box in (
+        ("legend", layout.legend), ("title", layout.title),
+        ("scale_bar", layout.scale_bar), ("north_arrow", layout.north_arrow),
+    ) if box is not None]
+    for box in layout.other:
+        pixels = box_to_px(box, w, h)
+        if pixels != recovered_legend_box:
+            furniture.append((f"other:{box.label}", pixels))
+    return furniture
 
 
 def border_median_lab(lab: np.ndarray, strip: int = 10) -> np.ndarray:
@@ -303,52 +380,13 @@ def prepare_text_input(
 MIN_COMPONENT_PX = 100
 
 
-def _looks_like_edge_furniture(stats: np.ndarray, index: int,
-                               envelope: tuple[int, int, int, int],
-                               image_shape: tuple[int, int]) -> bool:
-    """Identify an isolated, ruler-like component at a proposed map edge.
-
-    This is deliberately stricter than the neatline test below.  It only
-    removes an *independent* component that is extremely thin, long, and
-    coincident with the outside of the AI-proposed map envelope.  Geographic
-    outlines remain connected to filled regions, while detached islands are
-    far less elongated, so both are retained.
-    """
-    h, w = image_shape
-    x = int(stats[index, cv2.CC_STAT_LEFT])
-    y = int(stats[index, cv2.CC_STAT_TOP])
-    cw = int(stats[index, cv2.CC_STAT_WIDTH])
-    ch = int(stats[index, cv2.CC_STAT_HEIGHT])
-    x1, y1 = x + cw, y + ch
-    ex0, ey0, ex1, ey1 = envelope
-    edge_pad = max(4, int(0.02 * max(w, h)))
-    vertical_ruler = (
-        ch >= 0.35 * h
-        and cw <= max(4, int(0.018 * w))
-        and (x <= ex0 + edge_pad or x1 >= ex1 - edge_pad)
-    )
-    horizontal_ruler = (
-        cw >= 0.35 * w
-        and ch <= max(4, int(0.018 * h))
-        and (y <= ey0 + edge_pad or y1 >= ey1 - edge_pad)
-    )
-    return vertical_ruler or horizontal_ruler
-
-
 def refine_map_mask(
     img: np.ndarray,
     map_boxes: list[tuple[int, int, int, int]],
     exclude_boxes: list[tuple[int, int, int, int]],
-    bg_delta: float = 8.0,
+    bg_delta: float = 12.0,
 ) -> tuple[np.ndarray, tuple[int, int, int, int], list[str]]:
     """Pixel-tight content mask seeded by the (padded) VLM map box.
-
-    `bg_delta` separates the printed map from the page it sits on.  A map often
-    has more than one background: the sea in its own colour, and neighbouring
-    territory in a light grey that is only about 11 dE from white paper.  At the
-    old 12.0 the grey fell on the paper side, so whole countries were cut out of
-    the mask -- France on the Spain sheet, the surrounding states on the China
-    sheet.  8.0 keeps that grey while leaving paper and its anti-aliasing out.
 
     A VLM box is a spatial prior, not an absolute geographic boundary.  For a
     broad, landscape map panel (notably a world map), search the full width of
@@ -380,37 +418,11 @@ def refine_map_mask(
     for ex0, ey0, ex1, ey1 in exclude_boxes:
         inside[ey0:ey1, ex0:ex1] = 0
 
-    warnings: list[str] = []
-
-    # A VLM box says where the map is, not exactly what it covers, and the
-    # box is not reproducible run to run: the same sheet can come back with
-    # x1=783 on one call and x1=642 on the next, and clipping content to the
-    # rectangle stamps that accident into the mask as a dead-straight edge.
-    # Grow the seeded mask through connected content instead (binary
-    # reconstruction): every content component that touches a seed is kept
-    # whole, so the mask ends where the printed panel ends.  Furniture stays
-    # carved out of the growth medium, and anything detached from the seeded
-    # panel (titles, decorations, other panels) is still excluded.
-    reachable = content.copy()
-    for ex0, ey0, ex1, ey1 in exclude_boxes:
-        reachable[ey0:ey1, ex0:ex1] = 0
-    _, reach_cc = cv2.connectedComponents(reachable, connectivity=8)
-    seeded_labels = np.unique(reach_cc[inside > 0])
-    seeded_labels = seeded_labels[seeded_labels != 0]
-    if seeded_labels.size:
-        grown = np.isin(reach_cc, seeded_labels).astype(np.uint8)
-        added = int(grown.sum()) - int(inside.sum())
-        if added > 0.15 * max(1, int(inside.sum())):
-            warnings.append(
-                f"map content continued past the VLM map box; the mask grew by "
-                f"{added} px to follow it")
-        inside = grown
-
     n, cc, stats, _ = cv2.connectedComponentsWithStats(inside, connectivity=8)
     min_area = max(MIN_COMPONENT_PX, int(2e-5 * w * h))
+    warnings: list[str] = []
     keep: list[int] = []
     rejected_neatlines = 0
-    rejected_edge_furniture = 0
     for i in range(1, n):
         area = int(stats[i, cv2.CC_STAT_AREA])
         if area < min_area:
@@ -431,8 +443,6 @@ def refine_map_mask(
         )
         if looks_like_neatline:
             rejected_neatlines += 1
-        elif _looks_like_edge_furniture(stats, i, (ux0, uy0, ux1, uy1), (h, w)):
-            rejected_edge_furniture += 1
         else:
             keep.append(i)
     # With one broad VLM box, sparse ticks and clipped frame segments can be
@@ -469,11 +479,6 @@ def refine_map_mask(
     if rejected_neatlines:
         warnings.append(
             f"excluded {rejected_neatlines} sparse outer neatline/tick frame "
-            "from the map mask"
-        )
-    if rejected_edge_furniture:
-        warnings.append(
-            f"excluded {rejected_edge_furniture} isolated edge ruler/tick component(s) "
             "from the map mask"
         )
     if broad_map_band:
@@ -1565,6 +1570,60 @@ def recover_legend_box(
     return None, []
 
 
+def _resolve_legend_box(
+    img: np.ndarray,
+    layout: MapLayout,
+    semantics: MapSemantics,
+    redraw: Callable[[], MapSemantics] | None = None,
+    retries: int = 0,
+) -> tuple[tuple[int, int, int, int] | None, bool, MapSemantics, list[str]]:
+    """Resolve direct or table-style legends against the current semantics.
+
+    A layout call can correctly isolate a dense legend table but file it under
+    ``other``. Recovery uses Step 1's thematic-entry count as its exact-match
+    guard. If that transcription was the unstable side, retry Step 1 here and
+    try the same table again before abandoning named classes for map colours.
+    """
+    h, w = img.shape[:2]
+    if layout.legend is not None:
+        return box_to_px(layout.legend, w, h), False, semantics, []
+    if not semantics.legend_present:
+        return None, False, semantics, []
+
+    expected = sum(entry.is_thematic for entry in semantics.legend_entries)
+    box, warnings = recover_legend_box(
+        img, layout, expected, semantics.data_ordering.value == "ordered")
+    if box is not None:
+        return box, True, semantics, warnings
+
+    all_warnings = list(warnings)
+    if redraw is None:
+        return None, False, semantics, all_warnings
+    for attempt in range(retries):
+        try:
+            fresh = redraw()
+        except Exception as exc:  # noqa: BLE001 - a failed redraw is not fatal
+            all_warnings.append(f"Step 1 redraw {attempt + 1} failed: {exc}")
+            continue
+        if not fresh.legend_present:
+            all_warnings.append(f"Step 1 redraw {attempt + 1} read no legend")
+            continue
+        fresh_expected = sum(entry.is_thematic for entry in fresh.legend_entries)
+        box, recovery_warnings = recover_legend_box(
+            img, layout, fresh_expected, fresh.data_ordering.value == "ordered")
+        all_warnings.append(
+            f"Step 1 redraw {attempt + 1}: {fresh_expected} thematic entries; "
+            + ("legend table recovered" if box is not None
+               else "no matching legend table"))
+        if box is not None:
+            all_warnings += recovery_warnings
+            all_warnings.append(
+                f"Step 1 re-read the legend: {fresh_expected} entries now match "
+                "the recovered table")
+            return box, True, fresh, all_warnings
+    return None, False, semantics, all_warnings
+
+
 class LegendSwatchDetectionError(ValueError):
     """Raised instead of emitting a partial or misaligned legend palette."""
 
@@ -1573,6 +1632,9 @@ def run_step2(image_path: Path, model: str | None = None, runs_dir: Path = Path(
               step1_retries: int = 2) -> dict:
     from .semantics import interpret_map, save_semantics
 
+    # Keep every model call made by this step on the UI/CLI selection.  In
+    # particular, the fallback is Gemma, not an ambient GEMINI_MODEL setting.
+    selected_model = model or DEFAULT_MODEL
     out_dir = runs_dir / image_path.stem
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1580,7 +1642,7 @@ def run_step2(image_path: Path, model: str | None = None, runs_dir: Path = Path(
     if sem_path.exists():
         sem = MapSemantics.model_validate_json(sem_path.read_text(encoding="utf-8"))
     else:
-        sem = interpret_map(image_path, model=model)
+        sem = interpret_map(image_path, model=selected_model)
         save_semantics(sem, image_path, runs_dir)
 
     require_pipeline_eligible(sem, "Step 2")
@@ -1590,7 +1652,7 @@ def run_step2(image_path: Path, model: str | None = None, runs_dir: Path = Path(
         layout = MapLayout.model_validate_json(layout_path.read_text(encoding="utf-8"))
         layout_cached = True
     else:
-        layout = detect_layout(image_path, model=model)
+        layout = detect_layout(image_path, model=selected_model)
         layout_path.write_text(layout.model_dump_json(indent=2), encoding="utf-8")
         layout_cached = False
 
@@ -1628,11 +1690,24 @@ def run_step2(image_path: Path, model: str | None = None, runs_dir: Path = Path(
         raw_dbg = cv2.resize(raw_dbg, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
     imwrite(out_dir / "step2_layout_debug.png", raw_dbg)
 
-    furniture = [(name, box_to_px(b, w, h)) for name, b in (
-        ("legend", layout.legend), ("title", layout.title),
-        ("scale_bar", layout.scale_bar), ("north_arrow", layout.north_arrow),
-    ) if b is not None]
-    furniture += [(f"other:{b.label}", box_to_px(b, w, h)) for b in layout.other]
+    # A model-supplied legend is authoritative furniture and is cropped
+    # directly, without expanding its box. A fallback search can still find a
+    # palette in an `other` box, but that search region is not authoritative
+    # furniture and must not punch a hole in the geographic mask. If Step 1's
+    # first transcription did not align with that table, retry it before
+    # falling back to anonymous map-colour classes.
+    legend_box, recovered, resolved_sem, recovery_warnings = _resolve_legend_box(
+        img, layout, sem,
+        redraw=(lambda: interpret_map(image_path, model=selected_model)),
+        retries=step1_retries,
+    )
+    warnings += recovery_warnings
+    if resolved_sem is not sem:
+        sem = resolved_sem
+        save_semantics(sem, image_path, runs_dir)
+    recovered_legend_box = legend_box if recovered else None
+
+    furniture = _layout_furniture(layout, w, h, recovered_legend_box)
     furniture, frame_warn = drop_frame_label_boxes(img, furniture)
     warnings += frame_warn
 
@@ -1654,15 +1729,7 @@ def run_step2(image_path: Path, model: str | None = None, runs_dir: Path = Path(
 
     # ---- legend ----
     classes: list[dict] = []
-    legend_box = None
     palette_source = "legend"
-    if layout.legend is not None:
-        legend_box = box_to_px(layout.legend, w, h)
-    elif sem.legend_present:
-        legend_box, recovery_warnings = recover_legend_box(
-            img, layout, len([e for e in sem.legend_entries if e.is_thematic]),
-            sem.data_ordering.value == "ordered")
-        warnings += recovery_warnings
     if legend_box is not None:
         lx0, ly0, lx1, ly1 = legend_box
         legend_img = img[ly0:ly1, lx0:lx1]
@@ -1685,7 +1752,7 @@ def run_step2(image_path: Path, model: str | None = None, runs_dir: Path = Path(
             from .semantics import interpret_map, save_semantics
             for attempt in range(step1_retries):
                 try:
-                    fresh = interpret_map(image_path, model=model)
+                    fresh = interpret_map(image_path, model=selected_model)
                 except Exception as exc:  # noqa: BLE001 - a failed redraw is not fatal
                     warnings.append(f"Step 1 redraw {attempt + 1} failed: {exc}")
                     continue

@@ -1,13 +1,23 @@
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import cv2
 import numpy as np
+from pydantic import ValidationError
 
 from mapgen.isolate import (
+    LAYOUT_PROMPT,
+    LayoutResponseError,
     MapLayout,
+    _layout_furniture,
+    _resolve_legend_box,
+    _validate_layout_root,
     _colorbar_split_is_papery,
     drop_frame_label_boxes,
     border_median_lab,
+    detect_layout,
     detect_swatches,
     legend_paper_lab,
     prepare_text_input,
@@ -16,6 +26,7 @@ from mapgen.isolate import (
     sample_swatch,
     to_lab,
 )
+from mapgen.semantics import MapSemantics
 
 
 class MapMaskRefinementTests(unittest.TestCase):
@@ -53,11 +64,11 @@ class MapMaskRefinementTests(unittest.TestCase):
         self.assertEqual(mask[60, 235], 0)
         self.assertTrue(any("outside the geographic content envelope" in w for w in warnings))
 
-    def test_removes_isolated_long_ruler_at_ai_map_edge(self):
+    def test_original_component_flow_does_not_apply_an_edge_ruler_heuristic(self):
         img = np.full((300, 400, 3), 255, np.uint8)
         cv2.rectangle(img, (70, 70), (260, 240), (40, 160, 80), -1)
-        # A tall, independent coordinate ruler mistakenly included by a broad
-        # model-proposed map box.
+        # The baseline keeps all qualifying connected components in a broad
+        # geographic band; furniture removal is driven by explicit boxes.
         cv2.rectangle(img, (382, 35), (384, 270), (200, 40, 40), -1)
 
         mask, _, warnings = refine_map_mask(
@@ -67,14 +78,13 @@ class MapMaskRefinementTests(unittest.TestCase):
         )
 
         self.assertGreater(mask[150, 150], 0)
-        self.assertEqual(mask[150, 383], 0)
-        self.assertTrue(any("edge ruler/tick" in warning for warning in warnings))
+        self.assertGreater(mask[150, 383], 0)
+        self.assertFalse(any("edge ruler/tick" in warning for warning in warnings))
 
 
-    def test_a_tight_vlm_box_cannot_clip_the_map_panel(self):
-        """The layout box is a location hint and is not reproducible between
-        runs, so the mask must grow through connected content to the panel's
-        own edge instead of stamping the box edge into the map."""
+    def test_a_tight_vlm_box_stays_the_connected_component_seed_boundary(self):
+        """The baseline refines components inside the padded model box and
+        reports substantial content outside it instead of growing the mask."""
         page = np.full((400, 600, 3), 255, np.uint8)
         # One printed panel with varied content (sea and land bands).
         for x in range(60, 560, 20):
@@ -86,12 +96,11 @@ class MapMaskRefinementTests(unittest.TestCase):
         # Deliberately narrow box covering only the left half of the panel.
         mask, _, warnings = refine_map_mask(page, [(80, 60, 300, 340)], [])
 
-        panel = mask[40:360, 60:560]
-        self.assertGreater(float((panel > 0).mean()), 0.95,
-                           "the mask must follow the panel past the box edge")
+        self.assertGreater(mask[100, 100], 0)
+        self.assertEqual(mask[100, 500], 0)
         self.assertTrue((mask[370:395, 10:40] == 0).all(),
                         "detached decorations must not be pulled in")
-        self.assertTrue(any("grew" in w for w in warnings), warnings)
+        self.assertTrue(any("outside the VLM map boxes" in w for w in warnings), warnings)
 
 
 class TextInputPreparationTests(unittest.TestCase):
@@ -512,6 +521,18 @@ class LegendBoxRecoveryTests(unittest.TestCase):
                                    labels=["r%d" % i for i in range(rows)])
         self.assertEqual(len(rects), rows)
 
+    def test_a_recovery_search_region_is_not_furniture(self):
+        page, rows = self._page()
+        layout = self._layout([
+            {"box_2d": [120, 33, 880, 500], "label": "ethnographic_table"},
+            {"box_2d": [10, 10, 40, 60], "label": "logo"},
+        ])
+        recovered, _ = recover_legend_box(page, layout, rows, False)
+
+        furniture = _layout_furniture(layout, 1200, 1000, recovered)
+
+        self.assertEqual([name for name, _ in furniture], ["other:logo"])
+
     def test_a_box_that_is_not_a_legend_is_never_guessed(self):
         page, rows = self._page()
         layout = self._layout([{"box_2d": [10, 10, 60, 120], "label": "notes"}])
@@ -528,12 +549,55 @@ class LegendBoxRecoveryTests(unittest.TestCase):
 
         self.assertEqual(recover_legend_box(page, layout, 0, False), (None, []))
 
+    @staticmethod
+    def _semantics(labels):
+        return MapSemantics.model_validate({
+            "map_type": "area_class_chorochromatic", "in_scope": True,
+            "data_ordering": "qualitative", "map_language": "English",
+            "subject": "synthetic", "description": "synthetic", "title": None,
+            "legend_present": True, "legend_title": None,
+            "legend_entries": [{
+                "label": label, "color_hint": "green", "is_thematic": True,
+            } for label in labels],
+            "water_present": False,
+            "thematic_classes": [{
+                "label": label, "priority": index + 1,
+                "approx_area_share_percent": 1,
+            } for index, label in enumerate(labels)],
+            "non_thematic": [], "lines": [],
+            "overlay_text": {
+                "has_city_labels": False, "capital_city": None,
+                "has_region_labels": False, "has_line_labels": False, "notes": "",
+            },
+        })
+
+    def test_a_fresh_step1_reading_can_recover_a_table_the_first_read_missed(self):
+        layout = self._layout([
+            {"box_2d": [120, 33, 880, 500], "label": "ethnographic_table"},
+        ])
+        initial = self._semantics(["one", "two"])
+        fresh = self._semantics([f"class {index}" for index in range(15)])
+        recovered_box = (12, 1496, 895, 2751)
+
+        with patch("mapgen.isolate.recover_legend_box", side_effect=[
+                (None, []),
+                (recovered_box, ["recovered the ethnographic table"]),
+        ]) as recover:
+            box, recovered, resolved, warnings = _resolve_legend_box(
+                np.zeros((100, 100, 3), np.uint8), layout, initial,
+                redraw=lambda: fresh, retries=2)
+
+        self.assertEqual(box, recovered_box)
+        self.assertTrue(recovered)
+        self.assertIs(resolved, fresh)
+        self.assertEqual(recover.call_args_list[0].args[2], 2)
+        self.assertEqual(recover.call_args_list[1].args[2], 15)
+        self.assertTrue(any("legend table recovered" in warning for warning in warnings))
 
 
-class LayoutSingularBoxTests(unittest.TestCase):
-    """Gemma answers the singular box fields with a one-element list about as
-    often as with the object the schema asks for, and the whole Step 2 layout
-    call then died in validation over the wrapper."""
+
+class LayoutResponseShapeTests(unittest.TestCase):
+    """The structured call returns one strict MapLayout at the document root."""
 
     BASE = {
         "map_areas": [{"box_2d": [0, 0, 961, 1000], "label": "mainland"}],
@@ -541,36 +605,133 @@ class LayoutSingularBoxTests(unittest.TestCase):
         "north_arrow": None, "other": [],
     }
 
-    def test_a_one_element_list_is_unwrapped(self):
-        layout = MapLayout.model_validate({
-            **self.BASE,
-            "legend": [{"box_2d": [538, 13, 975, 363], "label": "legend"}],
-            "title": [{"box_2d": [10, 774, 50, 931], "label": "title"}],
-            "scale_bar": [{"box_2d": [88, 815, 118, 950], "label": "scale_bar"}],
-        })
+    def test_a_one_item_root_list_is_unwrapped(self):
+        layout = _validate_layout_root([{**self.BASE, "legend": {
+            "box_2d": [538, 13, 975, 363], "label": "legend"}}])
 
         self.assertEqual(layout.legend.box_2d, [538, 13, 975, 363])
-        self.assertEqual(layout.title.label, "title")
-        self.assertEqual(layout.scale_bar.label, "scale_bar")
 
-    def test_several_boxes_keep_the_largest(self):
-        """A fragmented answer splits the legend into panels; the whole legend
-        is the one to sample, not a corner of it."""
-        layout = MapLayout.model_validate({**self.BASE, "legend": [
-            {"box_2d": [0, 0, 20, 20], "label": "corner"},
-            {"box_2d": [500, 0, 900, 400], "label": "whole"},
-        ]})
+    def test_an_ambiguous_multi_item_root_list_is_rejected(self):
+        with self.assertRaises(LayoutResponseError):
+            _validate_layout_root([self.BASE, self.BASE])
 
-        self.assertEqual(layout.legend.label, "whole")
+    def test_a_non_object_root_list_item_is_rejected(self):
+        with self.assertRaises(LayoutResponseError):
+            _validate_layout_root(["not a layout"])
 
-    def test_an_empty_list_reads_as_absent(self):
-        layout = MapLayout.model_validate({**self.BASE, "north_arrow": []})
-        self.assertIsNone(layout.north_arrow)
+    def test_singular_furniture_fields_remain_strict_objects(self):
+        with self.assertRaises(ValidationError):
+            MapLayout.model_validate({
+                **self.BASE,
+                "legend": [{"box_2d": [538, 13, 975, 363], "label": "legend"}],
+            })
 
     def test_the_documented_object_shape_is_untouched(self):
         layout = MapLayout.model_validate({
             **self.BASE, "legend": {"box_2d": [1, 2, 3, 4], "label": "plain"}})
         self.assertEqual(layout.legend.label, "plain")
+
+
+class NativeLayoutCallTests(unittest.TestCase):
+    def test_restored_prompt_is_exact(self):
+        self.assertEqual(LAYOUT_PROMPT, """Locate the layout elements of this thematic map image. Return bounding boxes
+as [y_min, x_min, y_max, x_max], normalized to 0-1000.
+
+- map_areas: return ONE SEPARATE BOX for EACH geographically detached component
+  of the mapped territory. Include the mainland, islands, overseas territories,
+  and displaced territorial components, as well as water shown as part of the
+  map picture. Keep each box tight and exclude surrounding page margins.
+- Detached components that use the same thematic colors, legend, and symbology
+  as the main territory belong in map_areas, NOT in other. This remains true
+  when an island is moved closer to the mainland for page layout. For example,
+  Corsica on a thematic map of France must be a separate map_areas entry.
+- Before calling a detached colored shape an inset, compare its colors and
+  symbols with the main map. If it uses the same thematic legend, classify it
+  as a detached mapped-territory component. Never return it in other.
+- Call something an inset map only when it is an independently framed secondary
+  map, normally with its own scale, title, locator context, or different extent.
+  An unframed detached island is not an inset.
+- legend: tight box around the legend (color swatches + their labels + the
+  legend heading). null if there is no legend.
+- A legend is whatever keys the map's colors, however it is printed. It is
+  still the legend when the swatches sit inside a large data table with many
+  columns and hundreds of rows of supporting detail: box the whole table.
+  Return it as legend, never in other, whenever it carries color swatches
+  that match colors used on the map.
+- title, scale_bar, north_arrow: when present, else null.
+- other: inset maps, notes, logos, coordinate labels or anything else that is
+  not map content, each with a short label.
+""")
+
+    def test_detect_layout_uses_native_structured_generation(self):
+        native_layout = MapLayout.model_validate(LayoutResponseShapeTests.BASE)
+        response = SimpleNamespace(parsed=native_layout, text=None)
+        client = MagicMock()
+        client.models.generate_content.return_value = response
+
+        with patch("mapgen.isolate._ensure_api_key"), \
+                patch("mapgen.isolate.encode_for_model",
+                      return_value=(b"image", "image/png")), \
+                patch("google.genai.Client", return_value=client) as client_type:
+            result = detect_layout(Path("map.png"), model="gemini-test")
+
+        self.assertIs(result, native_layout)
+        client_type.assert_called_once()
+        call = client.models.generate_content.call_args
+        self.assertEqual(call.kwargs["model"], "gemini-test")
+        self.assertEqual(call.kwargs["contents"][1], LAYOUT_PROMPT)
+        config = call.kwargs["config"]
+        self.assertEqual(config.response_mime_type, "application/json")
+        self.assertIs(config.response_schema, MapLayout)
+        self.assertEqual(config.temperature, 0.0)
+        client.close.assert_called_once()
+
+    def test_detect_layout_without_selection_defaults_to_gemma(self):
+        native_layout = MapLayout.model_validate(LayoutResponseShapeTests.BASE)
+        response = SimpleNamespace(parsed=native_layout, text=None)
+        client = MagicMock()
+        client.models.generate_content.return_value = response
+
+        with patch.dict("os.environ", {"GEMINI_MODEL": "gemini-2.5-flash"}), \
+                patch("mapgen.isolate._ensure_api_key"), \
+                patch("mapgen.isolate.encode_for_model",
+                      return_value=(b"image", "image/png")), \
+                patch("google.genai.Client", return_value=client):
+            detect_layout(Path("map.png"))
+
+        self.assertEqual(
+            client.models.generate_content.call_args.kwargs["model"],
+            "gemma-4-26b-a4b-it",
+        )
+        client.close.assert_called_once()
+
+    def test_model_legend_box_is_unpadded_furniture(self):
+        layout = MapLayout.model_validate({
+            **LayoutResponseShapeTests.BASE,
+            "legend": {"box_2d": [100, 200, 300, 400], "label": "legend"},
+        })
+
+        furniture = _layout_furniture(layout, w=1000, h=500)
+
+        self.assertEqual(furniture, [("legend", (200, 50, 400, 150))])
+
+    def test_detect_layout_retries_then_rejects_ambiguous_root_lists(self):
+        response = SimpleNamespace(
+            parsed=[LayoutResponseShapeTests.BASE, LayoutResponseShapeTests.BASE],
+            text=None,
+        )
+        client = MagicMock()
+        client.models.generate_content.return_value = response
+
+        with patch("mapgen.isolate._ensure_api_key"), \
+                patch("mapgen.isolate.encode_for_model",
+                      return_value=(b"image", "image/png")), \
+                patch("google.genai.Client", return_value=client):
+            with self.assertRaises(LayoutResponseError):
+                detect_layout(Path("map.png"), model="gemini-test")
+
+        self.assertEqual(client.models.generate_content.call_count, 2)
+        client.close.assert_called_once()
 
 
 
