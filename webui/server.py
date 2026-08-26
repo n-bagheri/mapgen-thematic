@@ -248,11 +248,9 @@ def _step1_artifact_error(stem: str) -> str | None:
 
 
 def _pipeline_error(semantics: MapSemantics | None) -> str | None:
-    if semantics is not None and not semantics.legend_present:
-        return (
-            "The tactile-map pipeline cannot continue: no legend was detected; "
-            "a visible legend is required to identify and symbolize the map classes."
-        )
+    # A missing legend no longer blocks the pipeline: Step 2 derives the class
+    # palette from the map's dominant colours instead.  Only the map type
+    # (checked separately via in_scope) can stop a run after Step 1.
     return None
 
 
@@ -467,10 +465,7 @@ def _run_single_step(step: int | str, image: Path, log,
         if not sem.in_scope:
             return sem
         if not sem.legend_present:
-            raise MissingLegendError(
-                "The tactile-map pipeline cannot continue: no legend was detected; "
-                "a visible legend is required to identify and symbolize the map classes."
-            )
+            log("no legend read on this map; Step 2 will derive classes from the map colours")
     elif step == 2:
         from mapgen.isolate import run_step2
         r = run_step2(image, model=model)

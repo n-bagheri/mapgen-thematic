@@ -174,7 +174,10 @@ class Step1GateApiTests(unittest.TestCase):
             finally:
                 server._jobs.pop("sample", None)
 
-    def test_missing_legend_completes_step1_but_blocks_the_pipeline(self):
+    def test_missing_legend_completes_step1_and_does_not_block_the_pipeline(self):
+        """A sheet without a legend still gets a tactile map: Step 2 derives
+        the class palette from the map's dominant colours, so the UI must not
+        report the run as blocked after Step 1."""
         with TemporaryDirectory() as directory:
             maps_dir, runs_dir = self.make_project(
                 Path(directory), _semantics("isopleth", legend_present=False))
@@ -185,18 +188,9 @@ class Step1GateApiTests(unittest.TestCase):
             self.assertTrue(record["steps"]["1"])
             self.assertTrue(record["in_scope"])
             self.assertIsNone(record["step1_error"])
-            self.assertIn("no legend was detected", record["pipeline_error"])
+            self.assertIsNone(record["pipeline_error"])
             self.assertTrue(all(not done for step, done in record["steps"].items()
                                 if step != "1"))
-
-            with patch.object(server, "MAPS_DIR", maps_dir), \
-                    patch.object(server, "RUNS_DIR", runs_dir):
-                blocked = server.app.test_client().post("/api/run", json={
-                    "stem": "sample", "steps": [2],
-                    "model": server.DEFAULT_MODEL,
-                })
-            self.assertEqual(blocked.status_code, 409)
-            self.assertIn("no legend was detected", blocked.get_data(as_text=True))
 
 
 if __name__ == "__main__":

@@ -52,9 +52,8 @@ def cmd_step1(args: argparse.Namespace) -> int:
             print(f"  PIPELINE STOPPED: map type '{sem.map_type.value}' is out of scope; "
                   "only chorochromatic and isopleth maps can continue")
         elif not sem.legend_present:
-            print("  PIPELINE BLOCKED: no legend was detected; a visible legend is required "
-                  "to create the tactile map", file=sys.stderr)
-            failures += 1
+            print("  NOTE: no legend was detected; Step 2 will derive the classes "
+                  "from the map's dominant colours")
     return 1 if failures else 0
 
 

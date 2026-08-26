@@ -64,9 +64,49 @@ def build_seeds(classes_json: dict) -> list[dict]:
         seeds.append({
             "label": c["label"], "lab": np.float32(c["lab"]), "rgb": c["rgb"],
             "is_thematic": bool(c["is_thematic"]), "priority": c.get("priority"),
-            "source": "legend",
+            # A legend colour is authoritative; a colour Step 2 derived from
+            # the map itself is not, so water reassignment may still demote it.
+            "source": c.get("source", "legend"),
         })
     return seeds
+
+
+PROMOTE_MIN_SHARE = 0.03   # an unseeded fill this large is map content, not noise
+PROMOTE_MIN_CHROMA = 12.0  # ... when it is a colour, not white/grey surroundings
+
+
+def promote_large_unseeded(seeds: list[dict], label_map: np.ndarray,
+                           mask: np.ndarray, sem: MapSemantics) -> list[str]:
+    """Give a large coloured fill the legend never named a thematic class.
+
+    Legend transcription misses rows (the Italian soil map lists 11 swatches,
+    Step 1 read 10) and scanned fills drift from their swatch colours (Spain's
+    vegetation map), so whole provinces used to land in "unlabelled" classes
+    that Step 5 folds into one no-fill background: a tactile map with a hole
+    where a third of the country should be.  A fill covering at least
+    PROMOTE_MIN_SHARE of the content in a real colour is part of the mapped
+    theme, so it becomes a thematic class and receives a texture.  White and
+    grey stay background because that is how neighbouring countries and
+    no-data areas are drawn; blue-ish fills stay non-thematic on maps that
+    show water, so an inland lake is not textured as land.
+    """
+    notes: list[str] = []
+    total = max(1, int(np.count_nonzero(mask)))
+    for index, seed in enumerate(seeds):
+        if seed["source"] != "unseeded" or seed["is_thematic"]:
+            continue
+        share = int(np.count_nonzero(label_map == index)) / total
+        if share < PROMOTE_MIN_SHARE:
+            continue
+        lab = np.float32(seed["lab"])
+        if float(np.hypot(lab[1], lab[2])) < PROMOTE_MIN_CHROMA:
+            continue
+        watery = any(word in seed["label"] for word in ("blue", "cyan", "teal"))
+        if watery and sem.water_present:
+            continue
+        seed["is_thematic"] = True
+        notes.append(f"promoted '{seed['label']}' ({100 * share:.1f}% of map) to a thematic class")
+    return notes
 
 
 def assign_pixels(lab_img: np.ndarray, seeds: list[dict], valid: np.ndarray) -> np.ndarray:
@@ -1038,6 +1078,7 @@ def run_step4(image_path: Path, model: str | None = None, runs_dir: Path = Path(
     uncovered = int(np.count_nonzero((mask > 0) & (label_map < 0)))
     if uncovered:
         notes.append(f"{uncovered} content pixels left unassigned after fill")
+    notes += promote_large_unseeded(seeds, label_map, mask, sem)
 
     # ---- artifacts ----
     total = max(1, int(np.count_nonzero(mask)))

@@ -188,11 +188,10 @@ def require_pipeline_eligible(sem: MapSemantics, step_name: str = "The pipeline"
             f"'{sem.map_type.value}' as out of scope. Only chorochromatic "
             "and isopleth maps are supported."
         )
-    if not sem.legend_present:
-        raise MissingLegendError(
-            "The tactile-map pipeline cannot continue: no legend was detected; "
-            "a visible legend is required to identify and symbolize the map classes."
-        )
+    # A legend is no longer required: Step 2 derives the class palette from
+    # the map's own dominant colours when the sheet prints none (or prints one
+    # that cannot be read), so the tactile reader still gets one texture per
+    # major fill.  Only the map type gates the pipeline.
     return sem
 
 
@@ -237,9 +236,8 @@ fill the response schema. Rules:
   sheet carry a small color chip keyed to the map colors, that table IS the
   legend -- set legend_present=true and transcribe each chip row as an entry,
   ignoring the table's other columns.
-- A visible legend is required for this pipeline. Set legend_present=false
-  when there is no legend; Step 1 will record that result and the pipeline
-  must stop before Step 2.
+- Set legend_present=false only when the sheet prints no color key at all;
+  the pipeline then derives its classes from the map colours.
 - thematic_classes: every distinct thematic class shown on the MAP (normally
   the thematic legend entries). Priorities: 1 = most important for
   understanding this map. When two classes are otherwise equal, the one

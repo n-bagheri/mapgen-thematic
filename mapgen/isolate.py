@@ -953,10 +953,13 @@ def _detect_vertically_joined_swatches(
     choices: list[tuple[float, list[tuple[int, int, int, int]]]] = []
     for contour in contours:
         x, y, swatch_w, stack_h = cv2.boundingRect(contour)
+        # A legend crop can be nothing but the stack (the Australia land-cover
+        # screenshot), so the stack may span the full crop height; the
+        # per-cell uniformity and pairwise-separation checks below are what
+        # keep a text column from passing as a palette.
         if (
             swatch_w < 8
             or swatch_w > 0.35 * width
-            or stack_h > 0.65 * height
             or stack_h < expected * max(5.0, 0.45 * swatch_w)
         ):
             continue
@@ -1295,16 +1298,25 @@ def _detect_swatches_at_scale(
         ex, ey, ew, eh = _erode_rect(x, y, w, h)
         patch = lab[ey:ey + eh, ex:ex + ew]
         if not _uniform(patch, tol=5.0):
-            return None
+            # A hatched or dotted swatch is not uniform, but it is mostly ink
+            # over paper where a label or empty slot is mostly paper.
+            inked = np.mean(np.linalg.norm(patch - bg, axis=2) >= 10)
+            return (x, y, w, h) if inked >= 0.4 else None
         if float(np.linalg.norm(np.median(patch.reshape(-1, 3), axis=0) - bg)) < 4:
             return None  # empty paper, not a pale swatch
         return (x, y, w, h)
 
     total = sum(len(c) for c in columns)
     if total < expected:
+        # A column holding a single detected swatch has no pitch of its own
+        # (Russia's second column found only Novosibirsk); the legend prints
+        # every column on the same pitch, so borrow it from the others.
+        all_pitches = [col[i + 1][1] - col[i][1]
+                       for col in columns for i in range(len(col) - 1)]
+        shared_pitch = float(np.median(all_pitches)) if all_pitches else 0.0
         for col in columns:
             pitches = [col[i + 1][1] - col[i][1] for i in range(len(col) - 1)]
-            pitch = float(np.median(pitches)) if pitches else 0.0
+            pitch = float(np.median(pitches)) if pitches else shared_pitch
             if pitch <= med_h:
                 continue
             filled: list[tuple[int, int, int, int]] = []
@@ -1332,9 +1344,41 @@ def _detect_swatches_at_scale(
     return ordered, warnings
 
 
-def sample_swatch(legend_bgr: np.ndarray, rect: tuple[int, int, int, int]) -> tuple[list[int], list[float]]:
-    x, y, w, h = _erode_rect(*rect)
+def sample_swatch(
+    legend_bgr: np.ndarray, rect: tuple[int, int, int, int],
+    paper_lab: np.ndarray | None = None,
+) -> tuple[list[int], list[float]]:
+    """The fill colour of a swatch, ignoring glyph ink and paper gaps.
+
+    A plain median of the interior fails on two common legend styles: a black
+    symbol printed inside each swatch (Germany's climate regions -- a square or
+    cross covers most of the eroded interior, so several entries sample as the
+    same black ink) and hatched or dotted fills (Russia's districts -- half the
+    interior is paper).  Both leave a coloured population that is the actual
+    fill, so drop near-paper and near-black pixels whenever at least a quarter
+    of the interior remains; a genuinely black or paper-pale swatch keeps its
+    own pixels because nothing else is left.
+    """
+    # Erode only enough to shed the outline and its anti-aliasing: a glyph
+    # sits in the middle of its swatch, so the fill survives at the margins
+    # that the detector's deeper erosion would throw away.
+    x, y, w, h = _erode_rect(*rect, frac=0.12)
     patch = legend_bgr[y:y + h, x:x + w].reshape(-1, 3)
+    if paper_lab is None:
+        paper_lab = legend_paper_lab(
+            to_lab(legend_bgr), strip=max(2, min(legend_bgr.shape[:2]) // 50))
+    lab_px = cv2.cvtColor(
+        patch.reshape(-1, 1, 3).astype(np.float32) / 255.0, cv2.COLOR_BGR2Lab,
+    ).reshape(-1, 3)
+    paper = np.linalg.norm(lab_px - paper_lab, axis=1) < 8
+    ink = (lab_px[:, 0] < 35) & (np.hypot(lab_px[:, 1], lab_px[:, 2]) < 12)
+    coloured = ~paper & ~ink
+    # 0.4 keeps a sparsely hatched "no data" patch reading as its paper while
+    # a half-covered hatch or a glyph swatch still yields its fill.
+    if coloured.mean() >= 0.4:
+        patch = patch[coloured]
+    elif (~ink).mean() >= 0.25:
+        patch = patch[~ink]
     bgr = np.median(patch, axis=0)
     lab = cv2.cvtColor(np.float32([[bgr]]) / 255.0, cv2.COLOR_BGR2Lab)[0, 0]
     rgb = [int(bgr[2]), int(bgr[1]), int(bgr[0])]
@@ -1391,6 +1435,107 @@ def drop_frame_label_boxes(
         f"dropped {len(dropped)} frame-label box(es) that sat on map content"]
 
 
+def derive_palette_from_map(
+    map_bgr: np.ndarray, mask: np.ndarray, max_classes: int = 6,
+    min_share: float = 0.015,
+) -> list[dict]:
+    """Build a class palette from the map's own dominant fill colours.
+
+    Used when the sheet has no usable legend: none printed, none the layout
+    call could find, or one whose swatches cannot be aligned with Step 1's
+    transcription.  The tactile map then still gets one texture per major
+    fill -- the reader learns the map's structure even though the classes
+    carry no names beyond their colour.  Ink (borders, text) and clusters too
+    small to matter are left for Step 4's own unseeded handling.
+    """
+    scale = 800 / max(map_bgr.shape[:2])
+    if scale < 1:
+        small = cv2.resize(map_bgr, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+        small_mask = cv2.resize(mask, small.shape[1::-1], interpolation=cv2.INTER_NEAREST)
+    else:
+        small, small_mask = map_bgr, mask
+    smoothed = cv2.pyrMeanShiftFiltering(cv2.medianBlur(small, 3), sp=6, sr=14)
+    lab = to_lab(smoothed)
+    pix = lab[small_mask > 0].reshape(-1, 3).astype(np.float32)
+    if len(pix) < 500:
+        return []
+    ink = (pix[:, 0] < 35) & (np.hypot(pix[:, 1], pix[:, 2]) < 12)
+    pix = pix[~ink]
+    if len(pix) < 500:
+        return []
+    rng = np.random.default_rng(0)
+    sample = pix[rng.choice(len(pix), min(len(pix), 60_000), replace=False)]
+    k = min(8, max(2, len(sample) // 2000))
+    _, _, centers = cv2.kmeans(
+        sample, k, None, (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.5),
+        4, cv2.KMEANS_PP_CENTERS)
+    kept: list[np.ndarray] = []
+    for c in centers:
+        if not any(np.linalg.norm(c - kc) < 10 for kc in kept):
+            kept.append(c)
+    assign = np.argmin(np.stack([np.linalg.norm(pix - c, axis=1) for c in kept]), axis=0)
+    shares = [(float(np.mean(assign == i)), kept[i]) for i in range(len(kept))]
+    shares = [s for s in shares if s[0] >= min_share]
+    shares.sort(key=lambda s: -s[0])
+    rows = []
+    for index, (share, centre) in enumerate(shares[:max_classes]):
+        bgr = cv2.cvtColor(centre.reshape(1, 1, 3), cv2.COLOR_Lab2BGR).reshape(3) * 255
+        rgb = [int(np.clip(round(v), 0, 255)) for v in bgr[::-1]]
+        name = min(_NAMED_LAB, key=lambda n: float(np.linalg.norm(centre - _NAMED_LAB[n])))
+        rows.append({
+            "label": f"Area {index + 1} ({name})",
+            "is_thematic": True,
+            "priority": index + 1,
+            "rgb": rgb,
+            "lab": [round(float(v), 2) for v in centre],
+            "hex": "#{:02x}{:02x}{:02x}".format(*rgb),
+            "swatch_bbox_orig": None,
+            "source": "map-colour",
+            "area_share_hint": round(share, 4),
+        })
+    return rows
+
+
+def _dedupe_thematic(entries) -> tuple[list, list[str]]:
+    """Keep the first occurrence of each thematic label (OCR repeats rows)."""
+    warnings: list[str] = []
+    seen: set[str] = set()
+    kept = []
+    for entry in entries:
+        if entry.is_thematic:
+            if entry.label in seen:
+                warnings.append(f"ignored duplicate thematic legend entry '{entry.label}'")
+                continue
+            seen.add(entry.label)
+        kept.append(entry)
+    return kept, warnings
+
+
+def _detect_for_entries(legend_img: np.ndarray, legend_entries, ordered: bool):
+    """Run swatch detection for a transcription; trims trailing extras."""
+    thematic = [entry for entry in legend_entries if entry.is_thematic]
+    expected = len(thematic)
+    if expected == 0:
+        return thematic, [], ["Step 1 transcribed no thematic swatch entries"]
+    rects, warnings = detect_swatches(
+        legend_img, expected, labels=[entry.label for entry in thematic], ordered=ordered)
+    if len(rects) > expected:
+        # A legend usually shows its thematic classes first and then the
+        # non-thematic fills -- water, urban, no-data -- so those carry real
+        # swatches too.  Dropping the surplus is only safe when Step 1 read
+        # the thematic entries as one unbroken block at the start and the
+        # surplus is no larger than the trailing non-thematic entries.
+        trailing = len(legend_entries) - expected
+        leading_block = all(entry.is_thematic for entry in legend_entries[:expected])
+        surplus = len(rects) - expected
+        if leading_block and trailing >= surplus:
+            warnings.append(
+                f"kept the first {expected} legend swatches and set aside {surplus} "
+                f"trailing non-thematic swatch(es)")
+            rects = rects[:expected]
+    return thematic, rects, warnings
+
+
 def recover_legend_box(
     img: np.ndarray, layout: MapLayout, expected: int, ordered: bool,
 ) -> tuple[tuple[int, int, int, int] | None, list[str]]:
@@ -1424,7 +1569,8 @@ class LegendSwatchDetectionError(ValueError):
     """Raised instead of emitting a partial or misaligned legend palette."""
 
 
-def run_step2(image_path: Path, model: str | None = None, runs_dir: Path = Path("runs")) -> dict:
+def run_step2(image_path: Path, model: str | None = None, runs_dir: Path = Path("runs"),
+              step1_retries: int = 2) -> dict:
     from .semantics import interpret_map, save_semantics
 
     out_dir = runs_dir / image_path.stem
@@ -1509,6 +1655,7 @@ def run_step2(image_path: Path, model: str | None = None, runs_dir: Path = Path(
     # ---- legend ----
     classes: list[dict] = []
     legend_box = None
+    palette_source = "legend"
     if layout.legend is not None:
         legend_box = box_to_px(layout.legend, w, h)
     elif sem.legend_present:
@@ -1520,130 +1667,146 @@ def run_step2(image_path: Path, model: str | None = None, runs_dir: Path = Path(
         lx0, ly0, lx1, ly1 = legend_box
         legend_img = img[ly0:ly1, lx0:lx1]
         imwrite(out_dir / "legend.png", legend_img)
+        ordered = sem.data_ordering.value == "ordered"
 
-        # Symbols and line samples can be legitimate legend entries, but they
-        # have no area-fill palette to sample. Only thematic entries must pair
-        # with detected colour swatches.
-        # Vision transcription can repeat a thematic label when a multi-column
-        # legend wraps or OCR revisits a row. Repeated labels cannot represent
-        # distinct palette classes, so retain the first occurrence.
-        legend_entries = []
-        seen_thematic_labels: set[str] = set()
-        for entry in sem.legend_entries:
-            if entry.is_thematic:
-                if entry.label in seen_thematic_labels:
-                    warnings.append(f"ignored duplicate thematic legend entry '{entry.label}'")
-                    continue
-                seen_thematic_labels.add(entry.label)
-            legend_entries.append(entry)
-        thematic_entries = [entry for entry in legend_entries if entry.is_thematic]
+        legend_entries, dedupe_warn = _dedupe_thematic(sem.legend_entries)
+        warnings += dedupe_warn
+        thematic_entries, rects, detect_warn = _detect_for_entries(
+            legend_img, legend_entries, ordered)
+        warnings += detect_warn
         expected = len(thematic_entries)
-        if expected == 0:
-            raise LegendSwatchDetectionError(
-                "Step 2 cannot continue: Step 1 reported a legend but transcribed "
-                "no thematic swatch entries. Rerun Step 1 or use a clearer source image."
-            )
-        rects, sw_warn = detect_swatches(
-            legend_img,
-            expected,
-            labels=[entry.label for entry in thematic_entries],
-            ordered=sem.data_ordering.value == "ordered",
-        )
-        warnings += sw_warn
-        if len(rects) > expected:
-            # A legend usually shows its thematic classes first and then the
-            # non-thematic fills -- water, urban, no-data -- so those carry real
-            # swatches too.  Dropping the surplus is only safe when Step 1 read
-            # the thematic entries as one unbroken block at the start and the
-            # surplus is no larger than the trailing non-thematic entries;
-            # otherwise the extra swatch could sit anywhere and every label
-            # after it would pair with the wrong colour.
-            trailing = len(legend_entries) - len(thematic_entries)
-            leading_block = all(entry.is_thematic for entry in legend_entries[:expected])
-            surplus = len(rects) - expected
-            if leading_block and trailing >= surplus:
-                warnings.append(
-                    f"kept the first {expected} legend swatches and set aside {surplus} "
-                    f"trailing non-thematic swatch(es)")
-                rects = rects[:expected]
-        if len(rects) != expected:
-            raise LegendSwatchDetectionError(
-                f"Step 2 cannot continue: detected {len(rects)} legend swatches "
-                f"but Step 1 identified {expected} thematic entries. The palette cannot "
-                "be aligned safely; inspect the legend crop or rerun Step 1."
-            )
-        # For ordered maps, the displayed legend order is the authoritative
-        # sequence.  A semantic model may list classes by estimated area or
-        # salience (rather than numeric order), which would later let Step 5
-        # merge non-adjacent bins.  Qualitative legends retain their model
-        # supplied priorities.
-        prio = ({entry.label: index + 1 for index, entry in enumerate(thematic_entries)}
-                if sem.data_ordering.value == "ordered"
-                else {c.label: c.priority for c in sem.thematic_classes})
-        thematic_rects = iter(rects)
-        for entry in legend_entries:
-            row = {
-                "label": entry.label,
-                "is_thematic": entry.is_thematic,
-                "priority": prio.get(entry.label),
-                "rgb": None, "lab": None, "hex": None,
-                "swatch_bbox_orig": None,
-            }
-            if entry.is_thematic:
-                rect = next(thematic_rects)
-                x, y, sw_, sh_ = rect
-                rgb, lab_v = sample_swatch(legend_img, rect)
-                row.update({
-                    "rgb": rgb, "lab": lab_v,
-                    "hex": "#{:02x}{:02x}{:02x}".format(*rgb),
-                    "swatch_bbox_orig": [lx0 + x, ly0 + y, sw_, sh_],
-                })
-            classes.append(row)
 
-        sampled = [(c["label"], np.float32(c["lab"])) for c in classes if c["lab"]]
-        for i in range(len(sampled)):
-            for j in range(i + 1, len(sampled)):
-                de = float(np.linalg.norm(sampled[i][1] - sampled[j][1]))
-                if de < DELTA_E_WARN:
+        # Step 1's transcription and the detected swatches must agree before
+        # labels can be paired with colours by position.  The transcription
+        # is the unstable side (the Africa sheet came back with 15, 0, 15 and
+        # 6 entries on four draws of the same image), so on a mismatch ask
+        # Step 1 again and accept the first draw the swatches agree with.
+        if expected == 0 or len(rects) != expected:
+            from .semantics import interpret_map, save_semantics
+            for attempt in range(step1_retries):
+                try:
+                    fresh = interpret_map(image_path, model=model)
+                except Exception as exc:  # noqa: BLE001 - a failed redraw is not fatal
+                    warnings.append(f"Step 1 redraw {attempt + 1} failed: {exc}")
+                    continue
+                if not fresh.legend_present:
+                    warnings.append(f"Step 1 redraw {attempt + 1} read no legend")
+                    continue
+                fresh_entries, _ = _dedupe_thematic(fresh.legend_entries)
+                fresh_thematic, fresh_rects, fresh_warn = _detect_for_entries(
+                    legend_img, fresh_entries, fresh.data_ordering.value == "ordered")
+                warnings.append(
+                    f"Step 1 redraw {attempt + 1}: {len(fresh_thematic)} entries, "
+                    f"{len(fresh_rects)} swatches detected")
+                if fresh_thematic and len(fresh_rects) == len(fresh_thematic):
                     warnings.append(
-                        f"low color contrast (dE={de:.1f}) between "
-                        f"'{sampled[i][0]}' and '{sampled[j][0]}' -- Step 4 may conflate them"
-                    )
-        # Counts can match while the colours cannot: a symbol-glyph legend
-        # yields near-identical ink samples, and a mis-split grid samples the
-        # same cell twice or bare paper.  No printed legend gives two classes
-        # the same ink, so treat such a palette as a failed detection rather
-        # than handing Step 4 an assignment it cannot make.
-        paper = legend_paper_lab(
-            to_lab(legend_img), strip=max(2, min(legend_img.shape[:2]) // 50))
-        papery = [label for label, lab_value in sampled
-                  if float(np.linalg.norm(lab_value - paper)) < MIN_CLASS_SEPARATION]
-        colliding = sorted({
-            label
-            for i in range(len(sampled)) for j in range(i + 1, len(sampled))
-            if float(np.linalg.norm(sampled[i][1] - sampled[j][1])) < MIN_CLASS_SEPARATION
-            for label in (sampled[i][0], sampled[j][0])})
-        if papery or colliding:
-            named = ", ".join(f"'{label}'" for label in (papery or colliding)[:4])
-            reason = ("sampled as bare paper" if papery
-                      else "sampled with indistinguishable colors")
+                        f"Step 1 re-read the legend: {len(fresh_thematic)} entries "
+                        f"(was {expected}); swatches agree")
+                    sem = fresh
+                    save_semantics(sem, image_path, runs_dir)
+                    legend_entries, thematic_entries, rects = fresh_entries, fresh_thematic, fresh_rects
+                    warnings += fresh_warn
+                    expected = len(thematic_entries)
+                    ordered = sem.data_ordering.value == "ordered"
+                    break
+        legend_usable = expected > 0 and len(rects) == expected
+        if not legend_usable:
+            warnings.append(
+                f"legend could not be aligned (detected {len(rects)} swatches for "
+                f"{expected} transcribed entries); deriving classes from map colours")
+
+        if legend_usable:
+            prio = ({entry.label: index + 1 for index, entry in enumerate(thematic_entries)}
+                    if ordered else {c.label: c.priority for c in sem.thematic_classes})
+            paper = legend_paper_lab(
+                to_lab(legend_img), strip=max(2, min(legend_img.shape[:2]) // 50))
+            thematic_rects = iter(rects)
+            for entry in legend_entries:
+                row = {
+                    "label": entry.label,
+                    "is_thematic": entry.is_thematic,
+                    "priority": prio.get(entry.label),
+                    "rgb": None, "lab": None, "hex": None,
+                    "swatch_bbox_orig": None,
+                }
+                if entry.is_thematic:
+                    rect = next(thematic_rects)
+                    x, y, sw_, sh_ = rect
+                    rgb, lab_v = sample_swatch(legend_img, rect, paper)
+                    row.update({
+                        "rgb": rgb, "lab": lab_v,
+                        "hex": "#{:02x}{:02x}{:02x}".format(*rgb),
+                        "swatch_bbox_orig": [lx0 + x, ly0 + y, sw_, sh_],
+                    })
+                classes.append(row)
+
+            # A swatch that samples as bare paper is a detection landing on
+            # nothing (a symbol-only row, a white glyph cell); drop that row
+            # rather than seed Step 4 with the page colour.
+            papery = [c for c in classes if c["lab"]
+                      and float(np.linalg.norm(np.float32(c["lab"]) - paper)) < MIN_CLASS_SEPARATION]
+            if papery:
+                warnings.append(
+                    "dropped legend entries sampled as bare paper: "
+                    + ", ".join(f"'{c['label']}'" for c in papery[:6]))
+                papery_ids = {id(c) for c in papery}
+                classes = [c for c in classes if id(c) not in papery_ids]
+
+            # Two entries printed in the same ink cannot be told apart on the
+            # map either -- Iran's temperature legend prints its three coldest
+            # bins in one cyan, Russia hatches one district in another's
+            # orange.  Merge them into one class instead of stopping: the
+            # tactile reader still gets that area as one texture.
+            coloured = [c for c in classes if c["lab"]]
+            merged_into: dict[int, int] = {}
+            for i in range(len(coloured)):
+                for j in range(i):
+                    if j in merged_into:
+                        continue
+                    de = float(np.linalg.norm(
+                        np.float32(coloured[i]["lab"]) - np.float32(coloured[j]["lab"])))
+                    if de < MIN_CLASS_SEPARATION:
+                        merged_into[i] = j
+                        break
+            if merged_into:
+                groups: dict[int, list[int]] = {}
+                for i, j in merged_into.items():
+                    groups.setdefault(j, []).append(i)
+                for j, members in groups.items():
+                    labels = [coloured[j]["label"]] + [coloured[i]["label"] for i in members]
+                    warnings.append(
+                        "merged legend entries printed in one colour: " + " / ".join(labels))
+                    coloured[j]["label"] = " / ".join(labels)
+                drop = {id(coloured[i]) for i in merged_into}
+                classes = [c for c in classes if id(c) not in drop]
+
+            sampled = [(c["label"], np.float32(c["lab"])) for c in classes if c["lab"]]
+            for i in range(len(sampled)):
+                for j in range(i + 1, len(sampled)):
+                    de = float(np.linalg.norm(sampled[i][1] - sampled[j][1]))
+                    if de < DELTA_E_WARN:
+                        warnings.append(
+                            f"low color contrast (dE={de:.1f}) between "
+                            f"'{sampled[i][0]}' and '{sampled[j][0]}' -- Step 4 may conflate them")
+            if sum(1 for c in classes if c["lab"] and c["is_thematic"]) < 2:
+                warnings.append(
+                    "fewer than two legend classes carry a usable colour; deriving "
+                    "classes from map colours instead")
+                classes = []
+
+    if not any(c.get("lab") for c in classes):
+        classes = derive_palette_from_map(map_area, cropped_mask)
+        palette_source = "map-colours"
+        if not sem.legend_present:
+            warnings.append("no legend on this map; classes derived from its dominant colours")
+        if not classes:
             raise LegendSwatchDetectionError(
-                f"Step 2 cannot continue: legend entries {named} were {reason}, "
-                "so regions cannot be assigned to classes by color. The legend "
-                "likely uses symbols or merged swatches; inspect the legend crop "
-                "or rerun Step 1.")
-    elif sem.legend_present:
-        # Continuing here would hand Step 4 an empty palette and fail later with
-        # a message about missing seeds, far from the actual cause.  The legend
-        # is what names and colours every class, so stop where it went missing.
-        raise LegendSwatchDetectionError(
-            "Step 2 cannot continue: Step 1 read a legend on this map but the layout "
-            "call returned no legend box, so no palette could be sampled. Rerun Step 2, "
-            "or correct the map area in the Step 2 review."
-        )
+                "Step 2 cannot continue: no legend palette could be read and the map "
+                "content yields no dominant fill colours to derive classes from.")
 
     (out_dir / "classes.json").write_text(
-        json.dumps({"classes": classes, "warnings": warnings}, indent=2), encoding="utf-8")
+        json.dumps({"classes": classes, "palette_source": palette_source,
+                    "warnings": warnings}, indent=2), encoding="utf-8")
     (out_dir / "geometry.json").write_text(json.dumps({
         "image_size": [w, h],
         "map_boxes_vlm": [list(box) for box in map_boxes],
@@ -1674,6 +1837,7 @@ def run_step2(image_path: Path, model: str | None = None, runs_dir: Path = Path(
         "layout_cached": layout_cached,
         "map_crop": tight,
         "legend": legend_box is not None,
+        "palette_source": palette_source,
         "classes_with_color": sum(1 for c in classes if c["rgb"]),
         "classes_total": len(classes),
         "warnings": warnings,

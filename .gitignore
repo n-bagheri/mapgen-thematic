@@ -44,3 +44,10 @@ Thumbs.db
 # Batch pipeline survey output (dev harness)
 batch_report.json
 /artifacts/
+
+# headless campaign driver output
+campaign.log
+campaign_report.json
+
+# input/output gallery (generated)
+gallery/

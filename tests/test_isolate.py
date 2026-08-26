@@ -614,25 +614,25 @@ class FrameLabelBoxTests(unittest.TestCase):
 
 
 class Step2GateSafetyTests(unittest.TestCase):
-    """A bad Step 1 redraw (a legend-less or out-of-scope draw on a re-run)
-    must stop Step 2 at the eligibility gate WITHOUT destroying the palette a
-    previously completed run left on disk."""
+    """A bad Step 1 redraw (an out-of-scope draw on a re-run) must stop Step 2
+    at the eligibility gate WITHOUT destroying the palette a previously
+    completed run left on disk."""
 
-    def test_a_legendless_redraw_leaves_the_previous_palette_alone(self):
+    def test_an_out_of_scope_redraw_leaves_the_previous_palette_alone(self):
         import json, tempfile
         from pathlib import Path
         from mapgen.isolate import run_step2
-        from mapgen.semantics import MissingLegendError
+        from mapgen.semantics import OutOfScopeMapError
 
         with tempfile.TemporaryDirectory() as tmp:
             runs = Path(tmp) / "runs"
             run_dir = runs / "synthetic"
             run_dir.mkdir(parents=True)
             (run_dir / "step1_semantics.json").write_text(json.dumps({
-                "map_type": "area_class_chorochromatic", "in_scope": True,
+                "map_type": "choropleth", "in_scope": False,
                 "data_ordering": "qualitative", "map_language": "English",
                 "subject": "s", "description": "d", "title": None,
-                "legend_present": False, "legend_title": None,
+                "legend_present": True, "legend_title": None,
                 "legend_entries": [], "water_present": False,
                 "thematic_classes": [], "non_thematic": [], "lines": [],
                 "overlay_text": {"has_city_labels": False, "capital_city": None,
@@ -642,7 +642,7 @@ class Step2GateSafetyTests(unittest.TestCase):
             (run_dir / "classes.json").write_text('{"classes": []}', encoding="utf-8")
             (run_dir / "geometry.json").write_text('{}', encoding="utf-8")
 
-            with self.assertRaises(MissingLegendError):
+            with self.assertRaises(OutOfScopeMapError):
                 run_step2(Path(tmp) / "synthetic.png", runs_dir=runs)
 
             self.assertTrue((run_dir / "classes.json").exists())
@@ -674,6 +674,75 @@ class ColorbarSplitValidationTests(unittest.TestCase):
         cells = [(10, 10 + i * 30, 30, 30) for i in range(6)]
 
         self.assertFalse(_colorbar_split_is_papery(legend, cells))
+
+
+class RobustSwatchSamplingTests(unittest.TestCase):
+    """The fill colour must survive a glyph printed inside the swatch
+    (Germany's climate regions) and a hatched fill (Russia's districts)."""
+
+    def test_a_black_glyph_inside_the_swatch_is_ignored(self):
+        legend = np.full((60, 200, 3), 250, np.uint8)
+        cv2.rectangle(legend, (10, 10), (50, 50), (60, 200, 250), -1)   # amber fill
+        cv2.rectangle(legend, (18, 18), (42, 42), (0, 0, 0), -1)        # big black square
+
+        rgb, _ = sample_swatch(legend, (10, 10, 41, 41))
+
+        self.assertEqual(rgb, [250, 200, 60])
+
+    def test_a_hatched_fill_samples_its_ink_not_the_paper(self):
+        legend = np.full((60, 200, 3), 250, np.uint8)
+        for x in range(10, 50, 4):                                        # orange hatching
+            cv2.line(legend, (x, 10), (x, 50), (0, 140, 250), 2)
+
+        rgb, _ = sample_swatch(legend, (10, 10, 41, 41))
+
+        self.assertEqual(rgb, [250, 140, 0])
+
+    def test_a_genuinely_black_swatch_stays_black(self):
+        legend = np.full((60, 200, 3), 250, np.uint8)
+        cv2.rectangle(legend, (10, 10), (50, 50), (0, 0, 0), -1)
+
+        rgb, _ = sample_swatch(legend, (10, 10, 41, 41))
+
+        self.assertEqual(rgb, [0, 0, 0])
+
+
+class JoinedStackTests(unittest.TestCase):
+    def test_a_stack_filling_the_whole_crop_is_split_into_its_cells(self):
+        """The Australia land-cover screenshot's legend crop is nothing but
+        the joined colour column; a 65%-of-height cap used to reject it."""
+        from mapgen.isolate import detect_swatches
+        colors = [(200, 200, 200), (250, 80, 160), (0, 240, 250), (40, 220, 60),
+                  (30, 30, 230), (90, 90, 240), (150, 150, 250), (60, 240, 120)]
+        cell = 30
+        legend = np.full((cell * len(colors), 260, 3), 250, np.uint8)
+        for i, color in enumerate(colors):
+            legend[i * cell:(i + 1) * cell, 0:26] = color
+            cv2.putText(legend, "Class name", (40, i * cell + 20),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (30, 30, 30), 1)
+
+        rects, _ = detect_swatches(legend, len(colors), labels=["c"] * len(colors))
+
+        self.assertEqual(len(rects), len(colors))
+        sampled = [tuple(sample_swatch(legend, r)[0]) for r in rects]
+        self.assertEqual(sampled, [tuple(c[::-1]) for c in colors])
+
+
+class ColourDerivedPaletteTests(unittest.TestCase):
+    def test_dominant_fills_become_classes_and_ink_does_not(self):
+        from mapgen.isolate import derive_palette_from_map
+        page = np.full((400, 600, 3), 250, np.uint8)
+        page[:, :200] = (60, 200, 250)      # amber third
+        page[:, 200:400] = (80, 200, 60)    # green third
+        page[:, 400:] = (230, 120, 40)      # blue third
+        cv2.line(page, (0, 200), (600, 200), (0, 0, 0), 6)   # a black border
+        mask = np.full((400, 600), 255, np.uint8)
+
+        rows = derive_palette_from_map(page, mask)
+
+        self.assertEqual(len(rows), 3)
+        self.assertTrue(all(r["is_thematic"] and r["source"] == "map-colour" for r in rows))
+        self.assertTrue(all(r["lab"][0] > 35 for r in rows), "border ink became a class")
 
 
 if __name__ == "__main__":
