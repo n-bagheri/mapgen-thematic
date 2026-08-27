@@ -132,7 +132,7 @@ export const STEP_VIEWS = {
     { artifact: "step5_aggregation_preview.png", caption: "Categories after fitting to the texture limit" },
   ],
   6: [
-    { dynamic: "simplified", caption: "Simplified map", overlay: "layers" },
+    { dynamic: "simplified", caption: "Simplified map", overlay: "layers", originalCompare: true },
   ],
   7: [
     { artifact: "step8a_cleanup.png", hybrid: "step8a_hybrid.png",

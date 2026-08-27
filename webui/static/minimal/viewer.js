@@ -101,6 +101,26 @@ export function bindViewer(index, onViewChange) {
   let zoom = 100;
   let panStart = null;
 
+  const dimensions = () => {
+    const original = sheet.querySelector("img[data-original-source]");
+    if (sheet.dataset.sourceComparison === "true" && image?.naturalWidth
+        && image.naturalHeight && original?.naturalWidth && original.naturalHeight) {
+      const height = image.naturalHeight;
+      const originalWidth = original.naturalWidth / original.naturalHeight * height;
+      const gap = Math.max(30, Math.round(height * .04));
+      const width = originalWidth + image.naturalWidth + gap;
+      sheet.dataset.naturalWidth = String(width);
+      sheet.dataset.naturalHeight = String(height);
+      sheet.style.aspectRatio = `${width} / ${height}`;
+      sheet.style.setProperty("--compare-gap", `${gap}px`);
+      sheet.style.gridTemplateColumns = `${originalWidth}fr ${image.naturalWidth}fr`;
+    }
+    return {
+      width: Number(sheet.dataset.naturalWidth) || image?.naturalWidth || sheet.clientWidth || 1,
+      height: Number(sheet.dataset.naturalHeight) || image?.naturalHeight || sheet.clientHeight || 1,
+    };
+  };
+
   const syncPanMode = () => {
     document.querySelectorAll(".page-pan-toggle").forEach((button) => {
       button.setAttribute("aria-pressed", String(state.panMode));
@@ -117,10 +137,7 @@ export function bindViewer(index, onViewChange) {
     // Natural dimensions remain the immutable page/canvas coordinate system.
     // Only the visual transform changes; a separate space supplies the scaled
     // scroll extent without resizing or reflowing anything on the paper.
-    const naturalW = Number(sheet.dataset.naturalWidth)
-      || image?.naturalWidth || sheet.clientWidth || 1;
-    const naturalH = Number(sheet.dataset.naturalHeight)
-      || image?.naturalHeight || sheet.clientHeight || 1;
+    const { width: naturalW, height: naturalH } = dimensions();
     const scale = zoom / 100;
     sheet.style.width = `${naturalW}px`;
     sheet.style.height = `${naturalH}px`;
@@ -140,8 +157,7 @@ export function bindViewer(index, onViewChange) {
     // width does -- a portrait page is otherwise cut off below the fold.
     const availableW = Math.max(200, frame.clientWidth - 30);
     const availableH = Math.max(200, frame.clientHeight - 30);
-    const naturalW = Number(sheet.dataset.naturalWidth) || image?.naturalWidth || availableW;
-    const naturalH = Number(sheet.dataset.naturalHeight) || image?.naturalHeight || availableH;
+    const { width: naturalW, height: naturalH } = dimensions();
     const fittedZoom = Math.min(100, availableW / naturalW * 100, availableH / naturalH * 100);
     // High-resolution scans can need far less than the normal 25% floor. Fit
     // establishes the smallest useful zoom for this image, so the whole sheet
@@ -228,8 +244,11 @@ export function bindViewer(index, onViewChange) {
   if (fullSize && image) fullSize.href = image.dataset.fullSizeUrl || image.src;
 
   configureGrid(sheet);
-  if (image?.complete && image.naturalWidth) fit();
-  else if (image) image.addEventListener("load", fit, { once: true });
-  else fit();
+  const original = sheet.querySelector("img[data-original-source]");
+  if (image?.complete && image.naturalWidth && (!original || (original.complete && original.naturalWidth))) fit();
+  else if (image || original) {
+    image?.addEventListener("load", fit, { once: true });
+    original?.addEventListener("load", fit, { once: true });
+  } else fit();
   syncPanMode();
 }

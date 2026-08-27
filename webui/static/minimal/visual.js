@@ -95,6 +95,29 @@ function gridScaleAttribute(view) {
     : ' data-grid-enabled="true"';
 }
 
+/** Step 6 keeps the source-sized map and its simplified result in the same
+ * coordinate system. Its optional comparison uses the same toolbar state as
+ * the finished-page comparisons in Steps 7 and 8. */
+function simplifiedComparisonCanvasHtml(map, view, source, imageId) {
+  if (!view.originalCompare || !state.showOriginalMap) return "";
+  const output = `<img id="${imageId}" src="${source.url}"
+      alt="${esc(view.caption)} for ${esc(map.name)}" data-viewer-image
+      data-artifact="${esc(source.name)}"
+      ${source.preparing
+        ? 'data-step6-preparing="true" data-overlay-disabled="true"' : ""}
+      ${source.fallback ? `data-fallback="${source.fallback}"` : ""}>`;
+  return `<div class="map-canvas step7-comparison-canvas step6-comparison-canvas"
+      data-source-comparison="true" style="aspect-ratio:2 / 1;--compare-gap:30px">
+    <div class="step7-original-sheet step6-original-sheet">
+      <img src="${mapUrl(map.name)}" alt="Original map for ${esc(map.name)}" data-original-source>
+    </div>
+    <div class="step7-output-sheet step6-output-sheet" id="layers-target">
+      ${output}${overlayMarkup(view)}
+    </div>
+    <div class="page-grid" aria-hidden="true"></div>
+  </div>`;
+}
+
 function tactilePageCanvasHtml(map, view, source, imageId, canvasId) {
   const layout = state.data.pageLayout;
   if (!layout?.canvas_px || !layout?.map_size_px || !layout?.map_origin_px) return "";
@@ -268,7 +291,8 @@ export function renderVisual() {
     const pageCanvas = view.pageLayout
       ? tactilePageCanvasHtml(map, view, source, imageId, canvasId)
       : view.pageRender ? renderedPageCanvasHtml(map, view, source, imageId, canvasId)
-        : view.legendPage ? legendPageCanvasHtml(map, view, source, imageId, canvasId) : "";
+        : view.legendPage ? legendPageCanvasHtml(map, view, source, imageId, canvasId)
+          : simplifiedComparisonCanvasHtml(map, view, source, imageId);
     const canvas = pageCanvas || `<div class="map-canvas"${canvasId}${gridScaleAttribute(view)}>
           <img id="${imageId}" src="${source.url}" alt="${esc(view.caption)} for ${esc(map.name)}"
                data-viewer-image data-artifact="${esc(source.name)}"
