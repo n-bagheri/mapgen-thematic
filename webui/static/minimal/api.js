@@ -57,7 +57,7 @@ async function apiBlob(path, options = {}) {
 /* This view and webui/server.py ship together: the page posts actions and reads
    review flags that a server from an earlier checkout does not have.  Keep this
    equal to UI_CONTRACT in webui/server.py. */
-export const UI_CONTRACT = 3;
+export const UI_CONTRACT = 4;
 
 const RESTART_ADVICE = "The server is running older code than this page. In a PowerShell "
   + "terminal at the Thematic folder, run: .\\restart-mapgen-ui.ps1 — then refresh this page.";
@@ -133,6 +133,11 @@ export const saveMaskStrokes = (stem, strokes) =>
   api(`/api/maskreview/${enc(stem)}`, json("POST", { strokes }));
 export const resetMask = (stem) => api(`/api/maskreview/${enc(stem)}`, json("POST", { reset: true }));
 export const approveMask = (stem) => api(`/api/maskreview/${enc(stem)}`, json("POST", { approve: true }));
+export const getLegendReview = (stem) => api(`/api/legendreview/${enc(stem)}`);
+export const saveLegendBox = (stem, box) => api(`/api/legendreview/${enc(stem)}`, json("POST", { box }));
+export const approveLegendReview = (stem) => api(`/api/legendreview/${enc(stem)}`, json("POST", { approve: true }));
+export const deriveLegendReview = (stem) => api(`/api/legendreview/${enc(stem)}`, json("POST", { derive: true }));
+export const stopForMissingLegend = (stem) => api(`/api/legendreview/${enc(stem)}`, json("POST", { stop: true }));
 
 /* -- Step 3: overlay text ---------------------------------------------- */
 export const getLabelReview = (stem) => api(`/api/labelreview/${enc(stem)}`);

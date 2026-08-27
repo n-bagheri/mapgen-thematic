@@ -27,7 +27,6 @@ import re
 import mimetypes
 import time
 from pathlib import Path
-from typing import Callable
 
 import cv2
 import numpy as np
@@ -1592,63 +1591,202 @@ def _resolve_legend_box(
     img: np.ndarray,
     layout: MapLayout,
     semantics: MapSemantics,
-    redraw: Callable[[], MapSemantics] | None = None,
-    retries: int = 0,
-) -> tuple[tuple[int, int, int, int] | None, bool, MapSemantics, list[str]]:
+) -> tuple[tuple[int, int, int, int] | None, bool, list[str]]:
     """Resolve direct or table-style legends against the current semantics.
 
     A layout call can correctly isolate a dense legend table but file it under
     ``other``. Recovery uses Step 1's thematic-entry count as its exact-match
-    guard. If that transcription was the unstable side, retry Step 1 here and
-    try the same table again before abandoning named classes for map colours.
+    guard. Step 1 is deliberately never redrawn here: legend confirmation is a
+    user decision in Step 2, not an implicit second interpretation of the map.
     """
     h, w = img.shape[:2]
     if layout.legend is not None:
-        return box_to_px(layout.legend, w, h), False, semantics, []
+        return box_to_px(layout.legend, w, h), False, []
     if not semantics.legend_present:
-        return None, False, semantics, []
+        return None, False, []
 
     expected = sum(_is_area_fill_entry(entry) for entry in semantics.legend_entries)
     box, warnings = recover_legend_box(
         img, layout, expected, semantics.data_ordering.value == "ordered")
     if box is not None:
-        return box, True, semantics, warnings
-
-    all_warnings = list(warnings)
-    if redraw is None:
-        return None, False, semantics, all_warnings
-    for attempt in range(retries):
-        try:
-            fresh = redraw()
-        except Exception as exc:  # noqa: BLE001 - a failed redraw is not fatal
-            all_warnings.append(f"Step 1 redraw {attempt + 1} failed: {exc}")
-            continue
-        if not fresh.legend_present:
-            all_warnings.append(f"Step 1 redraw {attempt + 1} read no legend")
-            continue
-        fresh_expected = sum(_is_area_fill_entry(entry) for entry in fresh.legend_entries)
-        box, recovery_warnings = recover_legend_box(
-            img, layout, fresh_expected, fresh.data_ordering.value == "ordered")
-        all_warnings.append(
-            f"Step 1 redraw {attempt + 1}: {fresh_expected} thematic entries; "
-            + ("legend table recovered" if box is not None
-               else "no matching legend table"))
-        if box is not None:
-            all_warnings += recovery_warnings
-            all_warnings.append(
-                f"Step 1 re-read the legend: {fresh_expected} entries now match "
-                "the recovered table")
-            return box, True, fresh, all_warnings
-    return None, False, semantics, all_warnings
+        return box, True, warnings
+    return None, False, warnings
 
 
 class LegendSwatchDetectionError(ValueError):
     """Raised instead of emitting a partial or misaligned legend palette."""
 
 
+def _sample_legend_classes(legend_img: np.ndarray, sem: MapSemantics) -> tuple[list[dict], int, int, list[str]]:
+    """Sample one user-confirmed legend crop without inventing a map palette.
+
+    Step 2 may propose a crop, but it is never allowed to silently substitute
+    anonymous map colours when that proposal does not agree with Step 1.  The
+    caller records that mismatch for the Step 2 legend-review decision.
+    """
+    warnings: list[str] = []
+    ordered = sem.data_ordering.value == "ordered"
+    legend_entries, dedupe_warn = _dedupe_thematic(sem.legend_entries)
+    warnings += dedupe_warn
+    thematic_entries, rects, detect_warn = _detect_for_entries(
+        legend_img, legend_entries, ordered)
+    warnings += detect_warn
+    expected = len(thematic_entries)
+    detected = len(rects)
+    if expected == 0 or detected != expected:
+        if expected == 0:
+            warnings.append("Step 1 supplied no thematic area-fill legend entries")
+        else:
+            warnings.append(
+                f"legend could not be aligned (detected {detected} swatches for "
+                f"{expected} transcribed entries)")
+        return [], expected, detected, warnings
+
+    prio = ({entry.label: index + 1 for index, entry in enumerate(thematic_entries)}
+            if ordered else {c.label: c.priority for c in sem.thematic_classes})
+    paper = legend_paper_lab(
+        to_lab(legend_img), strip=max(2, min(legend_img.shape[:2]) // 50))
+    classes: list[dict] = []
+    for entry, rect in zip(thematic_entries, rects):
+        x, y, sw_, sh_ = rect
+        rgb, lab_v = sample_swatch(legend_img, rect, paper)
+        classes.append({
+            "label": entry.label,
+            "is_thematic": entry.is_thematic,
+            "priority": prio.get(entry.label),
+            "rgb": rgb,
+            "lab": lab_v,
+            "hex": "#{:02x}{:02x}{:02x}".format(*rgb),
+            "swatch_bbox_orig": [x, y, sw_, sh_],
+        })
+
+    papery = [c for c in classes if c["lab"]
+              and float(np.linalg.norm(np.float32(c["lab"]) - paper)) < MIN_CLASS_SEPARATION]
+    if papery:
+        warnings.append(
+            "dropped legend entries sampled as bare paper: "
+            + ", ".join(f"'{c['label']}'" for c in papery[:6]))
+        papery_ids = {id(c) for c in papery}
+        classes = [c for c in classes if id(c) not in papery_ids]
+
+    coloured = [c for c in classes if c["lab"]]
+    merged_into: dict[int, int] = {}
+    for i in range(len(coloured)):
+        for j in range(i):
+            if j in merged_into:
+                continue
+            de = float(np.linalg.norm(np.float32(coloured[i]["lab"]) - np.float32(coloured[j]["lab"])))
+            if de < MIN_CLASS_SEPARATION:
+                merged_into[i] = j
+                break
+    if merged_into:
+        groups: dict[int, list[int]] = {}
+        for i, j in merged_into.items():
+            groups.setdefault(j, []).append(i)
+        for j, members in groups.items():
+            labels = [coloured[j]["label"]] + [coloured[i]["label"] for i in members]
+            warnings.append("merged legend entries printed in one colour: " + " / ".join(labels))
+            coloured[j]["label"] = " / ".join(labels)
+        drop = {id(coloured[i]) for i in merged_into}
+        classes = [c for c in classes if id(c) not in drop]
+
+    sampled = [(c["label"], np.float32(c["lab"])) for c in classes if c["lab"]]
+    for i in range(len(sampled)):
+        for j in range(i + 1, len(sampled)):
+            de = float(np.linalg.norm(sampled[i][1] - sampled[j][1]))
+            if de < DELTA_E_WARN:
+                warnings.append(
+                    f"low color contrast (dE={de:.1f}) between "
+                    f"'{sampled[i][0]}' and '{sampled[j][0]}' -- Step 4 may conflate them")
+    if sum(1 for c in classes if c["lab"] and c["is_thematic"]) < 2:
+        warnings.append("fewer than two legend classes carry a usable colour")
+        return [], expected, detected, warnings
+    return classes, expected, detected, warnings
+
+
+def _write_legend_review(out_dir: Path, *, status: str,
+                         box: tuple[int, int, int, int] | None,
+                         expected: int = 0, detected: int = 0,
+                         approved: bool = False) -> None:
+    (out_dir / "legend_review.json").write_text(json.dumps({
+        "version": 1,
+        "status": status,
+        "box": list(box) if box else None,
+        "expected_area_fills": expected,
+        "detected_swatches": detected,
+        "approved": approved,
+    }, indent=2), encoding="utf-8")
+
+
+def apply_legend_review_box(image_path: Path, out_dir: Path,
+                            box: tuple[int, int, int, int]) -> dict:
+    """Validate and materialize a user-adjusted Step 2 legend rectangle."""
+    sem = MapSemantics.model_validate_json((out_dir / "step1_semantics.json").read_text(encoding="utf-8"))
+    require_pipeline_eligible(sem, "Step 2")
+    img = imread(image_path)
+    h, w = img.shape[:2]
+    x0, y0, x1, y1 = box
+    x0, x1 = max(0, min(w, int(x0))), max(0, min(w, int(x1)))
+    y0, y1 = max(0, min(h, int(y0))), max(0, min(h, int(y1)))
+    if x1 - x0 < 16 or y1 - y0 < 16:
+        raise ValueError("legend box must be at least 16 pixels wide and high")
+    box = (x0, y0, x1, y1)
+    legend_img = img[y0:y1, x0:x1]
+    imwrite(out_dir / "legend.png", legend_img)
+    classes, expected, detected, warnings = _sample_legend_classes(legend_img, sem)
+    for row in classes:
+        x, y, sw_, sh_ = row["swatch_bbox_orig"]
+        row["swatch_bbox_orig"] = [x0 + x, y0 + y, sw_, sh_]
+    status = "ready" if classes else "mismatch"
+    (out_dir / "classes.json").write_text(json.dumps({
+        "classes": classes,
+        "palette_source": "legend" if classes else "pending-legend-review",
+        "warnings": warnings,
+    }, indent=2), encoding="utf-8")
+    geometry_path = out_dir / "geometry.json"
+    geometry = json.loads(geometry_path.read_text(encoding="utf-8"))
+    geometry["legend_crop"] = list(box)
+    furniture = [item for item in geometry.get("furniture", [])
+                 if isinstance(item, dict) and item.get("name") != "legend"]
+    furniture.append({"name": "legend", "box": list(box)})
+    geometry["furniture"] = furniture
+    geometry_path.write_text(json.dumps(geometry, indent=2), encoding="utf-8")
+    crop = [int(value) for value in geometry.get("map_crop", [])]
+    if len(crop) == 4:
+        map_area = imread(out_dir / "map_area.png")
+        mask = imread(out_dir / "map_mask.png")[..., 0]
+        imwrite(out_dir / "map_text_input.png", prepare_text_input(
+            map_area, tuple(crop), [(item["name"], tuple(item["box"])) for item in furniture], mask))
+    _write_legend_review(out_dir, status=status, box=box,
+                         expected=expected, detected=detected)
+    return {"status": status, "box": list(box), "expected": expected,
+            "detected": detected, "warnings": warnings,
+            "classes_with_color": len(classes)}
+
+
+def derive_palette_from_map_review(image_path: Path, out_dir: Path) -> dict:
+    """Execute the map-colour fallback only after the user chose it."""
+    map_area = imread(out_dir / "map_area.png")
+    mask = imread(out_dir / "map_mask.png")[..., 0]
+    classes = derive_palette_from_map(map_area, mask)
+    if not classes:
+        raise LegendSwatchDetectionError(
+            "Step 2 cannot derive usable categories from this map's colours")
+    (out_dir / "classes.json").write_text(json.dumps({
+        "classes": classes, "palette_source": "map-colours", "warnings": [
+            "categories derived from map colours by user request"],
+    }, indent=2), encoding="utf-8")
+    _write_legend_review(out_dir, status="derived", box=None, approved=True)
+    return {"classes_with_color": len(classes), "classes_total": len(classes)}
+
+
 def run_step2(image_path: Path, model: str | None = None, runs_dir: Path = Path("runs"),
-              step1_retries: int = 2) -> dict:
+               step1_retries: int | None = None) -> dict:
     from .semantics import interpret_map, save_semantics
+
+    # Retained as a harmless call-signature compatibility argument. Step 2 no
+    # longer redraws Step 1 under any condition.
+    del step1_retries
 
     # Keep every model call made by this step on the UI/CLI selection.  In
     # particular, the fallback is Gemma, not an ambient GEMINI_MODEL setting.
@@ -1678,8 +1816,8 @@ def run_step2(image_path: Path, model: str | None = None, runs_dir: Path = Path(
     # artifacts used to leave the previous run's classes.json and geometry.json
     # in place; Step 4 reads both without a freshness check, and a stale empty
     # palette silently became a map with no thematic classes.  Retire them here
-    # -- after the eligibility gate and the layout call, so a bad Step 1 redraw
-    # or a failed model call stops loudly WITHOUT destroying a completed run --
+    # -- after the eligibility gate and the layout call, so a failed model call
+    # stops loudly WITHOUT destroying a completed run --
     # and before the first artifact rewrite below, so an interrupted rebuild
     # still leaves no palette rather than a stale one.
     (out_dir / "classes.json").unlink(missing_ok=True)
@@ -1708,21 +1846,10 @@ def run_step2(image_path: Path, model: str | None = None, runs_dir: Path = Path(
         raw_dbg = cv2.resize(raw_dbg, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
     imwrite(out_dir / "step2_layout_debug.png", raw_dbg)
 
-    # A model-supplied legend is authoritative furniture and is cropped
-    # directly, without expanding its box. A fallback search can still find a
-    # palette in an `other` box, but that search region is not authoritative
-    # furniture and must not punch a hole in the geographic mask. If Step 1's
-    # first transcription did not align with that table, retry it before
-    # falling back to anonymous map-colour classes.
-    legend_box, recovered, resolved_sem, recovery_warnings = _resolve_legend_box(
-        img, layout, sem,
-        redraw=(lambda: interpret_map(image_path, model=selected_model)),
-        retries=step1_retries,
-    )
+    # The proposed legend remains editable until the user approves it. Recovery
+    # from an ``other`` box is still allowed, but Step 1 is never redrawn here.
+    legend_box, recovered, recovery_warnings = _resolve_legend_box(img, layout, sem)
     warnings += recovery_warnings
-    if resolved_sem is not sem:
-        sem = resolved_sem
-        save_semantics(sem, image_path, runs_dir)
     recovered_legend_box = legend_box if recovered else None
 
     furniture = _layout_furniture(layout, w, h, recovered_legend_box)
@@ -1752,150 +1879,27 @@ def run_step2(image_path: Path, model: str | None = None, runs_dir: Path = Path(
 
     # ---- legend ----
     classes: list[dict] = []
-    palette_source = "legend"
+    expected = detected = 0
+    review_status = "missing"
     if legend_box is not None:
         lx0, ly0, lx1, ly1 = legend_box
         legend_img = img[ly0:ly1, lx0:lx1]
         imwrite(out_dir / "legend.png", legend_img)
-        ordered = sem.data_ordering.value == "ordered"
+        classes, expected, detected, legend_warnings = _sample_legend_classes(legend_img, sem)
+        warnings += legend_warnings
+        for row in classes:
+            x, y, sw_, sh_ = row["swatch_bbox_orig"]
+            row["swatch_bbox_orig"] = [lx0 + x, ly0 + y, sw_, sh_]
+        review_status = "ready" if classes else "mismatch"
+    else:
+        warnings.append("no legend detected; choose whether to derive categories from map colours")
 
-        legend_entries, dedupe_warn = _dedupe_thematic(sem.legend_entries)
-        warnings += dedupe_warn
-        thematic_entries, rects, detect_warn = _detect_for_entries(
-            legend_img, legend_entries, ordered)
-        warnings += detect_warn
-        expected = len(thematic_entries)
-
-        # Step 1's transcription and the detected swatches must agree before
-        # labels can be paired with colours by position.  The transcription
-        # is the unstable side (the Africa sheet came back with 15, 0, 15 and
-        # 6 entries on four draws of the same image), so on a mismatch ask
-        # Step 1 again and accept the first draw the swatches agree with.
-        if expected == 0 or len(rects) != expected:
-            from .semantics import interpret_map, save_semantics
-            for attempt in range(step1_retries):
-                try:
-                    fresh = interpret_map(image_path, model=selected_model)
-                except Exception as exc:  # noqa: BLE001 - a failed redraw is not fatal
-                    warnings.append(f"Step 1 redraw {attempt + 1} failed: {exc}")
-                    continue
-                if not fresh.legend_present:
-                    warnings.append(f"Step 1 redraw {attempt + 1} read no legend")
-                    continue
-                fresh_entries, _ = _dedupe_thematic(fresh.legend_entries)
-                fresh_thematic, fresh_rects, fresh_warn = _detect_for_entries(
-                    legend_img, fresh_entries, fresh.data_ordering.value == "ordered")
-                warnings.append(
-                    f"Step 1 redraw {attempt + 1}: {len(fresh_thematic)} entries, "
-                    f"{len(fresh_rects)} swatches detected")
-                if fresh_thematic and len(fresh_rects) == len(fresh_thematic):
-                    warnings.append(
-                        f"Step 1 re-read the legend: {len(fresh_thematic)} entries "
-                        f"(was {expected}); swatches agree")
-                    sem = fresh
-                    save_semantics(sem, image_path, runs_dir)
-                    legend_entries, thematic_entries, rects = fresh_entries, fresh_thematic, fresh_rects
-                    warnings += fresh_warn
-                    expected = len(thematic_entries)
-                    ordered = sem.data_ordering.value == "ordered"
-                    break
-        legend_usable = expected > 0 and len(rects) == expected
-        if not legend_usable:
-            warnings.append(
-                f"legend could not be aligned (detected {len(rects)} swatches for "
-                f"{expected} transcribed entries); deriving classes from map colours")
-
-        if legend_usable:
-            prio = ({entry.label: index + 1 for index, entry in enumerate(thematic_entries)}
-                    if ordered else {c.label: c.priority for c in sem.thematic_classes})
-            paper = legend_paper_lab(
-                to_lab(legend_img), strip=max(2, min(legend_img.shape[:2]) // 50))
-            thematic_rects = iter(rects)
-            for entry in thematic_entries:
-                row = {
-                    "label": entry.label,
-                    "is_thematic": entry.is_thematic,
-                    "priority": prio.get(entry.label),
-                    "rgb": None, "lab": None, "hex": None,
-                    "swatch_bbox_orig": None,
-                }
-                rect = next(thematic_rects)
-                x, y, sw_, sh_ = rect
-                rgb, lab_v = sample_swatch(legend_img, rect, paper)
-                row.update({
-                    "rgb": rgb, "lab": lab_v,
-                    "hex": "#{:02x}{:02x}{:02x}".format(*rgb),
-                    "swatch_bbox_orig": [lx0 + x, ly0 + y, sw_, sh_],
-                })
-                classes.append(row)
-
-            # A swatch that samples as bare paper is a detection landing on
-            # nothing (a symbol-only row, a white glyph cell); drop that row
-            # rather than seed Step 4 with the page colour.
-            papery = [c for c in classes if c["lab"]
-                      and float(np.linalg.norm(np.float32(c["lab"]) - paper)) < MIN_CLASS_SEPARATION]
-            if papery:
-                warnings.append(
-                    "dropped legend entries sampled as bare paper: "
-                    + ", ".join(f"'{c['label']}'" for c in papery[:6]))
-                papery_ids = {id(c) for c in papery}
-                classes = [c for c in classes if id(c) not in papery_ids]
-
-            # Two entries printed in the same ink cannot be told apart on the
-            # map either -- Iran's temperature legend prints its three coldest
-            # bins in one cyan, Russia hatches one district in another's
-            # orange.  Merge them into one class instead of stopping: the
-            # tactile reader still gets that area as one texture.
-            coloured = [c for c in classes if c["lab"]]
-            merged_into: dict[int, int] = {}
-            for i in range(len(coloured)):
-                for j in range(i):
-                    if j in merged_into:
-                        continue
-                    de = float(np.linalg.norm(
-                        np.float32(coloured[i]["lab"]) - np.float32(coloured[j]["lab"])))
-                    if de < MIN_CLASS_SEPARATION:
-                        merged_into[i] = j
-                        break
-            if merged_into:
-                groups: dict[int, list[int]] = {}
-                for i, j in merged_into.items():
-                    groups.setdefault(j, []).append(i)
-                for j, members in groups.items():
-                    labels = [coloured[j]["label"]] + [coloured[i]["label"] for i in members]
-                    warnings.append(
-                        "merged legend entries printed in one colour: " + " / ".join(labels))
-                    coloured[j]["label"] = " / ".join(labels)
-                drop = {id(coloured[i]) for i in merged_into}
-                classes = [c for c in classes if id(c) not in drop]
-
-            sampled = [(c["label"], np.float32(c["lab"])) for c in classes if c["lab"]]
-            for i in range(len(sampled)):
-                for j in range(i + 1, len(sampled)):
-                    de = float(np.linalg.norm(sampled[i][1] - sampled[j][1]))
-                    if de < DELTA_E_WARN:
-                        warnings.append(
-                            f"low color contrast (dE={de:.1f}) between "
-                            f"'{sampled[i][0]}' and '{sampled[j][0]}' -- Step 4 may conflate them")
-            if sum(1 for c in classes if c["lab"] and c["is_thematic"]) < 2:
-                warnings.append(
-                    "fewer than two legend classes carry a usable colour; deriving "
-                    "classes from map colours instead")
-                classes = []
-
-    if not any(c.get("lab") for c in classes):
-        classes = derive_palette_from_map(map_area, cropped_mask)
-        palette_source = "map-colours"
-        if not sem.legend_present:
-            warnings.append("no legend on this map; classes derived from its dominant colours")
-        if not classes:
-            raise LegendSwatchDetectionError(
-                "Step 2 cannot continue: no legend palette could be read and the map "
-                "content yields no dominant fill colours to derive classes from.")
-
+    palette_source = "legend" if classes else "pending-legend-review"
     (out_dir / "classes.json").write_text(
         json.dumps({"classes": classes, "palette_source": palette_source,
                     "warnings": warnings}, indent=2), encoding="utf-8")
+    _write_legend_review(out_dir, status=review_status, box=legend_box,
+                         expected=expected, detected=detected)
     (out_dir / "geometry.json").write_text(json.dumps({
         "image_size": [w, h],
         "map_boxes_vlm": [list(box) for box in map_boxes],

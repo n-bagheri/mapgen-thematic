@@ -81,7 +81,7 @@ def _label_crop_inputs(labels_path: Path, image_path: Path):
 # vintage implements.  Bump this whenever an endpoint the focused view depends
 # on gains or changes a field, so a page served from a newer checkout can name
 # the mismatch instead of failing later with an "unsupported field" refusal.
-UI_CONTRACT = 3
+UI_CONTRACT = 4
 
 # Every source file this process was started from.  `app.run` deliberately runs
 # without the reloader, so a pipeline job is never killed mid-step -- which also
@@ -155,7 +155,7 @@ STEP_ARTIFACTS = {
 STEP_EXTRA = {
     1: (),
     2: ("step2_layout.json", "map_area.png", "map_mask.png", "map_mask_auto.png",
-        "map_mask_full.png", "map_mask_full_auto.png", "map_mask_review.json",
+        "map_mask_full.png", "map_mask_full_auto.png", "map_mask_review.json", "legend_review.json",
         "map_text_input.png", "legend.png"),
     3: ("step3_raw.json", "step3_raw.sha256", "step3_craft.json",
         "step3_craft.sha256", "step3_lines_raw.json", "step3_lines_raw.sha256",
@@ -271,10 +271,42 @@ def _step1_artifact_error(stem: str) -> str | None:
     return None
 
 
-def _pipeline_error(semantics: MapSemantics | None) -> str | None:
-    # A missing legend no longer blocks the pipeline: Step 2 derives the class
-    # palette from the map's dominant colours instead.  Only the map type
-    # (checked separately via in_scope) can stop a run after Step 1.
+def _legend_review_payload(stem: str) -> dict:
+    path = RUNS_DIR / stem / "legend_review.json"
+    try:
+        saved = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, json.JSONDecodeError):
+        saved = {}
+    if not saved:
+        # Runs completed before the Step 2 legend decision existed retain their
+        # established palette rather than becoming newly blocked on upgrade.
+        try:
+            palette_source = json.loads((RUNS_DIR / stem / "classes.json").read_text(
+                encoding="utf-8")).get("palette_source")
+        except (OSError, json.JSONDecodeError):
+            palette_source = None
+        if palette_source in {"legend", "map-colours"}:
+            return {"version": 1, "status": "legacy", "box": None,
+                    "expected_area_fills": 0, "detected_swatches": 0,
+                    "approved": True}
+    return {
+        "version": 1,
+        "status": str(saved.get("status") or "pending"),
+        "box": saved.get("box") if isinstance(saved.get("box"), list) else None,
+        "expected_area_fills": int(saved.get("expected_area_fills") or 0),
+        "detected_swatches": int(saved.get("detected_swatches") or 0),
+        "approved": bool(saved.get("approved", False)),
+    }
+
+
+def _legend_review_ready(stem: str) -> bool:
+    review = _legend_review_payload(stem)
+    return review["approved"] and review["status"] in {"ready", "derived", "legacy"}
+
+
+def _pipeline_error(semantics: MapSemantics | None, stem: str | None = None) -> str | None:
+    if stem and _legend_review_payload(stem)["status"] == "stopped":
+        return "The pipeline was stopped because no usable legend is available. Choose a different map or rerun Step 1."
     return None
 
 
@@ -282,7 +314,7 @@ def step_done(stem: str, step: int | str) -> bool:
     semantics = _current_semantics(stem)
     if step == 1:
         return semantics is not None
-    if semantics is None or not semantics.in_scope or _pipeline_error(semantics):
+    if semantics is None or not semantics.in_scope or _pipeline_error(semantics, stem):
         return False
     paths = [RUNS_DIR / stem / a for a in STEP_ARTIFACTS[step]]
     if not all(path.exists() for path in paths):
@@ -489,7 +521,7 @@ def _run_single_step(step: int | str, image: Path, log,
         if not sem.in_scope:
             return sem
         if not sem.legend_present:
-            log("no legend read on this map; Step 2 will derive classes from the map colours")
+            log("no legend read on this map; Step 2 will ask the user how to continue")
     elif step == 2:
         from mapgen.isolate import run_step2
         r = run_step2(image, model=model)
@@ -666,7 +698,7 @@ def api_maps():
     for p in map_files():
         semantics = _current_semantics(p.stem)
         step1_error = _step1_artifact_error(p.stem)
-        pipeline_error = _pipeline_error(semantics)
+        pipeline_error = _pipeline_error(semantics, p.stem)
         maps.append({
             "name": p.name,
             "stem": p.stem,
@@ -802,12 +834,14 @@ def api_run():
     semantics = _current_semantics(stem)
     if semantics is not None and not semantics.in_scope and 1 not in steps:
         abort(409, "Step 1 classified this map as out of scope; only Step 1 can be rerun")
-    pipeline_error = _pipeline_error(semantics)
+    pipeline_error = _pipeline_error(semantics, stem)
     if pipeline_error is not None and 1 not in steps:
         abort(409, pipeline_error + " Only Step 1 can be rerun.")
     step1_error = _step1_artifact_error(stem)
     if step1_error is not None and 1 not in steps:
         abort(409, step1_error + " Rerun Step 1 before continuing.")
+    if any(step >= 3 for step in steps) and not _legend_review_ready(stem):
+        abort(409, "Review the Step 2 legend decision before continuing.")
     with _lock:
         job = _jobs.get(stem)
         if job and job["status"] == "running":
@@ -1103,6 +1137,70 @@ def api_maskreview_post(stem: str):
                 invalidated.append(path.name)
     return jsonify({"ok": True, "kept_pixels": int((mask > 0).sum()),
                     "invalidated": invalidated, "downstream_invalidated": bool(invalidated)})
+
+
+@app.get("/api/legendreview/<stem>")
+def api_legendreview_get(stem: str):
+    from mapgen.isolate import imread
+
+    image = find_map(stem)
+    run_dir = RUNS_DIR / stem
+    if image is None or not (run_dir / "geometry.json").exists():
+        abort(404, "run Step 2 before reviewing its legend")
+    source = imread(image)
+    return jsonify(_legend_review_payload(stem) | {
+        "width": int(source.shape[1]), "height": int(source.shape[0]),
+        "source_name": image.name,
+    })
+
+
+@app.post("/api/legendreview/<stem>")
+def api_legendreview_post(stem: str):
+    image = find_map(stem)
+    run_dir = RUNS_DIR / stem
+    if image is None or not (run_dir / "geometry.json").exists():
+        abort(404, "run Step 2 before reviewing its legend")
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict) or set(data) - {"box", "approve", "derive", "stop"}:
+        abort(400, "legend review accepts box, approve, derive, or stop")
+    actions = int("box" in data) + int(data.get("approve") is True) + int(data.get("derive") is True) + int(data.get("stop") is True)
+    if actions != 1:
+        abort(400, "choose exactly one legend-review action")
+    with _lock:
+        job = _jobs.get(stem)
+        if job and job["status"] == "running":
+            abort(409, "a job is running for this map")
+        review = _legend_review_payload(stem)
+        if "box" in data:
+            box = data["box"]
+            if not isinstance(box, list) or len(box) != 4:
+                abort(400, "legend box must be [x0, y0, x1, y1]")
+            try:
+                parsed = tuple(int(round(float(value))) for value in box)
+            except (TypeError, ValueError):
+                abort(400, "legend box coordinates must be numbers")
+            from mapgen.isolate import apply_legend_review_box
+            result = apply_legend_review_box(image, run_dir, parsed)
+            _invalidate_run_from(stem, 3)
+            return jsonify({"ok": True, **result, **_legend_review_payload(stem)})
+        if data.get("approve") is True:
+            if review["status"] != "ready":
+                abort(409, "the detected legend does not match the Step 1 thematic area classes")
+            review["approved"] = True
+            (run_dir / "legend_review.json").write_text(json.dumps(review, indent=2), encoding="utf-8")
+            return jsonify({"ok": True, **review})
+        if data.get("derive") is True:
+            if review["status"] != "missing":
+                abort(409, "map-colour categories can only be chosen when no legend was detected")
+            from mapgen.isolate import derive_palette_from_map_review
+            result = derive_palette_from_map_review(image, run_dir)
+            _invalidate_run_from(stem, 3)
+            return jsonify({"ok": True, **result, **_legend_review_payload(stem)})
+        if review["status"] != "missing":
+            abort(409, "the pipeline can only be stopped through the no-legend decision")
+        review.update({"status": "stopped", "approved": False})
+        (run_dir / "legend_review.json").write_text(json.dumps(review, indent=2), encoding="utf-8")
+        return jsonify({"ok": True, **review})
 
 
 @app.get("/api/labelreview/<stem>")

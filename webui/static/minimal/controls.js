@@ -15,6 +15,7 @@ import {
 } from "./workspace.js";
 import { aggregationGateHtml, bindAggregationEditor } from "./editors/aggregation.js";
 import { bindMaskEditor, maskDecisionHtml } from "./editors/mask.js";
+import { bindLegendReviewEditor, legendReviewHtml } from "./editors/legendreview.js";
 import { bindTextEditor, textEditorHtml } from "./editors/text.js";
 import { bindLineEditor, lineDrawingEditorHtml, lineEditorHtml } from "./editors/lines.js";
 import {
@@ -123,7 +124,6 @@ function readingEditorHtml() {
    is reached by opening the step that owns it. */
 const STEP_EDITORS = {
   1: [readingEditorHtml],
-  2: [maskDecisionHtml],
   3: [textEditorHtml],
   4: [lineEditorHtml, lineDrawingEditorHtml],
   5: [aggregationGateHtml],
@@ -132,6 +132,19 @@ const STEP_EDITORS = {
   8: [brailleDecisionHtml],
   9: [legendDecisionHtml],
 };
+
+function step2Editors(map) {
+  // During Run all, Step 2 is deliberately two sequential decisions: first
+  // review the map mask, then review the legend. Reopening this completed
+  // step in the individual workflow keeps both cards available in order.
+  const pausedAtStep2 = !state.individualRun && state.autorun
+    && !map.steps?.["3"]
+    && (!state.data.mask?.approved || !state.data.legendReview?.approved);
+  if (pausedAtStep2) {
+    return state.data.mask?.approved ? [legendReviewHtml] : [maskDecisionHtml];
+  }
+  return [maskDecisionHtml, legendReviewHtml];
+}
 
 /** The right pane mirrors the detailed page: one row per pipeline step, in
  *  order, carrying that step's status, its controls, and its rerun button.
@@ -153,8 +166,9 @@ function stepStackHtml(map, completedOnly = false) {
     // of those crop thumbnails on every later-step redraw, delaying the map
     // and pattern images that are actually visible. Mount only the open step;
     // opening another row re-renders this stack with that editor hydrated.
+    const editors = number === 2 ? step2Editors(map) : (STEP_EDITORS[number] || []);
     const body = done && expanded
-      ? (STEP_EDITORS[number] || []).map((build) => build(map)).join("")
+      ? editors.map((build) => build(map)).join("")
         || '<p class="section-intro">This step has no settings to review.</p>'
       : done ? "" : `<p class="section-intro">${esc(step.blurb)}</p>`;
     return `<details class="step-section" data-step="${step.key}" ${expanded ? "open" : ""}>
@@ -737,7 +751,7 @@ async function resumeRun() {
   });
 }
 
-/** The automatic run has six human gates: Step 2 mask, Step 5 categories,
+/** The automatic run has six human gates: Step 2 map and legend, Step 5 categories,
  *  Step 6 simplification, Step 7 patterns, Step 8 layout, and Step 9 legend. */
 export async function continuePipeline() {
   if (state.continuing || state.job.status === "running") return;
@@ -757,16 +771,17 @@ export async function continuePipeline() {
       await startJob(missing);
       return;
     }
-    // Existing projects that have already passed Step 2 remain compatible;
-    // the approval is required only before this run starts Step 3.
+    // Both Step 2 decisions are required before this run starts Step 3.
     if (!map.steps?.["3"]) {
       await refreshSelectedData();
-      if (!state.data.mask?.approved) {
+      if (!state.data.mask?.approved || !state.data.legendReview?.approved) {
         state.autorun = true;
         state.activeStep = 2;
-        state.maskBrush.active = true;
+        state.maskBrush.active = !state.data.mask?.approved;
         renderWorkspace(true);
-        toast("Review and approve the detected mask to continue.", "warning");
+        toast(state.data.mask?.approved
+          ? "Review and approve the detected legend to continue."
+          : "Review and approve the detected map area to continue.", "warning");
         return;
       }
     }
@@ -934,6 +949,7 @@ function bindControlEvents() {
   bindPageSetup();
   bindAggregationEditor(continueAfterApproval);
   bindMaskEditor(continueAfterApproval);
+  bindLegendReviewEditor(continueAfterApproval);
   bindTextEditor();
   bindLineEditor();
   bindSimplificationEditor(continueAfterApproval);

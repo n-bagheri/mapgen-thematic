@@ -225,6 +225,35 @@ class Step1GateApiTests(unittest.TestCase):
             self.assertTrue(all(not done for step, done in record["steps"].items()
                                 if step != "1"))
 
+    def test_step3_waits_for_the_step2_legend_decision(self):
+        with TemporaryDirectory() as directory:
+            maps_dir, runs_dir = self.make_project(
+                Path(directory), _semantics("isopleth"))
+            run_dir = runs_dir / "sample"
+            (run_dir / "legend_review.json").write_text(json.dumps({
+                "version": 1, "status": "ready", "box": [1, 2, 30, 40],
+                "expected_area_fills": 1, "detected_swatches": 1, "approved": False,
+            }), encoding="utf-8")
+            with patch.object(server, "MAPS_DIR", maps_dir), \
+                    patch.object(server, "RUNS_DIR", runs_dir):
+                client = server.app.test_client()
+                blocked = client.post("/api/run", json={
+                    "stem": "sample", "steps": [3], "model": server.DEFAULT_MODEL,
+                })
+                self.assertEqual(blocked.status_code, 409)
+                self.assertIn("legend decision", blocked.get_data(as_text=True))
+
+                (run_dir / "legend_review.json").write_text(json.dumps({
+                    "version": 1, "status": "ready", "box": [1, 2, 30, 40],
+                    "expected_area_fills": 1, "detected_swatches": 1, "approved": True,
+                }), encoding="utf-8")
+                with patch.object(server.threading.Thread, "start"):
+                    accepted = client.post("/api/run", json={
+                        "stem": "sample", "steps": [3], "model": server.DEFAULT_MODEL,
+                    })
+                self.assertEqual(accepted.status_code, 200)
+                server._jobs.pop("sample", None)
+
 
 if __name__ == "__main__":
     unittest.main()

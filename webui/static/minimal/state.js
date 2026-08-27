@@ -40,6 +40,7 @@ export const state = {
   pollVisualSignature: "",
   pollControlSignature: "",
   maskBrush: { active: false, mode: "erase", radius: 12, strokes: [] },
+  legendBox: null,       // unsaved [x0, y0, x1, y1] Step 2 legend rectangle
   lineDrawing: { active: false, draft: [], addedIds: [] },
   patternGroup: 0,     // which Step 7 area the transform box is editing
   patternDialog: null, // { kind: "edit" | "change", groupId } in Step 7
@@ -113,8 +114,8 @@ export function statusFor(map) {
   if (job?.status === "failed") return { label: "Pipeline needs attention", className: "is-failed" };
   if (blockingReason(map)) return { label: "Out of scope", className: "is-failed" };
   if (state.selected === map.stem && map.steps?.["2"] && !map.steps?.["3"]
-      && state.data.mask && !state.data.mask.approved) {
-    return { label: "Mask review needed", className: "is-blocked" };
+      && state.data.mask && (!state.data.mask.approved || !state.data.legendReview?.approved)) {
+    return { label: "Map and legend review needed", className: "is-blocked" };
   }
   if (map.steps?.["5"] && !map.step5_review_ready) {
     return { label: "Category review needed", className: "is-blocked" };

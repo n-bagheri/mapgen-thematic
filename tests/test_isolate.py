@@ -573,28 +573,20 @@ class LegendBoxRecoveryTests(unittest.TestCase):
             },
         })
 
-    def test_a_fresh_step1_reading_can_recover_a_table_the_first_read_missed(self):
+    def test_a_failed_table_recovery_does_not_redraw_step1(self):
         layout = self._layout([
             {"box_2d": [120, 33, 880, 500], "label": "ethnographic_table"},
         ])
         initial = self._semantics(["one", "two"])
-        fresh = self._semantics([f"class {index}" for index in range(15)])
-        recovered_box = (12, 1496, 895, 2751)
+        with patch("mapgen.isolate.recover_legend_box", return_value=(None, [])) as recover:
+            box, recovered, warnings = _resolve_legend_box(
+                np.zeros((100, 100, 3), np.uint8), layout, initial)
 
-        with patch("mapgen.isolate.recover_legend_box", side_effect=[
-                (None, []),
-                (recovered_box, ["recovered the ethnographic table"]),
-        ]) as recover:
-            box, recovered, resolved, warnings = _resolve_legend_box(
-                np.zeros((100, 100, 3), np.uint8), layout, initial,
-                redraw=lambda: fresh, retries=2)
-
-        self.assertEqual(box, recovered_box)
-        self.assertTrue(recovered)
-        self.assertIs(resolved, fresh)
-        self.assertEqual(recover.call_args_list[0].args[2], 2)
-        self.assertEqual(recover.call_args_list[1].args[2], 15)
-        self.assertTrue(any("legend table recovered" in warning for warning in warnings))
+        self.assertIsNone(box)
+        self.assertFalse(recovered)
+        self.assertEqual(warnings, [])
+        self.assertEqual(recover.call_count, 1)
+        self.assertEqual(recover.call_args.args[2], 2)
 
 
 
@@ -919,6 +911,12 @@ class Step2GateSafetyTests(unittest.TestCase):
             read_step1.assert_called_once_with(image, model="gemma-test")
             refreshed_raw = json.loads((run_dir / "step1_semantics.json").read_text())
             self.assertEqual(refreshed_raw["legend_entries"], [])
+            classes = json.loads((run_dir / "classes.json").read_text())
+            review = json.loads((run_dir / "legend_review.json").read_text())
+            self.assertEqual(classes["palette_source"], "pending-legend-review")
+            self.assertEqual(classes["classes"], [])
+            self.assertEqual(review["status"], "missing")
+            self.assertFalse(review["approved"])
 
 
 

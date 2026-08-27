@@ -4,6 +4,7 @@ import { $, artifactUrl, esc, legendSwatchUrl, mapUrl } from "./api.js";
 import { STEP_DEFS, STEP_VIEWS, viewedStep } from "./steps.js";
 import { state, toast } from "./state.js";
 import { bindMaskCanvas } from "./editors/mask.js";
+import { bindLegendReviewOverlay } from "./editors/legendreview.js";
 import { bindBrailleOverlay } from "./editors/braille.js";
 import { bindLegendOverlay } from "./editors/legend.js";
 import { cachedPreviewUrl, preloadPreviews } from "./preview-cache.js";
@@ -247,9 +248,11 @@ export function renderVisual() {
   const map = selectedFromState();
   if (!map) return;
   const step = activeStep(map);
-  // Step 2 now always uses the decision card, which intentionally has no
-  // separate "start painting" button. Selecting it activates its brush.
-  state.maskBrush.active = step === 2 && Boolean(state.data.mask);
+  // During Run all, the first Step 2 decision is the map mask. Once it is
+  // approved, the legend review replaces that card and the brush is inactive.
+  // Reopening Step 2 individually keeps the mask tools available for review.
+  state.maskBrush.active = step === 2 && Boolean(state.data.mask)
+    && (!state.data.mask?.approved || state.individualRun);
   if (step !== 4) state.lineDrawing.active = false;
   const definition = STEP_DEFS.find((item) => item.key === String(step));
   const views = STEP_VIEWS[step] || [];
@@ -369,6 +372,7 @@ function bindVisualEvents() {
     });
   });
   bindMaskCanvas();
+  bindLegendReviewOverlay();
   bindLineDrawingSurface();
   bindBrailleOverlay();
   bindLegendOverlay();

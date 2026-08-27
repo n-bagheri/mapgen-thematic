@@ -2,7 +2,7 @@
 
 import {
   $, artifactJson, getAggregationReview, getBrailleLayout, getCategoryColors,
-  getJob, getLabelReview, getLegendLayout, getLineReview, getMaps, getMaskReview,
+  getJob, getLabelReview, getLegendLayout, getLegendReview, getLineReview, getMaps, getMaskReview,
   getModels, getPageLayout, getPatternData, getSpec, getStep6Params, getStep6Presets,
   getStep7Review, getStep8Review, getStep9Review,
   runSteps, saveStep6Params, staleServerAdvice, uploadFile,
@@ -100,6 +100,7 @@ export async function selectMap(stem) {
   state.panMode = false;
   state.colourView = false;
   state.maskBrush = { active: false, mode: "erase", radius: 12, strokes: [] };
+  state.legendBox = null;
   state.lineDrawing = { active: false, draft: [], addedIds: [] };
   state.activeStep = null;   // follow the run until the reader opens a step
   if (navCoversWorkspace()) setNav(false);   // otherwise the library stays open
@@ -123,6 +124,7 @@ export async function refreshSelectedData() {
     step6: safe(getStep6Params(stem)),
     semantics: when(map.steps?.["1"], () => artifactJson(stem, "step1_semantics.json")),
     mask: when(map.steps?.["2"], () => getMaskReview(stem)),
+    legendReview: when(map.steps?.["2"], () => getLegendReview(stem)),
     labels: when(map.steps?.["3"], () => getLabelReview(stem)),
     lines: when(map.steps?.["4"], () => getLineReview(stem)),
     classesFinal: when(map.steps?.["4"], () => artifactJson(stem, "classes_final.json")),
@@ -258,6 +260,8 @@ function pollingControlSignature(map) {
     (state.job.steps || []).join(","),
     completedSignature(map),
     String(state.data.mask?.approved),
+    String(state.data.legendReview?.approved),
+    state.data.legendReview?.status || "",
     String(map?.step5_review_ready),
     String(map?.step6_review_ready),
     String(map?.step7_review_ready),
@@ -333,14 +337,16 @@ function startPolling(immediate = false) {
         toast(blocked, "error");
         return;
       }
-      // The mask is the first human gate.  Its image and brush stay in the
-      // middle pane while the right pane contains decisions only.
+      // Step 2 pauses first for map-mask confirmation, then for legend
+      // confirmation on the shared middle-pane source image.
       if (state.autorun && map?.steps?.["2"] && !map.steps?.["3"]
-          && !state.data.mask?.approved) {
+          && (!state.data.mask?.approved || !state.data.legendReview?.approved)) {
         state.activeStep = 2;
-        state.maskBrush.active = true;
+        state.maskBrush.active = !state.data.mask?.approved;
         renderWorkspace(true);
-        toast("Review and approve the detected mask to continue.", "warning");
+        toast(state.data.mask?.approved
+          ? "Review and approve the detected legend to continue."
+          : "Review and approve the detected map area to continue.", "warning");
         return;
       }
       // The second gate is the Step 5 category review. Once each decision is
