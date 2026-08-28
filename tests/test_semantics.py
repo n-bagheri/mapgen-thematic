@@ -92,6 +92,25 @@ class SemanticsArtifactTests(unittest.TestCase):
         self.assertFalse(semantics_artifact_is_current(self.artifact))
 
 
+class MapSemanticsRootListTests(unittest.TestCase):
+    def test_single_object_root_list_is_unwrapped_deterministically(self):
+        semantics = MapSemantics.model_validate([_semantics("Italian")])
+
+        self.assertEqual(semantics.map_language, "Italian")
+
+    def test_empty_root_list_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "empty top-level list"):
+            MapSemantics.model_validate([])
+
+    def test_multiple_root_objects_are_rejected_without_choosing_one(self):
+        with self.assertRaisesRegex(ValueError, "top-level list with 2 items"):
+            MapSemantics.model_validate([_semantics(), _semantics()])
+
+    def test_non_object_root_list_item_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "not an object"):
+            MapSemantics.model_validate(["not a semantic record"])
+
+
 class LegendEncodingTests(unittest.TestCase):
     def test_all_fill_legend_entries_are_preserved_as_area_fills(self):
         payload = _semantics()

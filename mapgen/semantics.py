@@ -150,7 +150,23 @@ class MapSemantics(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _upgrade_cached_semantics(cls, data: object) -> object:
-        """Allow pre-language Step 1 artifacts to remain readable downstream."""
+        """Normalize one deterministic response-shape error, then upgrade artifacts."""
+        # Some model endpoints occasionally wrap a single complete semantic
+        # record in a top-level JSON list. That wrapper carries no meaning, so
+        # unwrapping exactly one object is deterministic. Any other list is
+        # ambiguous or malformed and must be rejected rather than guessing.
+        if isinstance(data, list):
+            if not data:
+                raise ValueError("MapSemantics requires one object; received an empty top-level list")
+            if len(data) != 1:
+                raise ValueError(
+                    "MapSemantics requires one object; received a top-level list "
+                    f"with {len(data)} items")
+            if not isinstance(data[0], dict):
+                raise ValueError(
+                    "MapSemantics requires one object; the only top-level list item "
+                    f"is {type(data[0]).__name__}, not an object")
+            data = data[0]
         if isinstance(data, dict):
             data = {**data}
             if not data.get("map_language"):
