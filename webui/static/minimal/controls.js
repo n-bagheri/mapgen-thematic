@@ -84,11 +84,14 @@ function readingEditorHtml() {
     return editorDetails("reading", "1", "What the system read", "",
       '<div class="empty-editor">The Step 1 reading is not available.</div>');
   }
-  const classes = Array.isArray(sem.thematic_classes) ? sem.thematic_classes : [];
+  const thematicClasses = Array.isArray(sem.thematic_classes) ? sem.thematic_classes : [];
+  const legendEntries = Array.isArray(sem.legend_entries) ? sem.legend_entries : [];
+  const classes = legendEntries.filter((item) =>
+    item?.is_thematic && item.kind === "area_fill");
   const visibleClasses = classes.slice(0, 6);
   const hiddenClasses = classes.slice(6);
   const more = Math.max(0, classes.length - visibleClasses.length);
-  const detailRows = classes.map((item) => `<li><span>${esc(item.label)}</span>
+  const detailRows = thematicClasses.map((item) => `<li><span>${esc(item.label)}</span>
     ${Number.isFinite(Number(item.approx_area_share_percent))
       ? `<small>${esc(item.approx_area_share_percent)}% estimated area</small>` : ""}</li>`).join("");
   const body = `

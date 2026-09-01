@@ -14,6 +14,7 @@ from mapgen.isolate import (
     _detect_for_entries,
     _layout_furniture,
     _resolve_legend_box,
+    _sample_legend_classes,
     _validate_layout_root,
     _colorbar_split_is_papery,
     drop_frame_label_boxes,
@@ -591,6 +592,59 @@ class LegendBoxRecoveryTests(unittest.TestCase):
 
 
 class LegendAreaFillPaletteTests(unittest.TestCase):
+    @staticmethod
+    def _semantics(labels):
+        return MapSemantics.model_validate({
+            "map_type": "area_class_chorochromatic", "in_scope": True,
+            "data_ordering": "qualitative", "map_language": "English",
+            "subject": "synthetic", "description": "synthetic", "title": None,
+            "legend_present": True, "legend_title": None,
+            "legend_entries": [{
+                "label": label, "color_hint": "synthetic", "is_thematic": True,
+                "kind": "area_fill",
+            } for label in labels],
+            "water_present": False,
+            "thematic_classes": [{
+                "label": label, "priority": index + 1,
+                "approx_area_share_percent": 1,
+            } for index, label in enumerate(labels)],
+            "non_thematic": [], "lines": [],
+            "overlay_text": {
+                "has_city_labels": False, "capital_city": None,
+                "has_region_labels": False, "has_line_labels": False, "notes": "",
+            },
+        })
+
+    def test_near_paper_and_close_colour_samples_remain_separate_classes(self):
+        labels = ["paper-coloured", "blue one", "blue two"]
+        semantics = self._semantics(labels)
+        rects = [(0, 0, 1, 1), (1, 0, 1, 1), (2, 0, 1, 1)]
+        samples = [
+            ([250, 250, 250], [95.0, 0.0, 0.0]),
+            ([40, 80, 160], [50.0, 10.0, 10.0]),
+            ([41, 81, 161], [51.0, 10.0, 10.0]),
+        ]
+
+        with patch("mapgen.isolate._detect_for_entries", return_value=(
+                semantics.legend_entries, rects, [])), patch(
+                "mapgen.isolate.legend_paper_lab",
+                return_value=np.float32([95.0, 0.0, 0.0])), patch(
+                "mapgen.isolate.sample_swatch", side_effect=samples):
+            classes, expected, detected, warnings = _sample_legend_classes(
+                np.zeros((2, 3, 3), np.uint8), semantics)
+
+        self.assertEqual(expected, 3)
+        self.assertEqual(detected, 3)
+        self.assertEqual([row["label"] for row in classes], labels)
+        self.assertFalse(any("dropped legend entries" in warning for warning in warnings))
+        self.assertFalse(any("merged legend entries" in warning for warning in warnings))
+        self.assertTrue(any(
+            "low color contrast" in warning
+            and "'blue one'" in warning
+            and "'blue two'" in warning
+            for warning in warnings
+        ))
+
     def test_only_thematic_area_fills_count_toward_expected_swatch_count(self):
         entries = MapSemantics.model_validate({
             "map_type": "area_class_chorochromatic", "in_scope": True,

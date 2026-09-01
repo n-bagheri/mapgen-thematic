@@ -1394,10 +1394,8 @@ def sample_swatch(
 # --------------------------------------------------------------------------- runner
 
 DELTA_E_WARN = 10.0
-# Below this LAB distance two sampled classes (or a class and the paper) are
-# not a printed palette but a detection artifact: every healthy run in this
-# project separates its classes by >= 10, while glyph legends and mis-split
-# grids sample at 0-2.2.
+# A proposed colour-bar split with multiple cells this close to the paper is a
+# detection artifact (usually paper gaps or label text), not a discrete bar.
 MIN_CLASS_SEPARATION = 3.0
 
 
@@ -1659,36 +1657,6 @@ def _sample_legend_classes(legend_img: np.ndarray, sem: MapSemantics) -> tuple[l
             "hex": "#{:02x}{:02x}{:02x}".format(*rgb),
             "swatch_bbox_orig": [x, y, sw_, sh_],
         })
-
-    papery = [c for c in classes if c["lab"]
-              and float(np.linalg.norm(np.float32(c["lab"]) - paper)) < MIN_CLASS_SEPARATION]
-    if papery:
-        warnings.append(
-            "dropped legend entries sampled as bare paper: "
-            + ", ".join(f"'{c['label']}'" for c in papery[:6]))
-        papery_ids = {id(c) for c in papery}
-        classes = [c for c in classes if id(c) not in papery_ids]
-
-    coloured = [c for c in classes if c["lab"]]
-    merged_into: dict[int, int] = {}
-    for i in range(len(coloured)):
-        for j in range(i):
-            if j in merged_into:
-                continue
-            de = float(np.linalg.norm(np.float32(coloured[i]["lab"]) - np.float32(coloured[j]["lab"])))
-            if de < MIN_CLASS_SEPARATION:
-                merged_into[i] = j
-                break
-    if merged_into:
-        groups: dict[int, list[int]] = {}
-        for i, j in merged_into.items():
-            groups.setdefault(j, []).append(i)
-        for j, members in groups.items():
-            labels = [coloured[j]["label"]] + [coloured[i]["label"] for i in members]
-            warnings.append("merged legend entries printed in one colour: " + " / ".join(labels))
-            coloured[j]["label"] = " / ".join(labels)
-        drop = {id(coloured[i]) for i in merged_into}
-        classes = [c for c in classes if id(c) not in drop]
 
     sampled = [(c["label"], np.float32(c["lab"])) for c in classes if c["lab"]]
     for i in range(len(sampled)):
