@@ -447,6 +447,11 @@ function titleMarkup(title) {
   const [boxW, boxH] = metrics.box_size_px || [title.box_width_px || 100, 40];
   const lines = metrics.lines || String(title.braille_text || "").split("\n");
   const offsets = metrics.line_offsets_px || [metrics.text_offset_px || [0, 0]];
+  const englishMetricsCurrent = String(metrics.english_text || "") === String(title.text || "");
+  const englishLines = englishMetricsCurrent && Array.isArray(metrics.english_lines)
+    ? metrics.english_lines : String(title.text || "").split("\n");
+  const englishOffsets = metrics.english_line_offsets_px || [];
+  const showEnglish = state.data.step7Review?.create_hybrid_map === true;
   return `<g class="braille-title-object${title.enabled === false ? " is-hidden" : ""}"
       data-braille-title transform="translate(${x} ${y})" role="button" tabindex="0"
       aria-label="Move or resize the page title">
@@ -454,7 +459,16 @@ function titleMarkup(title) {
       const offset = offsets[index] || offsets.at(-1) || [0, 0];
       return `<text x="${offset[0]}" y="${Number(offset[1]) + (Number(metrics.font_ascent_px) || 0)}"
         font-size="${Number(metrics.font_size_px) || 42}">${esc(line)}</text>`;
-    }).join("")}</g>
+    }).join("")}${showEnglish ? englishLines.map((line, index) => {
+      const first = englishOffsets[0];
+      const offset = englishOffsets[index] || (first
+        ? [first[0], Number(first[1]) + index * Number(metrics.english_line_spacing_px || 25)]
+        : null);
+      if (!offset) return "";
+      return `<text class="english-rendered-text" x="${offset[0]}" y="${offset[1]}"
+        font-size="${Number(metrics.english_font_size_px) || 35}"
+        dominant-baseline="hanging">${esc(line)}</text>`;
+    }).join("") : ""}</g>
     <rect class="selection-box title-selection" width="${boxW}" height="${boxH}"></rect>
     <rect class="resize-handle title-resize" x="${boxW - 7}" y="${Math.max(0, boxH - 7)}"
       width="14" height="14" data-title-resize></rect>

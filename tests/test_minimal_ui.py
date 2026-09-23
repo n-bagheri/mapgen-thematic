@@ -577,6 +577,9 @@ class EditorCoverageTests(unittest.TestCase):
         self.assertIn('id="simplification-decision"', simplification)
         self.assertIn('id="preset-slider"', simplification)
         self.assertIn("Use this level &amp; continue", simplification)
+        for removed_stat in ("regions</span>", "small regions merged",
+                             "tiny islands removed", "preset-stats"):
+            self.assertNotIn(removed_stat, simplification)
         self.assertIn(".simplification-decision", stylesheet)
 
     def test_step_4_can_draw_undo_and_discard_manual_lines(self):
@@ -623,6 +626,8 @@ class EditorCoverageTests(unittest.TestCase):
         self.assertIn("7: [patternDecisionHtml]", self.controls)
         for control_id in ("preserve-haptic-distances", "create-hybrid-map"):
             self.assertIn(f'modeButton("{control_id}"', patterns)
+        self.assertIn('"Use optimized patterns"', patterns)
+        self.assertIn("button.disabled = review.preserve_haptic_distances", patterns)
         self.assertIn('id="approve-patterns"', patterns)
         for action in ("data-edit-pattern", "data-change-pattern", "data-pattern-colour"):
             self.assertIn(action, patterns)
@@ -663,6 +668,7 @@ class EditorCoverageTests(unittest.TestCase):
         approval = self.controls[self.controls.index("async function continueAfterApproval()"):
                                  self.controls.index("async function continueAfterLegendApproval()")]
         self.assertIn("renderWorkspace(true)", approval)
+
         self.assertNotIn('startJob(["9"])', approval)
         decision = braille[braille.index("export function brailleDecisionHtml()"):
                            braille.index("export function bindBrailleEditor")]
@@ -690,6 +696,23 @@ class EditorCoverageTests(unittest.TestCase):
         self.assertIn("originalCompare: true", block)
         self.assertIn("pageRender: true", block)
         self.assertIn(".braille-decision", stylesheet)
+
+    def test_blue_english_overlay_is_limited_to_titles_and_legend_text(self):
+        braille = (MINIMAL_DIR / "editors" / "braille.js").read_text(encoding="utf-8")
+        legend = (MINIMAL_DIR / "editors" / "legend.js").read_text(encoding="utf-8")
+        stylesheet = (STATIC / "minimal.css").read_text(encoding="utf-8")
+        label_markup = braille[braille.index("function labelMarkup"):
+                               braille.index("function titleMarkup")]
+        title_markup = braille[braille.index("function titleMarkup"):
+                               braille.index("export function bindBrailleOverlay")]
+        self.assertNotIn("english-rendered-text", label_markup)
+        self.assertIn("english-rendered-text", title_markup)
+        self.assertIn("english-rendered-text", legend)
+        self.assertIn("state.data.step7Review?.create_hybrid_map === true", title_markup)
+        self.assertIn("state.data.step7Review?.create_hybrid_map === true", legend)
+        self.assertIn("#0066cc", stylesheet)
+        self.assertIn("font-family: Verdana", stylesheet)
+        self.assertIn("font-size: 20pt", stylesheet)
 
     def test_step_9_is_a_final_legend_decision_with_map_comparison(self):
         legend = (MINIMAL_DIR / "editors" / "legend.js").read_text(encoding="utf-8")

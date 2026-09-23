@@ -26,9 +26,15 @@ from .output_spec import OutputSpec
 # Bump this whenever the printable composition changes.  The Web UI uses this
 # value to recognize an artifact rendered by an older renderer and offers a
 # rerun instead of presenting an out-of-date full-size PNG.
-BRAILLE_LAYOUT_VERSION = 9
+BRAILLE_LAYOUT_VERSION = 11
 RENDER_PX_PER_MM = 5.0
 BRAILLE_FONT_SIZE_PT = 24.0
+ENGLISH_FONT_FAMILY = "Verdana"
+ENGLISH_FONT_SIZE_PT = 20.0
+ENGLISH_TEXT_GAP_MM = 6.0
+ENGLISH_LINE_SPACING_MM = 8.0
+ENGLISH_TEXT_COLOR = "#0066CC"
+ENGLISH_TEXT_RGB = (0, 102, 204)
 BRAILLE_PADDING_MM = 3.0
 # This is a print-space measurement: the centres of corresponding Braille
 # dots on consecutive title lines must be 10 mm apart.
@@ -59,6 +65,60 @@ def braille_font_path() -> Path:
             "in assets/fonts/."
         )
     return path
+
+
+def english_font(px_per_mm: float) -> ImageFont.ImageFont:
+    """Load Verdana for the blue visual-text counterpart."""
+    pixels = max(1, int(round(ENGLISH_FONT_SIZE_PT * 25.4 / 72.0 * px_per_mm)))
+    candidates = (
+        Path("C:/Windows/Fonts/verdana.ttf"),
+        Path("/usr/share/fonts/truetype/msttcorefonts/Verdana.ttf"),
+        Path("/usr/share/fonts/truetype/msttcorefonts/verdana.ttf"),
+        Path("/Library/Fonts/Verdana.ttf"),
+    )
+    for path in candidates:
+        if path.is_file():
+            return ImageFont.truetype(str(path), pixels)
+    raise FileNotFoundError("Verdana is required to render hybrid English text")
+
+
+def hybrid_text_enabled(out_dir: Path) -> bool:
+    """Return whether Step 7 enabled the hybrid map and its print-text layer."""
+    try:
+        review = json.loads((out_dir / "step7_review.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return review.get("create_hybrid_map") is True
+
+
+def wrapped_text_lines(text: str, font: ImageFont.ImageFont,
+                       width_px: float) -> list[str]:
+    """Wrap multiline print text without changing its stored value."""
+    lines: list[str] = []
+    for paragraph in (text.split("\n") if text else [""]):
+        current = ""
+        for word in (paragraph.split(" ") if paragraph else [""]):
+            if font.getlength(word or " ") > width_px:
+                if current:
+                    lines.append(current)
+                    current = ""
+                chunk = ""
+                for character in word:
+                    if chunk and font.getlength(chunk + character) > width_px:
+                        lines.append(chunk)
+                        chunk = character
+                    else:
+                        chunk += character
+                current = chunk
+                continue
+            candidate = word if not current else f"{current} {word}"
+            if current and font.getlength(candidate) > width_px:
+                lines.append(current)
+                current = word
+            else:
+                current = candidate
+        lines.append(current)
+    return lines
 
 
 def repair_label_text(value: object) -> str:
@@ -509,6 +569,10 @@ def build_braille_layout(overlay: dict, previous: dict | None = None,
             "collision_policy": "manual",
         },
         "render_px_per_mm": float(px_per_mm),
+        "english_font": {"family": ENGLISH_FONT_FAMILY,
+                         "size_pt": ENGLISH_FONT_SIZE_PT,
+                         "color": ENGLISH_TEXT_COLOR,
+                         "gap_mm": ENGLISH_TEXT_GAP_MM},
         "toolbox": {
             "fix_text_to_map": bool((previous or {}).get("toolbox", {}).get(
                 "fix_text_to_map", False)),
@@ -647,10 +711,13 @@ def _draw_label(draw: ImageDraw.ImageDraw, label: dict, font: ImageFont.FreeType
 
 
 def _draw_title(draw: ImageDraw.ImageDraw, title: dict, font: ImageFont.FreeTypeFont,
-                px_per_mm: float, page: dict) -> dict:
+                px_per_mm: float, page: dict,
+                print_font: ImageFont.ImageFont | None = None) -> dict:
     """Draw the page title without a location pin, centered above the map."""
     padding = int(round(BRAILLE_PADDING_MM * px_per_mm))
     braille = str(title.get("braille_text") or "")
+    english = repair_multiline_text(title.get("text"))
+    print_font = print_font or english_font(px_per_mm)
     page_width = float(page["canvas_px"][0])
     inset = (float(page.get("margin_mm", 0)) +
              float(title.get("page_inset_from_margin_mm", TITLE_PAGE_INSET_MM))) * px_per_mm
@@ -659,39 +726,14 @@ def _draw_title(draw: ImageDraw.ImageDraw, title: dict, font: ImageFont.FreeType
     box_w = min(page_width, max(30 * px_per_mm,
                                float(title.get("box_width_px", page_width - 2 * inset))))
     content_width = max(1, box_w - 2 * padding)
-    lines: list[str] = []
-    for paragraph in (braille.split("\n") if braille else [""]):
-        words = paragraph.split(" ") if paragraph else [""]
-        current = ""
-        for word in words:
-            if font.getlength(word or " ") > content_width:
-                if current:
-                    lines.append(current)
-                    current = ""
-                chunk = ""
-                for cell in word:
-                    if chunk and font.getlength(chunk + cell) > content_width:
-                        lines.append(chunk)
-                        chunk = cell
-                    else:
-                        chunk += cell
-                current = chunk
-                continue
-            candidate = word if not current else f"{current} {word}"
-            if current and font.getlength(candidate) > content_width:
-                lines.append(current)
-                current = word
-            else:
-                current = candidate
-        lines.append(current)
+    lines = wrapped_text_lines(braille, font, content_width)
     line_bboxes = [font.getbbox(line or " ") for line in lines]
     line_height = max(1, max(box[3] - box[1] for box in line_bboxes))
     line_advance = BRAILLE_LINE_SPACING_MM * px_per_mm
     text_w = max(1, int(math.ceil(max(font.getlength(line or " ") for line in lines))))
-    box_h = line_height + max(0, len(lines) - 1) * line_advance + 2 * padding
+    braille_height = line_height + max(0, len(lines) - 1) * line_advance
     box_x = min(max(box_x, 0.0), max(0.0, page_width - box_w))
     page_height = float(page["canvas_px"][1])
-    box_y = min(max(box_y, 0.0), max(0.0, page_height - box_h))
     align = str(title.get("align", "center")).lower()
     if align not in TITLE_ALIGNS:
         align = "center"
@@ -705,6 +747,29 @@ def _draw_title(draw: ImageDraw.ImageDraw, title: dict, font: ImageFont.FreeType
         else:
             text_x = (box_w - line_width) / 2.0 - bbox[0]
         line_offsets.append([round(text_x, 3), round(padding - bbox[1] + index * line_advance, 3)])
+
+    english_lines = wrapped_text_lines(english, print_font, content_width)
+    english_bboxes = [print_font.getbbox(line or " ") for line in english_lines]
+    english_line_height = max(1, max(box[3] - box[1] for box in english_bboxes))
+    english_line_advance = max(english_line_height, ENGLISH_LINE_SPACING_MM * px_per_mm)
+    english_height = (english_line_height
+                      + max(0, len(english_lines) - 1) * english_line_advance)
+    english_top = padding + braille_height + ENGLISH_TEXT_GAP_MM * px_per_mm
+    english_offsets = []
+    for index, (line, bbox) in enumerate(zip(english_lines, english_bboxes)):
+        line_width = print_font.getlength(line or " ")
+        if align == "left":
+            text_x = padding - bbox[0]
+        elif align == "right":
+            text_x = box_w - padding - line_width - bbox[0]
+        else:
+            text_x = (box_w - line_width) / 2.0 - bbox[0]
+        english_offsets.append([
+            round(text_x, 3),
+            round(english_top - bbox[1] + index * english_line_advance, 3),
+        ])
+    box_h = english_top + english_height + padding
+    box_y = min(max(box_y, 0.0), max(0.0, page_height - box_h))
     if title.get("enabled", True) and braille:
         for line, offset in zip(lines, line_offsets):
             draw.text((round(box_x + offset[0]), round(box_y + offset[1])), line, font=font, fill=0)
@@ -723,10 +788,34 @@ def _draw_title(draw: ImageDraw.ImageDraw, title: dict, font: ImageFont.FreeType
         "line_height_px": line_height,
         "line_spacing_px": line_advance,
         "line_spacing_mm": BRAILLE_LINE_SPACING_MM,
+        "english_text": english,
+        "english_font_size_px": int(getattr(print_font, "size", ENGLISH_FONT_SIZE_PT)),
+        "english_color": ENGLISH_TEXT_COLOR,
+        "english_lines": english_lines,
+        "english_line_offsets_px": english_offsets,
+        "english_line_height_px": english_line_height,
+        "english_line_spacing_px": english_line_advance,
+        "english_gap_mm": ENGLISH_TEXT_GAP_MM,
         "align": align,
     }
     return {"id": "map-title", "box_page_px": [round(box_x, 3), round(box_y, 3),
                                                      round(box_x + box_w, 3), round(box_y + box_h, 3)]}
+
+
+def _draw_english_title(canvas: Image.Image, monochrome: Image.Image,
+                        title: dict, font: ImageFont.ImageFont) -> Image.Image:
+    """Add the blue print title while preserving every tactile black pixel."""
+    if title.get("enabled", True) and title.get("braille_text"):
+        draw = ImageDraw.Draw(canvas)
+        x, y = _point(title.get("position_page_px"), [0.0, 0.0])
+        metrics = title.get("render_metrics", {})
+        for line, offset in zip(metrics.get("english_lines", []),
+                                metrics.get("english_line_offsets_px", [])):
+            draw.text((round(x + offset[0]), round(y + offset[1])), line,
+                      font=font, fill=ENGLISH_TEXT_RGB)
+    pixels = np.asarray(canvas).copy()
+    pixels[np.asarray(monochrome) < 128] = (0, 0, 0)
+    return Image.fromarray(pixels)
 
 
 def _north_marker_image(size_px: int) -> Image.Image:
@@ -781,6 +870,8 @@ def render_braille_layout(out_dir: Path, layout: dict, *, rebuild_base: bool = T
     with Image.open(base_path) as map_source:
         map_size = map_source.size
     px_per_mm = float(layout.get("render_px_per_mm", RENDER_PX_PER_MM))
+    hybrid_english = hybrid_text_enabled(out_dir)
+    layout["hybrid_english_text"] = hybrid_english
     page = layout.get("page", {})
     page_size = tuple(int(v) for v in page.get("canvas_px", map_size))
     map_origin = tuple(float(v) for v in page.get("map_origin_px", [0, 0]))
@@ -815,10 +906,11 @@ def render_braille_layout(out_dir: Path, layout: dict, *, rebuild_base: bool = T
     base_black = np.asarray(page_canvas).copy()
     font_px = max(1, int(round(BRAILLE_FONT_SIZE_PT * 25.4 / 72.0 * px_per_mm)))
     font = ImageFont.truetype(str(braille_font_path()), font_px)
+    print_font = english_font(px_per_mm)
     draw = ImageDraw.Draw(page_canvas)
     rendered = []
     title = layout.get("title", {})
-    title_metrics = _draw_title(draw, title, font, px_per_mm, page)
+    title_metrics = _draw_title(draw, title, font, px_per_mm, page, print_font)
     rendered_title = title_metrics if title.get("enabled", True) and title.get("braille_text") else None
     for label in layout.get("labels", []):
         label["render_metrics"] = _render_metrics(label, font, px_per_mm)
@@ -836,7 +928,11 @@ def render_braille_layout(out_dir: Path, layout: dict, *, rebuild_base: bool = T
             hybrid_pixels = np.asarray(existing_hybrid_base.convert("RGB")).copy()
         black = np.asarray(page_canvas) < 128
         hybrid_pixels[black] = (0, 0, 0)
-        Image.fromarray(hybrid_pixels).save(out_dir / "step8_hybrid.png", dpi=(dpi, dpi))
+        hybrid_output = Image.fromarray(hybrid_pixels)
+        if hybrid_english:
+            hybrid_output = _draw_english_title(
+                hybrid_output, page_canvas, title, print_font)
+        hybrid_output.save(out_dir / "step8_hybrid.png", dpi=(dpi, dpi))
     elif hybrid_path.exists():
         hybrid_page = Image.new("RGB", page_size, "white")
         with Image.open(hybrid_path) as hybrid_map:
@@ -849,7 +945,11 @@ def render_braille_layout(out_dir: Path, layout: dict, *, rebuild_base: bool = T
         hybrid_pixels = np.asarray(hybrid_page).copy()
         black = np.asarray(page_canvas) < 128
         hybrid_pixels[black] = (0, 0, 0)
-        Image.fromarray(hybrid_pixels).save(out_dir / "step8_hybrid.png", dpi=(dpi, dpi))
+        hybrid_output = Image.fromarray(hybrid_pixels)
+        if hybrid_english:
+            hybrid_output = _draw_english_title(
+                hybrid_output, page_canvas, title, print_font)
+        hybrid_output.save(out_dir / "step8_hybrid.png", dpi=(dpi, dpi))
     report = {
         "renderer_version": BRAILLE_LAYOUT_VERSION,
         "source_artifact": "step8a_cleanup.png",

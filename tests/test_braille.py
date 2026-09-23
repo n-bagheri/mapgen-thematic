@@ -277,7 +277,51 @@ class BrailleConversionTests(unittest.TestCase):
                     Image.open(out_dir / "step8_braille.png") as rendered:
                 # A transparent title may add black dots, but must never turn
                 # an existing dark map pixel into a lighter/white pixel.
-                self.assertIsNone(ImageChops.subtract(rendered, base).getbbox())
+                self.assertIsNone(ImageChops.subtract(rendered.convert("L"), base).getbbox())
+
+    def test_blue_english_is_added_for_the_title_but_not_map_labels(self):
+        with TemporaryDirectory() as directory:
+            out_dir = Path(directory)
+            Image.new("L", (240, 160), 255).save(out_dir / "step8a_cleanup.png")
+            Image.new("RGB", (240, 160), "white").save(out_dir / "step8a_hybrid.png")
+            (out_dir / "step7_review.json").write_text(json.dumps({
+                "create_hybrid_map": True,
+            }), encoding="utf-8")
+            layout = build_braille_layout(overlay_fixture(), detected_title="Land use")
+            render_braille_layout(out_dir, layout)
+            with Image.open(out_dir / "step8_braille.png") as rendered:
+                colors = rendered.convert("RGB").getcolors(rendered.width * rendered.height)
+            self.assertFalse(any(blue > red and blue > green
+                                 for _, (red, green, blue) in colors))
+            with Image.open(out_dir / "step8_hybrid.png") as rendered:
+                colors = rendered.convert("RGB").getcolors(rendered.width * rendered.height)
+            self.assertTrue(any(blue > red and blue > green
+                                for _, (red, green, blue) in colors))
+            metrics = layout["title"]["render_metrics"]
+            self.assertEqual(layout["english_font"]["family"], "Verdana")
+            self.assertEqual(layout["english_font"]["size_pt"], 20.0)
+            self.assertEqual(metrics["english_gap_mm"], 6.0)
+            self.assertGreater(metrics["english_line_offsets_px"][0][1],
+                               metrics["line_offsets_px"][-1][1])
+
+            layout["title"]["enabled"] = False
+            render_braille_layout(out_dir, layout, rebuild_base=False)
+            with Image.open(out_dir / "step8_hybrid.png") as rendered:
+                colors = rendered.convert("RGB").getcolors(rendered.width * rendered.height)
+            self.assertFalse(any(blue > red and blue > green
+                                 for _, (red, green, blue) in colors))
+
+    def test_hybrid_output_has_no_english_until_step7_enables_it(self):
+        with TemporaryDirectory() as directory:
+            out_dir = Path(directory)
+            Image.new("L", (240, 160), 255).save(out_dir / "step8a_cleanup.png")
+            Image.new("RGB", (240, 160), "white").save(out_dir / "step8a_hybrid.png")
+            render_braille_layout(
+                out_dir, build_braille_layout(overlay_fixture(), detected_title="Land use"))
+            with Image.open(out_dir / "step8_hybrid.png") as rendered:
+                colors = rendered.convert("RGB").getcolors(rendered.width * rendered.height)
+            self.assertFalse(any(blue > red and blue > green
+                                 for _, (red, green, blue) in colors))
 
     def test_manual_labels_and_title_edits_persist(self):
         with TemporaryDirectory() as directory:

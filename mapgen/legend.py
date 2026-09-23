@@ -9,13 +9,15 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 from .braille import (BRAILLE_FONT_SIZE_PT, BRAILLE_LINE_SPACING_MM,
-                      RENDER_PX_PER_MM, braille_font_path,
+                      ENGLISH_FONT_FAMILY, ENGLISH_FONT_SIZE_PT, ENGLISH_LINE_SPACING_MM,
+                      ENGLISH_TEXT_COLOR, ENGLISH_TEXT_GAP_MM, ENGLISH_TEXT_RGB,
+                      RENDER_PX_PER_MM, braille_font_path, english_font, hybrid_text_enabled,
                       repair_label_text, repair_multiline_text,
-                      to_grade1_font_text)
+                      to_grade1_font_text, wrapped_text_lines)
 from .output_spec import OutputSpec
 from .patterns import normalize_pattern_transform, render_pattern
 
-LEGEND_VERSION = 4
+LEGEND_VERSION = 6
 SWATCH_WIDTH_MM, SWATCH_HEIGHT_MM = 40.0, 20.0
 PAGE_INSET_MM, ENTRY_GAP_MM, TEXT_GAP_MM = 5.0, 6.0, 5.0
 WHITE_BORDER_MM, BLACK_BORDER_MM = 2.0, 1.0
@@ -40,34 +42,14 @@ def _point(value: object, fallback: list[float]) -> list[float]:
 def _wrapped_metrics(text: str, font: ImageFont.FreeTypeFont, width_px: float,
                      align: str = "left", px_per_mm: float = RENDER_PX_PER_MM) -> dict:
     braille = to_grade1_font_text(text, preserve_newlines=True)
+    english = repair_multiline_text(text)
+    print_font = english_font(px_per_mm)
     width_px = max(1.0, float(width_px))
-    lines: list[str] = []
-    for paragraph in (braille.split("\n") if braille else [""]):
-        current = ""
-        for word in (paragraph.split(" ") if paragraph else [""]):
-            if font.getlength(word or " ") > width_px:
-                if current:
-                    lines.append(current)
-                    current = ""
-                chunk = ""
-                for cell in word:
-                    if chunk and font.getlength(chunk + cell) > width_px:
-                        lines.append(chunk)
-                        chunk = cell
-                    else:
-                        chunk += cell
-                current = chunk
-                continue
-            candidate = word if not current else f"{current} {word}"
-            if current and font.getlength(candidate) > width_px:
-                lines.append(current)
-                current = word
-            else:
-                current = candidate
-        lines.append(current)
+    lines = wrapped_text_lines(braille, font, width_px)
     bboxes = [font.getbbox(line or " ") for line in lines]
     line_height = max(1, max(box[3] - box[1] for box in bboxes))
     line_advance = BRAILLE_LINE_SPACING_MM * px_per_mm
+    braille_height = line_height + max(0, len(lines) - 1) * line_advance
     offsets = []
     for index, (line, bbox) in enumerate(zip(lines, bboxes)):
         line_width = font.getlength(line or " ")
@@ -78,6 +60,27 @@ def _wrapped_metrics(text: str, font: ImageFont.FreeTypeFont, width_px: float,
         else:
             x = -bbox[0]
         offsets.append([round(x, 3), round(index * line_advance - bbox[1], 3)])
+
+    english_lines = wrapped_text_lines(english, print_font, width_px)
+    english_bboxes = [print_font.getbbox(line or " ") for line in english_lines]
+    english_line_height = max(1, max(box[3] - box[1] for box in english_bboxes))
+    english_line_advance = max(english_line_height, ENGLISH_LINE_SPACING_MM * px_per_mm)
+    english_top = braille_height + ENGLISH_TEXT_GAP_MM * px_per_mm
+    english_offsets = []
+    for index, (line, bbox) in enumerate(zip(english_lines, english_bboxes)):
+        line_width = print_font.getlength(line or " ")
+        if align == "right":
+            x = width_px - line_width - bbox[0]
+        elif align == "center":
+            x = (width_px - line_width) / 2 - bbox[0]
+        else:
+            x = -bbox[0]
+        english_offsets.append([
+            round(x, 3),
+            round(english_top + index * english_line_advance - bbox[1], 3),
+        ])
+    english_height = (english_line_height
+                      + max(0, len(english_lines) - 1) * english_line_advance)
     return {
         "braille_text": braille,
         "lines": lines,
@@ -86,10 +89,18 @@ def _wrapped_metrics(text: str, font: ImageFont.FreeTypeFont, width_px: float,
         "line_spacing_px": line_advance,
         "line_spacing_mm": BRAILLE_LINE_SPACING_MM,
         "width_px": round(width_px, 3),
-        "height_px": line_height + max(0, len(lines) - 1) * line_advance,
+        "height_px": english_top + english_height,
         "bbox_px": [0, int(bboxes[0][1]), int(math.ceil(width_px)),
                     int(bboxes[0][1] + line_height)],
         "align": align,
+        "english_text": english,
+        "english_font_size_px": int(getattr(print_font, "size", ENGLISH_FONT_SIZE_PT)),
+        "english_color": ENGLISH_TEXT_COLOR,
+        "english_lines": english_lines,
+        "english_line_offsets_px": english_offsets,
+        "english_line_height_px": english_line_height,
+        "english_line_spacing_px": english_line_advance,
+        "english_gap_mm": ENGLISH_TEXT_GAP_MM,
     }
 
 
@@ -204,6 +215,10 @@ def build_legend_layout(out_dir: Path, previous: dict | None = None) -> dict:
     return {
         "version": LEGEND_VERSION, "render_px_per_mm": px,
         "font": {"file": braille_font_path().name, "size_pt": BRAILLE_FONT_SIZE_PT},
+        "english_font": {"family": ENGLISH_FONT_FAMILY,
+                         "size_pt": ENGLISH_FONT_SIZE_PT,
+                         "color": ENGLISH_TEXT_COLOR,
+                         "gap_mm": ENGLISH_TEXT_GAP_MM},
         "page": {"size_mm": page_mm, "canvas_px": page,
                  "orientation": orientation,
                  "margin_mm": spec.margin_mm, "dpi": px * 25.4},
@@ -214,10 +229,17 @@ def build_legend_layout(out_dir: Path, previous: dict | None = None) -> dict:
 
 
 def _draw_text_lines(draw: ImageDraw.ImageDraw, position: list[float], metrics: dict,
-                     font: ImageFont.FreeTypeFont) -> None:
+                     font: ImageFont.FreeTypeFont,
+                     print_font: ImageFont.ImageFont,
+                     include_english: bool = False) -> None:
     for line, offset in zip(metrics["lines"], metrics["line_offsets_px"]):
         draw.text((round(position[0] + offset[0]), round(position[1] + offset[1])),
                   line, font=font, fill=0)
+    if include_english:
+        for line, offset in zip(metrics["english_lines"],
+                                metrics["english_line_offsets_px"]):
+            draw.text((round(position[0] + offset[0]), round(position[1] + offset[1])),
+                      line, font=print_font, fill=ENGLISH_TEXT_RGB)
 
 
 def render_legend_layout(out_dir: Path, layout: dict) -> dict:
@@ -226,6 +248,9 @@ def render_legend_layout(out_dir: Path, layout: dict) -> dict:
     swatch_w, swatch_h = (int(v) for v in layout["swatch"]["size_px"])
     gap = int(round(TEXT_GAP_MM * px))
     font = _font(px)
+    print_font = english_font(px)
+    hybrid_english = hybrid_text_enabled(out_dir)
+    layout["hybrid_english_text"] = hybrid_english
     base = Image.new("L", (page_w, page_h), 255)
     base.save(out_dir / "step9_legend_base.png", dpi=(layout["page"]["dpi"],) * 2)
     final = base.copy()
@@ -245,8 +270,10 @@ def render_legend_layout(out_dir: Path, layout: dict) -> dict:
     draw = ImageDraw.Draw(final)
     hybrid_draw = ImageDraw.Draw(hybrid)
     if title.get("enabled", True):
-        _draw_text_lines(draw, title["position_page_px"], title["render_metrics"], font)
-        _draw_text_lines(hybrid_draw, title["position_page_px"], title["render_metrics"], font)
+        _draw_text_lines(draw, title["position_page_px"], title["render_metrics"],
+                         font, print_font)
+        _draw_text_lines(hybrid_draw, title["position_page_px"], title["render_metrics"],
+                         font, print_font, hybrid_english)
     enabled = 0
     for entry in layout["entries"]:
         # Keep a movable compound object instead of making every entry span the
@@ -272,8 +299,9 @@ def render_legend_layout(out_dir: Path, layout: dict) -> dict:
         final.paste(legend_swatch(layout, entry), (round(x), round(y)))
         hybrid.paste(legend_swatch_hybrid(layout, entry), (round(x), round(y)))
         text_position = [x + entry["text_offset_px"][0], y + entry["text_offset_px"][1]]
-        _draw_text_lines(draw, text_position, metrics, font)
-        _draw_text_lines(hybrid_draw, text_position, metrics, font)
+        _draw_text_lines(draw, text_position, metrics, font, print_font)
+        _draw_text_lines(hybrid_draw, text_position, metrics, font, print_font,
+                         hybrid_english)
     (out_dir / "legend_labels.json").write_text(
         json.dumps(layout, indent=2, ensure_ascii=False), encoding="utf-8")
     final.save(out_dir / "step9_legend.png", dpi=(layout["page"]["dpi"],) * 2)

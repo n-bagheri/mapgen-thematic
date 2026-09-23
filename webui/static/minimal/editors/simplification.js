@@ -19,8 +19,6 @@ function simplificationControlsHtml(decision = false) {
   const paramsData = state.data.step6 || {};
   const params = paramsData.params || {};
   const level = Number(state.previewLevel) || Number(presets?.active_level) || 3;
-  const variant = presets?.variants?.[String(level)];
-  const summary = variant?.summary || {};
   const classes = paramsData.classes || [];
   const kept = new Set(params.keep_line_kinds || []);
   const protectedClasses = new Set((params.protected_classes || []).map(Number));
@@ -31,11 +29,6 @@ function simplificationControlsHtml(decision = false) {
       <input id="preset-slider" type="range" min="1" max="5" value="${level}" step="1"
              aria-label="Simplification preview level">
       <div class="preset-labels"><span>More detail</span><span>More space</span></div>
-      <div class="preset-stats">
-        <div class="preset-stat"><strong id="stat-polygons">${variant?.polygons ?? "—"}</strong><span>regions</span></div>
-        <div class="preset-stat"><strong id="stat-merged">${summary.dissolved_components ?? "—"}</strong><span>small regions merged</span></div>
-        <div class="preset-stat"><strong id="stat-islands">${summary.islands?.dropped ?? "—"}</strong><span>tiny islands removed</span></div>
-      </div>
       <div class="action-row"><span class="status-copy">Previews and generated tactile results are cached per level during this session.</span>
         <button class="button primary small" id="apply-preset" type="button">${decision
           ? "Use this level &amp; continue" : "Use this level"}</button></div>
@@ -83,7 +76,6 @@ export function bindSimplificationEditor(onApproved) {
     const level = Number(event.target.value);
     state.previewLevel = level;
     $("preset-value").textContent = DETAIL_NAMES[level];
-    updatePresetStats(level);
     const image = $("simplified-image");
     if (image) {
       image.dataset.overlayDisabled = "";
@@ -114,14 +106,6 @@ function swapSimplificationPreview(image, source) {
     toast("The selected simplification preview could not be loaded.", "error");
   }, { once: true });
   next.src = source;
-}
-
-function updatePresetStats(level) {
-  const variant = state.data.presets?.variants?.[String(level)];
-  if (!variant) return;
-  $("stat-polygons").textContent = variant.polygons ?? "—";
-  $("stat-merged").textContent = variant.summary?.dissolved_components ?? "—";
-  $("stat-islands").textContent = variant.summary?.islands?.dropped ?? "—";
 }
 
 async function applyPreset(onApproved) {

@@ -44,6 +44,7 @@ function modeButton(id, pressed, label, help) {
 
 function patternRowHtml(group) {
   const review = reviewState();
+  const optimized = review.preserve_haptic_distances;
   const colours = state.data.colors?.colors || {};
   const colour = colours[group.label] || "#FFFFFF";
   return `<article class="pattern-decision-row" data-pattern-row="${group.group_id}">
@@ -56,9 +57,9 @@ function patternRowHtml(group) {
     </div>
     <div class="pattern-row-actions">
       <button class="button subtle small" type="button" data-edit-pattern="${group.group_id}"
-        ${group.editable ? "" : "disabled"}>Edit</button>
+        ${group.editable && !optimized ? "" : "disabled"}>Edit</button>
       <button class="button subtle small" type="button"
-        data-change-pattern="${group.group_id}">Change</button>
+        data-change-pattern="${group.group_id}" ${optimized ? "disabled" : ""}>Change</button>
       <label class="pattern-colour" title="${review.create_hybrid_map
           ? `Choose a colour for ${esc(group.label)}` : "Turn on Create hybrid map to add colour"}">
         <span class="visually-hidden">Colour for ${esc(group.label)}</span>
@@ -166,7 +167,7 @@ function patternDecisionBody(showApproval) {
   return `
     <div class="pattern-mode-grid">
       ${modeButton("preserve-haptic-distances", review.preserve_haptic_distances,
-        "Preserve haptic distances", "Reassign the other patterns when one changes")}
+        "Use optimized patterns", "Keep the automatically optimized pattern assignment")}
       ${modeButton("create-hybrid-map", review.create_hybrid_map,
         "Create hybrid map", "Enable a printable colour for every category")}
     </div>
@@ -232,6 +233,7 @@ function bindPatternDialogControls() {
 }
 
 function openPatternDialog(kind, groupId) {
+  if (reviewState().preserve_haptic_distances) return;
   state.patternGroup = Number(groupId);
   state.patternDialog = { kind, groupId: Number(groupId) };
   removePatternDialog();
@@ -288,6 +290,14 @@ function syncPatternModeControls() {
   $("preserve-haptic-distances")?.setAttribute(
     "aria-pressed", String(review.preserve_haptic_distances));
   $("create-hybrid-map")?.setAttribute("aria-pressed", String(review.create_hybrid_map));
+  if (review.preserve_haptic_distances) closePatternDialog();
+  document.querySelectorAll("[data-edit-pattern]").forEach((button) => {
+    const group = groupById(button.dataset.editPattern);
+    button.disabled = review.preserve_haptic_distances || !group?.editable;
+  });
+  document.querySelectorAll("[data-change-pattern]").forEach((button) => {
+    button.disabled = review.preserve_haptic_distances;
+  });
   document.querySelectorAll("[data-pattern-colour]").forEach((picker) => {
     picker.disabled = !review.create_hybrid_map;
     const label = picker.closest(".pattern-colour");
@@ -312,6 +322,7 @@ function syncPatternViewerControls() {
 }
 
 async function choosePattern(button) {
+  if (reviewState().preserve_haptic_distances) return;
   const group = currentDialogGroup();
   const pattern = button.dataset.choosePattern;
   if (!group || !pattern) return;
@@ -336,6 +347,7 @@ async function choosePattern(button) {
 }
 
 async function saveTransform() {
+  if (reviewState().preserve_haptic_distances) return;
   const group = currentDialogGroup();
   if (!group) return;
   const transform = {};
@@ -356,6 +368,7 @@ async function saveTransform() {
 }
 
 async function resetTransform() {
+  if (reviewState().preserve_haptic_distances) return;
   const group = currentDialogGroup();
   if (!group) return;
   await withBusy($("transform-reset"), "Resetting…", async () => {
@@ -428,6 +441,7 @@ async function flushColourSave() {
 
 async function approveAndContinue(continuePipeline) {
   await withBusy($("approve-patterns"), "Approving…", async () => {
+    await waitForColourSaves();
     state.data.step7Review = await saveStep7Review(state.selected, { approve: true });
     await loadMaps();
     await refreshSelectedData();
@@ -467,7 +481,9 @@ async function refreshPatternRows(groupIds) {
     if (description) {
       description.textContent = `${group.pattern_desc} · ${group.pattern_family || "texture"}`;
     }
-    if (edit) edit.disabled = !group.editable;
+    if (edit) edit.disabled = reviewState().preserve_haptic_distances || !group.editable;
+    const change = row.querySelector("[data-change-pattern]");
+    if (change) change.disabled = reviewState().preserve_haptic_distances;
   });
   await Promise.all(groupIds.map(refreshPatternPreview));
 }
@@ -484,4 +500,13 @@ async function refreshPatternPreview(groupId) {
   document.querySelectorAll(`[data-pattern-preview="${groupId}"]`).forEach((image) => {
     image.src = source;
   });
+}
+
+async function waitForColourSaves() {
+  window.clearTimeout(colourSaveTimer);
+  if (pendingColourSave && !colourSaveInFlight) await flushColourSave();
+  while (colourSaveInFlight) {
+    await new Promise((resolve) => window.setTimeout(resolve, 20));
+  }
+  if (pendingColourSave) await waitForColourSaves();
 }

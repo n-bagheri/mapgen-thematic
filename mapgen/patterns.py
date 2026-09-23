@@ -532,12 +532,12 @@ def optimize_user_pattern_change(
     if locked_group_id in water_groups and locked_pattern != "04_waves_sine":
         raise ValueError(
             "Visible water must use the sinusoidal wave pattern while "
-            "Preserve haptic distances is on"
+            "Use optimized patterns is on"
         )
     if locked_group_id not in water_groups and locked_pattern == "04_waves_sine":
         raise ValueError(
             "The sinusoidal wave pattern can only be assigned to water while "
-            "Preserve haptic distances is on"
+            "Use optimized patterns is on"
         )
 
     fixed_candidates: dict[int, tuple[str, ...]] = {locked_group_id: (locked_pattern,)}

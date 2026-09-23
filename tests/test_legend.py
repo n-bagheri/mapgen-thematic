@@ -70,6 +70,44 @@ class LegendTests(unittest.TestCase):
             with Image.open(out_dir / "step9_legend.png") as disabled:
                 self.assertEqual(disabled.getpixel((120, 140)), 255)
 
+    def test_blue_english_is_rendered_below_legend_title_and_entries(self):
+        with TemporaryDirectory() as directory:
+            out_dir = Path(directory)
+            write_inputs(out_dir)
+            (out_dir / "step7_review.json").write_text(json.dumps({
+                "create_hybrid_map": True,
+            }), encoding="utf-8")
+            layout = build_legend_layout(out_dir)
+            render_legend_layout(out_dir, layout)
+
+            for item in (layout["title"], *layout["entries"]):
+                metrics = item["render_metrics"]
+                self.assertEqual(metrics["english_gap_mm"], 6.0)
+                self.assertGreater(metrics["english_line_offsets_px"][0][1],
+                                   metrics["line_offsets_px"][-1][1])
+            with Image.open(out_dir / "step9_legend.png") as rendered:
+                colors = rendered.convert("RGB").getcolors(rendered.width * rendered.height)
+            self.assertFalse(any(blue > red and blue > green
+                                 for _, (red, green, blue) in colors))
+            with Image.open(out_dir / "step9_legend_hybrid.png") as rendered:
+                colors = rendered.convert("RGB").getcolors(rendered.width * rendered.height)
+            self.assertTrue(any(blue > red and blue > green
+                                for _, (red, green, blue) in colors))
+            self.assertEqual(layout["english_font"], {
+                "family": "Verdana", "size_pt": 20.0,
+                "color": "#0066CC", "gap_mm": 6.0,
+            })
+
+    def test_legend_hybrid_has_no_english_until_step7_enables_it(self):
+        with TemporaryDirectory() as directory:
+            out_dir = Path(directory)
+            write_inputs(out_dir)
+            render_legend_layout(out_dir, build_legend_layout(out_dir))
+            with Image.open(out_dir / "step9_legend_hybrid.png") as rendered:
+                colors = rendered.convert("RGB").getcolors(rendered.width * rendered.height)
+            self.assertFalse(any(blue > red and blue > green
+                                 for _, (red, green, blue) in colors))
+
     def test_legend_title_supports_lines_alignment_position_and_width(self):
         with TemporaryDirectory() as directory:
             out_dir = Path(directory)

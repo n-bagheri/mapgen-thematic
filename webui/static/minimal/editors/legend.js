@@ -286,12 +286,31 @@ export function bindLegendOverlay() {
     const offsets = metrics.line_offsets_px || [[0, 0]];
     const lineAdvance = Number(metrics.line_spacing_px) || fontPx * 1.5;
     const bboxTop = Number(metrics.bbox_px?.[1]) || 0;
-    return lines.map((line, index) => {
+    const brailleMarkup = lines.map((line, index) => {
       const offset = offsets[index] || [offsets[0]?.[0] || 0, index * lineAdvance];
       return `<text x="${origin[0] + Number(offset[0] || 0)}"
         y="${origin[1] + Number(offset[1] || 0) + bboxTop}" font-size="${fontPx}"
         dominant-baseline="hanging">${esc(line)}</text>`;
     }).join("");
+    const englishMetricsCurrent = String(metrics.english_text || "") === String(item.text || "");
+    const englishLines = englishMetricsCurrent && Array.isArray(metrics.english_lines)
+      ? metrics.english_lines
+      : (preserveNewlines ? String(item.text || "").split("\n") : [String(item.text || "")]);
+    const englishOffsets = metrics.english_line_offsets_px || [];
+    const showEnglish = state.data.step7Review?.create_hybrid_map === true;
+    const englishMarkup = showEnglish ? englishLines.map((line, index) => {
+      const first = englishOffsets[0];
+      const offset = englishOffsets[index] || (first
+        ? [first[0], Number(first[1]) + index * Number(metrics.english_line_spacing_px || 25)]
+        : null);
+      if (!offset) return "";
+      return `<text class="english-rendered-text"
+        x="${origin[0] + Number(offset[0] || 0)}"
+        y="${origin[1] + Number(offset[1] || 0)}"
+        font-size="${Number(metrics.english_font_size_px) || 35}"
+        dominant-baseline="hanging">${esc(line)}</text>`;
+    }).join("") : "";
+    return brailleMarkup + englishMarkup;
   };
 
   const boxes = (layout.entries || []).map((entry) => {

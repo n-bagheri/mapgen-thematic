@@ -1754,7 +1754,20 @@ def api_step7_review(stem: str):
         current["approved"] = True
     elif data.get("approve") is False:
         current["approved"] = False
-    return jsonify(_save_step7_review(stem, current))
+    hybrid_mode_changed = ("create_hybrid_map" in data
+                           and current["create_hybrid_map"] !=
+                           _step7_review_payload(stem)["create_hybrid_map"])
+    saved = _save_step7_review(stem, current)
+    if hybrid_mode_changed:
+        image = find_map(stem)
+        run_dir = RUNS_DIR / stem
+        if image is not None and (run_dir / "braille_labels.json").exists():
+            from mapgen.braille import run_step8 as run_braille
+            run_braille(image, runs_dir=RUNS_DIR)
+        if image is not None and (run_dir / "legend_labels.json").exists():
+            from mapgen.legend import run_step9
+            run_step9(image, runs_dir=RUNS_DIR)
+    return jsonify(saved)
 
 
 @app.get("/api/pattern-transforms/<stem>")
@@ -1833,6 +1846,8 @@ def api_pattern_transforms_post(stem: str, group_id: int):
         job = _jobs.get(stem)
         if job and job["status"] == "running":
             abort(409, "a job is running for this map")
+    if _step7_review_payload(stem)["preserve_haptic_distances"]:
+        abort(409, "turn off Use optimized patterns before editing a tactile pattern")
     run_dir, symbols = _step7_symbols(stem)
     assignments = symbols.get("area_assignments", [])
     if group_id < 0 or group_id >= len(assignments):
@@ -1887,6 +1902,8 @@ def api_pattern_assignments_post(stem: str, group_id: int):
     if not isinstance(pattern_id, str) or pattern_id not in PATTERNS:
         return jsonify({"ok": False, "error": "select a pattern from the Step 7 library"}), 400
     review = _step7_review_payload(stem)
+    if review["preserve_haptic_distances"]:
+        abort(409, "turn off Use optimized patterns before changing a tactile pattern")
     preserve_haptic_distances = data.get(
         "preserve_haptic_distances", review["preserve_haptic_distances"])
     if not isinstance(preserve_haptic_distances, bool):
@@ -2094,6 +2111,13 @@ def api_category_colors(stem: str):
             # pattern geometry, boundaries, and component cleanup here made a
             # single colour-picker change unnecessarily take several seconds.
             rerender_hybrid_artifacts(run_dir)
+            # Colour metadata changes symbols.json but not the tactile
+            # geometry represented by these cleanup artifacts. Mark that
+            # geometry current without doing an unnecessary relief rebuild.
+            for name in ("step8a_cleanup.json", "step8a_cleanup.png", "step8a_debug.png"):
+                artifact = run_dir / name
+                if artifact.exists():
+                    artifact.touch()
             review = _step7_review_payload(stem)
             review["approved"] = False
             _save_step7_review(stem, review)
