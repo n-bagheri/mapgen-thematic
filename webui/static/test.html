@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>MapGen</title>
+  <link rel="stylesheet" href="/minimal.css?v=focus-59">
+  <link rel="stylesheet" href="/test.css?v=test-17">
+</head>
+<body class="nav-open test-flow-open">
+  <main class="test-screen test-home" id="test-home-screen">
+    <aside class="test-launcher-sidebar" aria-label="MapGen navigation">
+      <div class="test-brand">
+        <span class="test-brand-mark" aria-hidden="true">M</span>
+        <span>MapGen</span>
+      </div>
+      <nav class="test-launcher-nav" aria-label="Main navigation">
+        <a class="test-launcher-nav-item is-active" href="#test-home-title" aria-current="page">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z"></path></svg>
+          <span>Home</span>
+        </a>
+        <button class="test-launcher-nav-item" id="test-about-link" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="9"></circle>
+            <path d="M12 10.5V17"></path><path d="M12 7h.01"></path>
+          </svg>
+          <span>About</span>
+        </button>
+      </nav>
+    </aside>
+
+    <section class="test-launcher-main" aria-labelledby="test-home-title">
+      <h1 id="test-home-title" tabindex="-1">Home</h1>
+
+      <section class="test-new-section" aria-labelledby="test-new-title">
+        <div class="test-section-heading">
+          <h2 id="test-new-title">New</h2>
+          <span>Start with one of the maps in the library</span>
+        </div>
+        <div class="test-template-shell">
+          <button class="test-scroll-button previous" id="test-template-previous" type="button"
+                  aria-label="Scroll map templates left" disabled>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 4-8 8 8 8"></path></svg>
+          </button>
+          <div class="test-template-strip" id="test-template-strip" tabindex="0"
+               aria-label="New map templates">
+            <button class="test-template-card test-add-map" id="test-add-map" type="button">
+              <span class="test-template-preview test-add-preview" aria-hidden="true">
+                <svg viewBox="0 0 64 64"><path d="M32 13v38M13 32h38"></path></svg>
+              </span>
+              <span class="test-template-name">Add map</span>
+            </button>
+          </div>
+          <button class="test-scroll-button next" id="test-template-next" type="button"
+                  aria-label="Scroll map templates right">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 4 8 8-8 8"></path></svg>
+          </button>
+        </div>
+        <input id="test-new-project-input" type="file" accept=".png,.jpg,.jpeg" hidden>
+        <p class="test-flow-status" id="test-choice-status" role="status" aria-live="polite"></p>
+      </section>
+
+      <section class="test-recent-section" aria-labelledby="test-recent-title">
+        <div class="test-section-heading test-recent-heading">
+          <h2 id="test-recent-title">Recent</h2>
+          <button class="test-refresh-projects" id="test-refresh-projects" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6v5h-5M4 18v-5h5"></path><path d="M18.5 9A7 7 0 0 0 6.2 6.3L4 8m2 7a7 7 0 0 0 11.8 2.7L20 16"></path></svg>
+            <span>Refresh</span>
+          </button>
+        </div>
+        <div class="test-project-columns" aria-hidden="true">
+          <span></span>
+          <span>Name</span>
+          <span>Date modified</span>
+        </div>
+        <section class="test-project-grid" id="test-project-grid" aria-label="Recent projects"></section>
+        <div class="test-project-empty" id="test-project-empty" hidden>
+          <span class="test-empty-icon" aria-hidden="true">
+            <svg viewBox="0 0 32 32"><path d="M5 8h9l3 3h10v15H5z"></path><path d="M5 11h22"></path></svg>
+          </span>
+          <h3>No recent projects</h3>
+          <p>Choose a map above to create your first project.</p>
+        </div>
+        <p class="test-flow-status" id="test-project-status" role="status" aria-live="polite"></p>
+      </section>
+    </section>
+  </main>
+
+  <main class="test-screen test-about" id="test-about-screen" hidden>
+    <button class="test-about-home" id="test-about-home" type="button" aria-label="Back to Home">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z"></path>
+      </svg>
+      <span>Home</span>
+    </button>
+    <section class="test-about-content" aria-labelledby="test-about-title">
+      <h1 id="test-about-title" tabindex="-1">About MapGen</h1>
+    </section>
+  </main>
+
+  <dialog class="test-dialog" id="test-delete-dialog" aria-labelledby="test-delete-title">
+    <form method="dialog">
+      <h2 id="test-delete-title">Delete project?</h2>
+      <p>Are you sure you want to delete this project? All changes will be lost.</p>
+      <div class="test-dialog-actions">
+        <button class="test-small-button secondary" value="cancel" type="submit">Cancel</button>
+        <button class="test-small-button danger" id="test-confirm-delete" value="default" type="button">Delete project</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="test-dialog" id="test-rename-dialog" aria-labelledby="test-rename-title">
+    <form id="test-rename-form">
+      <h2 id="test-rename-title">Rename project</h2>
+      <label for="test-rename-input">Project name</label>
+      <input id="test-rename-input" type="text" maxlength="120" autocomplete="off" required>
+      <p class="test-dialog-status" id="test-rename-status" role="status" aria-live="polite"></p>
+      <div class="test-dialog-actions">
+        <button class="test-small-button secondary" id="test-cancel-rename" type="button">Cancel</button>
+        <button class="test-small-button" id="test-confirm-rename" type="submit">Save name</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="test-dialog test-key-dialog" id="test-key-dialog" aria-labelledby="test-key-title">
+    <form id="test-key-form">
+      <span class="test-key-mark" aria-hidden="true">M</span>
+      <h2 id="test-key-title">Welcome to MapGen</h2>
+      <p class="test-key-intro">Enter your Gemini API key to continue.</p>
+      <label class="test-key-label" for="test-key-input">
+        <svg viewBox="0 0 32 32" aria-hidden="true">
+          <circle cx="10" cy="16" r="6"></circle>
+          <path d="M16 16h13M24 16v5M20 16v3"></path>
+        </svg>
+        <span>Gemini API key</span>
+      </label>
+      <input id="test-key-input" type="password" autocomplete="off" spellcheck="false"
+             placeholder="Enter your API key" aria-describedby="test-key-note test-key-status" required>
+      <p class="test-key-note" id="test-key-note">The key is used only by this running MapGen session.</p>
+      <p class="test-dialog-status" id="test-key-status" role="status" aria-live="polite"></p>
+      <div class="test-dialog-actions">
+        <button class="test-small-button" id="test-confirm-key" type="submit">Continue</button>
+      </div>
+    </form>
+  </dialog>
+
+  <header class="test-pipeline-header" id="test-pipeline-header" data-test-minimal hidden>
+    <nav class="test-pipeline-nav" aria-label="Pipeline navigation">
+      <button class="test-nav-button" id="test-pipeline-home" type="button" aria-label="Home" title="Home">
+        <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M3 15.3 16 4l13 11.3v13.2h-8.2v-8.8h-9.6v8.8H3z"/><path d="m1.5 15.3 14.5-13 14.5 13" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button class="test-nav-button" id="test-pipeline-back" type="button" aria-label="Back" title="Back">
+        <svg viewBox="0 0 34 32" aria-hidden="true"><path d="M13.5 5 2.5 15.5l11 10.5v-6.5c8.5.1 14.2 2.7 18 8-1.2-10.1-7.2-15.2-18-15.3z"/></svg>
+      </button>
+    </nav>
+    <div class="test-project-bar">
+      <strong class="test-pipeline-title" id="test-pipeline-title">New project</strong>
+      <button class="test-header-action delete" id="test-pipeline-delete" type="button"
+              aria-label="Delete project" title="Delete project" disabled>
+        <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M7.5 9.5h17M12 9.5V6.8h8v2.7M10 12.5l1 13h10l1-13M14 14.5v8M18 14.5v8"></path></svg>
+      </button>
+      <button class="test-header-action" id="test-pipeline-rename" type="button"
+              aria-label="Rename project" title="Rename project" disabled>
+        <svg viewBox="0 0 32 32" aria-hidden="true"><path d="m8 23 1.7-6.1L22.8 3.8l5.4 5.4-13.1 13.1L8 23zM18.9 7.7l5.4 5.4M7 27h19"></path></svg>
+      </button>
+    </div>
+    <div class="test-pipeline-progress" id="test-pipeline-progress"
+         role="progressbar" aria-label="Pipeline progress" aria-valuemin="0" aria-valuemax="9" aria-valuenow="0"></div>
+    <section class="test-thinking" id="test-thinking" aria-live="polite" hidden>
+      <span class="test-thinking-spinner" aria-hidden="true"></span>
+      <span class="test-review-alert" aria-hidden="true"><span>!</span></span>
+      <strong id="test-thinking-message"></strong>
+    </section>
+    <section class="test-start-panel" id="test-start-panel" hidden>
+      <button class="button primary test-start-button" id="test-pipeline-start" type="button">Start</button>
+      <p id="test-start-status" role="status" aria-live="polite"></p>
+    </section>
+  </header>
+
+  <a class="skip-link" href="#control-pane" data-test-minimal>Skip to map controls</a>
+
+  <button class="icon-button nav-toggle" id="nav-toggle" type="button" data-test-minimal
+          aria-controls="project-nav" aria-expanded="true" aria-label="Close map library">
+    <span class="menu-glyph" aria-hidden="true"><i></i><i></i><i></i></span>
+  </button>
+
+  <button class="nav-backdrop" id="nav-backdrop" type="button" data-test-minimal
+          aria-label="Close map library" tabindex="-1"></button>
+  <aside class="project-nav" id="project-nav" aria-label="Map library" data-test-minimal>
+    <div class="nav-heading">
+      <h1>Maps</h1>
+      <button class="button primary small" id="nav-add-map" type="button"><span class="button-plus" aria-hidden="true">+</span>Add map</button>
+    </div>
+    <nav class="project-list" id="project-list" aria-label="Available maps"></nav>
+    <div class="nav-empty" id="nav-empty" hidden>
+      <span aria-hidden="true">+</span>
+      <p>Add a PNG or JPG map to begin.</p>
+    </div>
+    <footer class="nav-footer">
+      <a href="/">Open all steps</a>
+    </footer>
+  </aside>
+
+  <main class="workspace" id="workspace" data-test-minimal>
+    <section class="test-source-pane" id="test-source-pane" aria-label="Original map">
+      <button class="test-source-toggle" id="test-source-toggle" type="button"
+              aria-controls="test-source-pane" aria-expanded="true" aria-label="Collapse original map panel"
+              title="Collapse original map panel">
+        <span aria-hidden="true">&lsaquo;</span>
+      </button>
+      <div class="test-source-content">
+        <h2>Original map</h2>
+        <div class="test-source-frame">
+          <img id="test-source-image" alt="" hidden>
+          <p id="test-source-empty">Choose an image to create a project.</p>
+        </div>
+      </div>
+    </section>
+    <section class="visual-pane" id="visual-pane" aria-label="Map previews" tabindex="-1">
+      <div class="welcome-card" id="welcome-card">
+        <h2>Choose a map</h2>
+      </div>
+      <div class="visual-content" id="visual-content" hidden></div>
+      <div class="visual-content test-stable-preview" id="test-stable-preview" inert hidden></div>
+    </section>
+
+    <div class="test-review-resizer" id="test-review-resizer" role="separator"
+         aria-label="Resize review panel" aria-orientation="horizontal" tabindex="0">
+      <span aria-hidden="true"></span>
+    </div>
+    <aside class="control-pane" id="control-pane" aria-label="Map controls">
+      <div id="control-content" hidden></div>
+    </aside>
+  </main>
+
+  <input class="visually-hidden" id="upload-input" type="file" accept=".png,.jpg,.jpeg" data-test-minimal>
+  <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true" data-test-minimal></div>
+
+  <script type="module" src="/test/main.js?v=test-17"></script>
+</body>
+</html>

@@ -661,10 +661,27 @@ def minimal_index():
     return app.send_static_file("minimal.html")
 
 
+@app.get("/test")
+def test_index():
+    """Serve the experimental focused UI with its alternate entry screen."""
+    return app.send_static_file("test.html")
+
+
 @app.get("/api/version")
 def api_version():
     """What this process implements, and whether its own sources moved under it."""
     return jsonify({"contract": UI_CONTRACT, "restart_required": restart_required()})
+
+
+@app.post("/api/session-key")
+def api_session_key():
+    """Keep a user-supplied Gemini key in memory for this server session."""
+    data = request.get_json(silent=True) or {}
+    key = str(data.get("key") or "").strip()
+    if not key:
+        return jsonify({"error": "Please enter an API key."}), 400
+    os.environ["GEMINI_API_KEY"] = key
+    return jsonify({"ok": True, "configured": True})
 
 
 @app.route("/api/<path:endpoint>",
@@ -2394,7 +2411,7 @@ def _never_cache_the_application(response):
     to gain by letting a browser hold an older copy of one of them.
     """
     path = request.path
-    if path in ("/", "/minimal") or path.endswith((".js", ".css", ".html")):
+    if path in ("/", "/minimal", "/test") or path.endswith((".js", ".css", ".html")):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
