@@ -8,6 +8,7 @@ import numpy as np
 from pydantic import ValidationError
 
 from mapgen.isolate import (
+    LAYOUT_RETRIES,
     LAYOUT_PROMPT,
     LayoutResponseError,
     MapLayout,
@@ -782,22 +783,20 @@ as [y_min, x_min, y_max, x_max], normalized to 0-1000.
 
     def test_detect_layout_without_selection_defaults_to_gemma(self):
         native_layout = MapLayout.model_validate(LayoutResponseShapeTests.BASE)
-        response = SimpleNamespace(parsed=native_layout, text=None)
-        client = MagicMock()
-        client.models.generate_content.return_value = response
 
         with patch.dict("os.environ", {"GEMINI_MODEL": "gemini-2.5-flash"}), \
                 patch("mapgen.isolate._ensure_api_key"), \
                 patch("mapgen.isolate.encode_for_model",
                       return_value=(b"image", "image/png")), \
-                patch("google.genai.Client", return_value=client):
+                patch("mapgen.isolate.generate_json", return_value=native_layout) as generate:
             detect_layout(Path("map.png"))
 
         self.assertEqual(
-            client.models.generate_content.call_args.kwargs["model"],
+            generate.call_args.kwargs["model"],
             "gemma-4-26b-a4b-it",
         )
-        client.close.assert_called_once()
+        self.assertEqual(generate.call_args.args[1], MapLayout)
+        self.assertEqual(generate.call_args.kwargs["retries"], LAYOUT_RETRIES)
 
     def test_model_legend_box_is_unpadded_furniture(self):
         layout = MapLayout.model_validate({

@@ -1,0 +1,319 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Test-only Step 2 mask checks</title>
+<style>
+  body { font: 16px system-ui; margin: 24px; }
+  #mask-target { position: relative; width: 512px; height: 384px; background: #ddd; }
+  .mask-canvas { position: absolute; width: 100%; height: 100%; }
+  .mask-brush-cursor { display: none; }
+  .pass { color: #176b30; } .fail { color: #aa2020; }
+</style>
+<h1>Step 2 mask checks</h1>
+<p id="summary">Running…</p>
+<ol id="results"></ol>
+<div id="mask-target"></div>
+<button id="mask-undo">Undo</button>
+<button id="mask-discard">Reset</button>
+<button id="test-mask-continue">Approve</button>
+<div id="toast"></div>
+<script>
+  const reportError = (error) => {
+    document.querySelector("#summary").textContent = `Harness error: ${error?.stack || error}`;
+  };
+  window.addEventListener("error", (event) => reportError(event.error || event.message));
+  window.addEventListener("unhandledrejection", (event) => reportError(event.reason));
+</script>
+<script type="module">
+import { MaskSurface } from "../webui/static/test/mask-surface.js";
+import { bindMaskCanvas, resetMaskSurface, undoMaskStroke, commitMaskStrokes } from "../webui/static/test/mask.js";
+import { state } from "../webui/static/minimal/state.js";
+
+// Headless --dump-dom may stop producing display frames. Use a deterministic
+// frame clock here; all raster operations still run on real browser canvases.
+window.requestAnimationFrame = (callback) => setTimeout(() => callback(performance.now()), 0);
+window.cancelAnimationFrame = clearTimeout;
+const results = document.querySelector("#results");
+let failures = 0, passes = 0, imageRequests = 0;
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const frame = () => new Promise(requestAnimationFrame);
+const pixels = (canvas) => canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
+const same = (a, b) => a.length === b.length && a.every((value, i) => value === b[i]);
+function solid(width = 512, height = 384) {
+  const canvas = document.createElement("canvas");
+  canvas.width = width; canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, width, height);
+  return canvas;
+}
+function stroke(x, y, mode = "erase") {
+  return { mode, radius: 8, points: [[x, y], [x + 20, y + 10]] };
+}
+function paint(surface, value) { surface.begin(value); surface.finish(); }
+async function test(name, run) {
+  const row = document.createElement("li");
+  try { await run(); row.textContent = `PASS: ${name}`; row.className = "pass"; passes++; }
+  catch (error) { row.textContent = `FAIL: ${name}: ${error.message}`; row.className = "fail"; failures++; }
+  results.appendChild(row);
+}
+
+let testEntrySource;
+await test("The test page entry point parses with its isolated mask editor", async () => {
+  const response = await fetch("../webui/static/test/main.js");
+  assert(response.ok, "test entry point was not served");
+  const source = await response.text();
+  testEntrySource = source;
+  // Parse the entry point without running its real-project startup or API gate.
+  new Function(source.replace(/^import\s[\s\S]*?;\s*/gm, ""));
+});
+
+// Exercise the real /test legend handler with isolated action stubs. Approval
+// and pipeline continuation stay in the shared native handler, as in the UI.
+async function legendTransition({ draft = null, status = "ready", geometry,
+  disabled = false, failApply = false, duringRead = null } = {}) {
+  const box = [10, 20, 110, 220];
+  const local = { selected: "fixture", busy: false, legendBox: draft,
+    data: { legendReview: { status, box } } };
+  const calls = { apply: 0, approve: 0, wait: 0, geometry: 0, errors: [] };
+  const approve = { disabled, click: () => { calls.approve++; } };
+  const apply = { click: () => {
+    calls.apply++;
+    if (!failApply) { local.data.legendReview.status = "ready"; approve.disabled = false; }
+  } };
+  const get = (id) => id === "apply-legend-box" ? apply : id === "approve-legend-box" ? approve : null;
+  const read = async (stem, name) => {
+    assert(stem === "fixture" && name === "geometry.json", "unexpected artifact request");
+    calls.geometry++;
+    duringRead?.(local);
+    return geometry === undefined ? { legend_crop: box, furniture: [{ name: "legend", box }] } : geometry;
+  };
+  const wait = async (predicate) => { calls.wait++; if (!predicate()) throw new Error("fixture validation failed"); };
+  const source = testEntrySource.slice(testEntrySource.indexOf("async function finishTestLegendReview("),
+    testEntrySource.indexOf("function buildTestLegendFooter("));
+  const handler = new Function("$", "state", "artifactJson", "waitForTestCondition", "toast",
+    `return (${source.trim()});`)(get, local, read, wait, (message) => calls.errors.push(message));
+  await handler({ disabled: false, isConnected: true });
+  return calls;
+}
+
+await test("An unchanged, validated and already-applied legend skips its rebuild", async () => {
+  for (const draft of [null, [10, 20, 110, 220]]) {
+    const calls = await legendTransition({ draft });
+    assert(calls.apply === 0 && calls.wait === 0 && calls.approve === 1, "unchanged legend was rebuilt");
+    assert(!calls.errors.length, "unchanged legend failed approval");
+  }
+});
+
+await test("Moving or resizing a legend still applies and validates before approval", async () => {
+  for (const draft of [[11, 20, 111, 220], [10, 20, 120, 220]]) {
+    const calls = await legendTransition({ draft });
+    assert(calls.apply === 1 && calls.wait === 1 && calls.approve === 1, "changed legend bypassed validation");
+    assert(calls.geometry === 0, "changed legend made an unnecessary geometry read");
+  }
+});
+
+await test("Unvalidated legends and disabled approval retain the existing Apply path", async () => {
+  for (const options of [{ status: "pending" }, { status: "mismatch" }, { disabled: true }]) {
+    const calls = await legendTransition(options);
+    assert(calls.apply === 1 && calls.wait === 1 && calls.approve === 1, "validation was bypassed");
+  }
+});
+
+await test("Recovered legends and missing or different saved geometry still rebuild", async () => {
+  const box = [10, 20, 110, 220];
+  for (const geometry of [null, {}, { legend_crop: box, furniture: [] },
+    { legend_crop: box, furniture: [{ name: "legend", box: [0, 0, 100, 200] }] },
+    { legend_crop: [0, 0, 100, 200], furniture: [{ name: "legend", box }] }]) {
+    const calls = await legendTransition({ geometry });
+    assert(calls.apply === 1 && calls.approve === 1, "existing exclusion was not verified");
+  }
+});
+
+await test("Failed legend validation never approves or continues", async () => {
+  const calls = await legendTransition({ draft: [11, 20, 111, 220], status: "pending", failApply: true });
+  assert(calls.apply === 1 && calls.approve === 0 && calls.errors.length === 1, "failed validation continued");
+});
+
+await test("A legend moved during the geometry check is still reapplied", async () => {
+  const calls = await legendTransition({ duringRead: (local) => { local.legendBox = [11, 20, 111, 220]; } });
+  assert(calls.apply === 1 && calls.approve === 1, "a newer edit was skipped");
+});
+
+await test("Switching projects during the geometry check cannot approve the new project", async () => {
+  const calls = await legendTransition({ duringRead: (local) => { local.selected = "other"; } });
+  assert(calls.apply === 0 && calls.approve === 0, "another project was approved");
+});
+
+await test("Brush batches pointer samples and reads only the changed region", async () => {
+  const surface = new MaskSurface(1600, 1200, solid(1600, 1200));
+  const reads = [];
+  const original = surface.context.getImageData.bind(surface.context);
+  surface.context.getImageData = (...args) => { reads.push(args); return original(...args); };
+  const value = stroke(30, 30);
+  surface.begin(value);
+  const scheduled = surface.frame;
+  for (let x = 51; x < 90; x++) { value.points.push([x, 40]); surface.schedule(); }
+  assert(surface.frame === scheduled, "more than one frame scheduled");
+  assert(surface.current.drawn === 0, "paint ran inside pointer handling");
+  await frame();
+  assert(surface.current.drawn === value.points.length, "frame dropped samples");
+  const count = reads.length;
+  value.points.push([95, 40]); surface.schedule(); await frame();
+  assert(reads.slice(count).every(([, , w, h]) => w < 100 && h < 100), "old stroke was redrawn");
+  assert(reads.every(([, , w, h]) => w * h < 1600 * 1200), "full mask read during brushing");
+  surface.finish();
+});
+
+await test("Overlapping erase/restore strokes undo to the exact previous pixels", () => {
+  const surface = new MaskSurface(512, 384, solid());
+  paint(surface, stroke(40, 40));
+  const previous = pixels(surface.mask);
+  const overlay = pixels(surface.canvas);
+  const restore = stroke(45, 40, "restore");
+  paint(surface, restore);
+  surface.undo(restore, []);
+  assert(same(previous, pixels(surface.mask)), "mask pixels did not restore exactly");
+  assert(same(overlay, pixels(surface.canvas)), "overlay pixels did not restore exactly");
+});
+
+await test("Undo history stays bounded; evicted strokes still undo from the cached base", () => {
+  const surface = new MaskSurface(512, 384, solid(), 128 * 128 * 4);
+  const strokes = [stroke(20, 20), stroke(160, 20), stroke(300, 20)];
+  for (const value of strokes) {
+    paint(surface, value);
+    assert(surface.historyBytes <= surface.historyLimit, "history exceeded its cap");
+  }
+  while (strokes.length) {
+    const last = strokes.pop(); surface.undo(last, strokes);
+    const expected = new MaskSurface(512, 384, solid()); expected.replay(strokes);
+    assert(same(pixels(expected.mask), pixels(surface.mask)), "fallback undo changed pixels");
+  }
+});
+
+await test("A stroke larger than the history budget remains undoable", () => {
+  const surface = new MaskSurface(512, 384, solid(), 1024);
+  const value = { mode: "erase", radius: 100, points: [[10, 10], [500, 380]] };
+  paint(surface, value);
+  assert(surface.historyBytes <= 1024, "large stroke exceeded cap");
+  surface.undo(value, []);
+  assert(same(pixels(solid()), pixels(surface.mask)), "large-stroke fallback failed");
+});
+
+await test("Reset checkpoints preserve incremental edge pixels and undo history exactly", async () => {
+  const surface = new MaskSurface(512, 384, solid());
+  const value = stroke(30, 30);
+  surface.begin(value); await frame();
+  value.points.push([60, 48]); surface.schedule(); await frame();
+  value.points.push([67, 55]); surface.finish();
+  const previousMask = pixels(surface.mask), previousOverlay = pixels(surface.canvas);
+  const checkpoint = surface.checkpoint();
+  surface.replace(solid()); surface.rollback(checkpoint);
+  assert(same(previousMask, pixels(surface.mask)), "checkpoint changed mask edges");
+  assert(same(previousOverlay, pixels(surface.canvas)), "checkpoint changed overlay edges");
+  surface.undo(value, []);
+  assert(same(pixels(solid()), pixels(surface.mask)), "checkpoint lost undo history");
+});
+
+const automatic = solid();
+const saved = solid();
+saved.getContext("2d").fillStyle = "#000";
+saved.getContext("2d").fillRect(0, 0, 90, 90);
+const NativeImage = window.Image;
+// Fixtures only: no real project requests or backend writes are made.
+window.Image = class extends NativeImage {
+  set src(url) {
+    imageRequests++;
+    super.src = (String(url).includes("_auto.png") ? automatic
+      : state.data.mask?.reviewed ? saved : automatic).toDataURL();
+  }
+};
+async function review(reviewed = false, stem = "fixture") {
+  state.selected = stem; state.activeStep = 2; state.job = { status: "idle" }; state.busy = false;
+  state.maskBrush = { active: true, mode: "erase", radius: 8, strokes: [] };
+  state.data.mask = { width: 512, height: 384, reviewed, approved: false,
+    kept_pixels: reviewed ? 512 * 384 - 8100 : 512 * 384, automatic_pixels: 512 * 384 };
+  await bindMaskCanvas();
+  await frame(); await frame();
+}
+function brush() {
+  const canvas = document.querySelector("#mask-target .mask-canvas");
+  // Synthetic events have no native pointer to capture.
+  canvas.setPointerCapture = () => {};
+  canvas.hasPointerCapture = () => false;
+  const box = canvas.getBoundingClientRect();
+  const event = (type, x) => canvas.dispatchEvent(new PointerEvent(type,
+    { pointerId: 1, button: 0, clientX: box.left + x, clientY: box.top + 120 }));
+  event("pointerdown", 100); event("pointermove", 150); event("pointerup", 150);
+  return canvas;
+}
+
+await test("Undo and viewer remount reuse the canvas without any image requests", async () => {
+  await review();
+  const canvas = brush();
+  const requests = imageRequests;
+  const payload = state.maskBrush.strokes[0];
+  assert(payload.mode === "erase" && payload.radius === 8 && payload.points.length === 2,
+    "stroke payload changed");
+  document.querySelector("#mask-target").replaceChildren();
+  await bindMaskCanvas();
+  assert(document.querySelector(".mask-canvas") === canvas, "canvas was recreated");
+  undoMaskStroke();
+  assert(!state.maskBrush.strokes.length, "undo did not remove the stroke");
+  assert(imageRequests === requests, "undo or remount fetched an image");
+});
+
+await test("Unsaved reset is local and preserves the detected result", async () => {
+  await review(); const canvas = brush(); const requests = imageRequests;
+  let calls = 0;
+  const synchronized = await resetMaskSurface(async () => { calls++; });
+  assert(!synchronized && calls === 0, "unsaved reset called the backend");
+  assert(!state.maskBrush.strokes.length, "reset retained strokes");
+  assert(pixels(canvas).every((value, i) => i % 4 !== 3 || value === 0), "detected mask not restored");
+  assert(imageRequests === requests, "reset fetched a cached mask");
+});
+
+await test("Saved reset displays immediately and blocks edits while synchronization is pending", async () => {
+  await review(true); const canvas = brush();
+  let resolve, called = false;
+  state.busy = true;
+  const pending = resetMaskSurface(() => { called = true; return new Promise((done) => { resolve = done; }); });
+  await Promise.resolve(); await Promise.resolve();
+  assert(called, "reset did not start synchronization");
+  assert(pixels(canvas).every((value, i) => i % 4 !== 3 || value === 0), "display waited for server");
+  brush(); assert(!state.maskBrush.strokes.length, "brush accepted edits during reset");
+  resolve(); assert(await pending, "saved reset was not synchronized"); state.busy = false;
+  assert(!state.data.mask.reviewed && !state.data.mask.approved, "review flags were not reset");
+});
+
+await test("Failed saved reset restores the previous preview, strokes, and undo", async () => {
+  await review(true); const canvas = brush(); const previous = pixels(canvas);
+  const strokes = state.maskBrush.strokes;
+  let failed = false;
+  try { await resetMaskSurface(async () => { throw new Error("fixture offline"); }); }
+  catch { failed = true; }
+  assert(failed, "reset failure was swallowed");
+  assert(state.maskBrush.strokes === strokes && state.data.mask.reviewed, "edits or metadata lost");
+  assert(same(previous, pixels(canvas)), "preview did not roll back");
+  undoMaskStroke(); assert(!state.maskBrush.strokes.length, "undo failed after rollback");
+});
+
+await test("Save commits the cached base so later undo preserves saved edits", async () => {
+  await review(); const canvas = brush(); const savedPreview = pixels(canvas);
+  commitMaskStrokes(); state.maskBrush.strokes = [];
+  state.maskBrush.mode = "restore"; brush(); undoMaskStroke();
+  assert(same(savedPreview, pixels(canvas)), "undo removed saved edits");
+});
+
+await test("A delayed reset cannot overwrite a newly selected project", async () => {
+  await review(true); brush();
+  let reject;
+  const pending = resetMaskSurface(() => new Promise((_, fail) => { reject = fail; }));
+  await Promise.resolve(); await Promise.resolve();
+  await review(false, "other-fixture"); const canvas = brush(); const previous = pixels(canvas);
+  reject(new Error("fixture offline")); try { await pending; } catch {}
+  assert(state.selected === "other-fixture" && state.maskBrush.strokes.length === 1, "new project edits overwritten");
+  assert(same(previous, pixels(canvas)), "new project preview overwritten");
+});
+
+document.querySelector("#summary").textContent = `${passes} passed, ${failures} failed`;
+document.title = failures ? `FAIL: ${failures} mask checks` : `PASS: ${passes} mask checks`;
+</script>

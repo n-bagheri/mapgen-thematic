@@ -34,6 +34,11 @@ AVAILABLE_MODELS = (
     ("gemma-4-31b-it", "Gemma 4 31B"),
 )
 DEFAULT_MODEL = "gemma-4-26b-a4b-it"
+# A model request can fail even while the model is shown as healthy: a single
+# serving worker can reject a particular image/structured-output combination.
+# Keep the selected model first, then use broadly available vision-capable
+# Gemini models only after its retry budget is exhausted.
+FALLBACK_MODELS = ("gemini-3.5-flash", "gemini-2.5-flash")
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # Both names are accepted so an existing checkout keeps working; the first one
 # that exists wins.  Every candidate is gitignored.
@@ -322,7 +327,10 @@ fill the response schema. Rules:
 # --------------------------------------------------------------------------- runner
 
 MAX_IMAGE_BYTES = 19_000_000  # stay under the 20 MB inline-data limit
-API_TIMEOUT_MS = 360_000  # Gemma image/schema requests can take about five minutes
+# Inputs are normalised below to a compact RGB JPEG.  Two minutes is ample for
+# a healthy vision request but prevents one wedged worker from withholding
+# fallback for the former five-minute deadline.
+API_TIMEOUT_MS = 120_000
 
 
 def _ensure_api_key() -> None:
@@ -459,7 +467,12 @@ def _salvage_parse(schema, raw_text: str):
 
 def generate_json(contents, schema, model: str | None = None, temperature: float = 0.2,
                   retries: int = 1, status: Callable[[str], None] | None = None):
-    """Schema-enforced model call with a deadline and same-model retries."""
+    """Return validated JSON with bounded retries and model failover.
+
+    A selected model is always tried first.  A fallback is used only after a
+    retryable service failure or persistently malformed/empty model output, so
+    ordinary request and authentication errors remain visible to the caller.
+    """
     import re as _re
     import time as _time
 
@@ -467,131 +480,139 @@ def generate_json(contents, schema, model: str | None = None, temperature: float
     from google.genai import types
 
     _ensure_api_key()
-    resolved = model or os.environ.get("GEMINI_MODEL", DEFAULT_MODEL)
-    is_gemma = resolved.startswith("gemma-")
-    request_contents = contents
-    if is_gemma:
-        # Gemma's server-side response_schema path can stall and eventually
-        # return an internal error for this nested schema. Supplying the same
-        # schema as text returns promptly; Pydantic still validates it below.
-        schema_text = json.dumps(schema.model_json_schema(), ensure_ascii=False)
-        schema_instruction = (
-            "Return ONLY one valid JSON object matching this JSON Schema exactly:\n"
-            + schema_text
-            # Pretty-printing a long answer wastes most of the output budget
-            # on indentation, and a cap-truncated answer is unparseable.
-            + "\nOutput the JSON minified on a single line, with no spaces or"
-              " newlines between tokens and no markdown fences."
-        )
-        request_contents = list(contents) if isinstance(contents, (list, tuple)) else [contents]
-        request_contents.append(schema_instruction)
-    client = genai.Client(http_options=types.HttpOptions(timeout=API_TIMEOUT_MS))
+    selected = model or os.environ.get("GEMINI_MODEL", DEFAULT_MODEL)
+    models = tuple(dict.fromkeys((selected, *FALLBACK_MODELS)))
     last: Exception | None = None
     if status:
-        status(f"requesting model {resolved} (timeout {API_TIMEOUT_MS // 1000}s)")
-    try:
-        empty_retry = False
-        validation_retry_note: str | None = None
-        for attempt in range(retries + 1):
-            try:
-                # A malformed answer from a sampling call is retried
-                # deterministically to reduce formatting drift.  But when the
-                # first attempt was already deterministic -- or the failure was
-                # a decode loop -- Gemma reproduces the same wrong bytes
-                # exactly, so those retries must sample their way out instead.
-                retry_temperature = 0.6 if (empty_retry or temperature == 0.0) else 0.0
-                config_args = {
-                    "response_mime_type": "application/json",
-                    "temperature": retry_temperature if attempt else temperature,
-                }
-                if is_gemma:
-                    # Enough for several hundred minified detection items, but
-                    # bounded so a wedged thinking loop cannot burn unlimited
-                    # time before EmptyModelResponse gets raised.
-                    config_args["max_output_tokens"] = 16384
-                else:
-                    config_args["response_schema"] = schema
-                attempt_contents = request_contents
-                if validation_retry_note:
-                    attempt_contents = [*request_contents, validation_retry_note]
-                response = client.models.generate_content(
-                    model=resolved,
-                    contents=attempt_contents,
-                    config=types.GenerateContentConfig(**config_args),
-                )
-                parsed = response.parsed
-                if not isinstance(parsed, schema):
-                    raw_text = response.text
-                    if raw_text is None:
-                        candidates = response.candidates or []
-                        finish = (getattr(candidates[0], "finish_reason", None)
-                                  if candidates else None)
-                        raise EmptyModelResponse(
-                            f"{resolved} returned no text to parse "
-                            f"(finish_reason={finish})")
-                    try:
-                        parsed = schema.model_validate_json(raw_text)
-                    except ValidationError:
-                        parsed = _salvage_parse(schema, raw_text)
-                return parsed
-            except Exception as exc:  # noqa: BLE001 - classify API failures
-                last = exc
-                msg = str(exc)
-                upper = f"{type(exc).__name__} {msg}".upper()
-                code = getattr(exc, "code", None)
-                rate_limited = code == 429 or "RESOURCE_EXHAUSTED" in upper or "429" in upper
-                timed_out = code == 408 or "TIMEOUT" in upper or "TIMED OUT" in upper
-                server_error = code in {500, 502, 503, 504} or any(
-                    marker in upper for marker in ("INTERNAL", "UNAVAILABLE", "SERVICE UNAVAILABLE"))
-                empty = isinstance(exc, EmptyModelResponse)
-                empty_retry = empty
-                missing_fields = []
-                if isinstance(exc, ValidationError):
-                    missing_fields = [
-                        ".".join(str(part) for part in error["loc"])
-                        for error in exc.errors()
-                        if error.get("type") == "missing"
-                    ]
-                incomplete = bool(missing_fields)
-                validation_retry_note = (
-                    "Your previous JSON object was incomplete. Return a new complete "
-                    "object from scratch and include every required schema field. "
-                    "In particular, do not omit: " + ", ".join(missing_fields) + "."
-                ) if incomplete else None
-                malformed = (
-                    empty
-                    or isinstance(exc, (ValidationError, json.JSONDecodeError))
-                    or "JSON_INVALID" in upper
-                    or "INVALID JSON" in upper
-                )
-                if not (rate_limited or timed_out or server_error or malformed):
-                    raise
-                if status:
-                    reason = (
-                        "rate limited" if rate_limited
-                        else "timed out" if timed_out
-                        else "returned an empty response" if empty
-                        else "returned incomplete JSON" if incomplete
-                        else "returned malformed JSON" if malformed
-                        else "service error"
+        status(f"requesting model {selected} (timeout {API_TIMEOUT_MS // 1000}s)")
+
+    for model_index, resolved in enumerate(models):
+        is_gemma = resolved.startswith("gemma-")
+        request_contents = contents
+        if is_gemma:
+            # Gemma does not support the GenerateContent structured-output
+            # contract. Passing a nested response_schema can therefore stall
+            # or return an opaque 500. Give it the schema as text and validate
+            # the returned JSON locally instead.
+            schema_text = json.dumps(schema.model_json_schema(), ensure_ascii=False)
+            schema_instruction = (
+                "Return ONLY one valid JSON object matching this JSON Schema exactly:\n"
+                + schema_text
+                # Pretty-printing a long answer wastes most of the output budget
+                # on indentation, and a cap-truncated answer is unparseable.
+                + "\nOutput the JSON minified on a single line, with no spaces or"
+                  " newlines between tokens and no markdown fences."
+            )
+            request_contents = list(contents) if isinstance(contents, (list, tuple)) else [contents]
+            request_contents.append(schema_instruction)
+        client = genai.Client(http_options=types.HttpOptions(timeout=API_TIMEOUT_MS))
+        try:
+            empty_retry = False
+            validation_retry_note: str | None = None
+            retryable_failure = False
+            for attempt in range(retries + 1):
+                try:
+                    # A malformed answer from a sampling call is retried
+                    # deterministically to reduce formatting drift. But when the
+                    # first attempt was already deterministic -- or the failure was
+                    # a decode loop -- Gemma reproduces the same wrong bytes
+                    # exactly, so those retries must sample their way out instead.
+                    retry_temperature = 0.6 if (empty_retry or temperature == 0.0) else 0.0
+                    config_args = {
+                        "response_mime_type": "application/json",
+                        "temperature": retry_temperature if attempt else temperature,
+                    }
+                    if is_gemma:
+                        # Enough for several hundred minified detection items, but
+                        # bounded so a wedged thinking loop cannot burn unlimited
+                        # time before EmptyModelResponse gets raised.
+                        config_args["max_output_tokens"] = 16384
+                    else:
+                        config_args["response_schema"] = schema
+                    attempt_contents = request_contents
+                    if validation_retry_note:
+                        attempt_contents = [*request_contents, validation_retry_note]
+                    response = client.models.generate_content(
+                        model=resolved,
+                        contents=attempt_contents,
+                        config=types.GenerateContentConfig(**config_args),
                     )
-                    status(f"{resolved} {reason} on attempt {attempt + 1}")
-                if attempt >= retries:
-                    break
-                if rate_limited:
-                    m = _re.search(r"retry in (\d+(?:\.\d+)?)s", msg, flags=_re.IGNORECASE)
-                    delay = min(70.0, (float(m.group(1)) + 2.0) if m else 30.0)
-                else:
-                    delay = 0.0 if malformed else 2.0
-                if status:
-                    status(
-                        f"retrying {resolved}"
-                        + (f" in {delay:g}s" if delay else "")
+                    parsed = response.parsed
+                    if not isinstance(parsed, schema):
+                        raw_text = response.text
+                        if raw_text is None:
+                            candidates = response.candidates or []
+                            finish = (getattr(candidates[0], "finish_reason", None)
+                                      if candidates else None)
+                            raise EmptyModelResponse(
+                                f"{resolved} returned no text to parse "
+                                f"(finish_reason={finish})")
+                        try:
+                            parsed = schema.model_validate_json(raw_text)
+                        except ValidationError:
+                            parsed = _salvage_parse(schema, raw_text)
+                    return parsed
+                except Exception as exc:  # noqa: BLE001 - classify API failures
+                    last = exc
+                    msg = str(exc)
+                    upper = f"{type(exc).__name__} {msg}".upper()
+                    code = getattr(exc, "code", None)
+                    rate_limited = code == 429 or "RESOURCE_EXHAUSTED" in upper or "429" in upper
+                    timed_out = code == 408 or "TIMEOUT" in upper or "TIMED OUT" in upper
+                    server_error = code in {500, 502, 503, 504} or any(
+                        marker in upper for marker in ("INTERNAL", "UNAVAILABLE", "SERVICE UNAVAILABLE"))
+                    empty = isinstance(exc, EmptyModelResponse)
+                    empty_retry = empty
+                    missing_fields = []
+                    if isinstance(exc, ValidationError):
+                        missing_fields = [
+                            ".".join(str(part) for part in error["loc"])
+                            for error in exc.errors()
+                            if error.get("type") == "missing"
+                        ]
+                    incomplete = bool(missing_fields)
+                    validation_retry_note = (
+                        "Your previous JSON object was incomplete. Return a new complete "
+                        "object from scratch and include every required schema field. "
+                        "In particular, do not omit: " + ", ".join(missing_fields) + "."
+                    ) if incomplete else None
+                    malformed = (
+                        empty
+                        or isinstance(exc, (ValidationError, json.JSONDecodeError))
+                        or "JSON_INVALID" in upper
+                        or "INVALID JSON" in upper
                     )
-                if delay:
-                    _time.sleep(delay)
-    finally:
-        client.close()
+                    retryable_failure = rate_limited or timed_out or server_error or malformed
+                    if not retryable_failure:
+                        raise
+                    if status:
+                        reason = (
+                            "rate limited" if rate_limited
+                            else "timed out" if timed_out
+                            else "returned an empty response" if empty
+                            else "returned incomplete JSON" if incomplete
+                            else "returned malformed JSON" if malformed
+                            else "service error"
+                        )
+                        status(f"{resolved} {reason} on attempt {attempt + 1}")
+                    if attempt >= retries:
+                        break
+                    if rate_limited:
+                        m = _re.search(r"retry in (\d+(?:\.\d+)?)s", msg, flags=_re.IGNORECASE)
+                        delay = min(70.0, (float(m.group(1)) + 2.0) if m else 30.0)
+                    else:
+                        delay = 0.0 if malformed else 2.0
+                    if status:
+                        status(
+                            f"retrying {resolved}"
+                            + (f" in {delay:g}s" if delay else "")
+                        )
+                    if delay:
+                        _time.sleep(delay)
+        finally:
+            client.close()
+        if retryable_failure and model_index < len(models) - 1 and status:
+            status(f"{resolved} did not recover; trying fallback model {models[model_index + 1]}")
 
     if last is not None:
         raise last
@@ -608,21 +629,32 @@ MODEL_IMAGE_MAX_SIDE = 1600
 
 
 def encode_for_model(image_path: Path) -> tuple[bytes, str]:
-    """Return (bytes, mime) for one map, downscaled if it is larger than needed."""
+    """Return a bounded, RGB JPEG payload for a model image request.
+
+    Normalising every raster avoids model-specific differences in PNG alpha,
+    colour profiles, and huge source resolutions.  All pixel-precise stages
+    continue to read the untouched source image.
+    """
     from PIL import Image
 
-    data = image_path.read_bytes()
-    mime = mimetypes.guess_type(image_path.name)[0] or "image/jpeg"
     try:
         with Image.open(image_path) as image:
-            if max(image.size) <= MODEL_IMAGE_MAX_SIDE:
-                return data, mime
-            scale = MODEL_IMAGE_MAX_SIDE / max(image.size)
+            image.load()
+            scale = min(1.0, MODEL_IMAGE_MAX_SIDE / max(image.size))
             size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
-            resized = image.convert("RGB").resize(size, Image.LANCZOS)
+            if image.size != size:
+                image = image.resize(size, Image.LANCZOS)
+            if image.mode in ("RGBA", "LA") or "transparency" in image.info:
+                rgba = image.convert("RGBA")
+                normalized = Image.new("RGB", rgba.size, "white")
+                normalized.paste(rgba, mask=rgba.getchannel("A"))
+            else:
+                normalized = image.convert("RGB")
             buffer = io.BytesIO()
-            resized.save(buffer, format="JPEG", quality=90)
+            normalized.save(buffer, format="JPEG", quality=92, optimize=True)
     except OSError:
+        data = image_path.read_bytes()
+        mime = mimetypes.guess_type(image_path.name)[0] or "image/jpeg"
         return data, mime           # unreadable by PIL: let the API judge it
     return buffer.getvalue(), "image/jpeg"
 

@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="light">
   <title>MapGen</title>
   <link rel="stylesheet" href="/minimal.css?v=focus-59">
-  <link rel="stylesheet" href="/test.css?v=test-17">
+  <link rel="stylesheet" href="/test.css?v=test-28">
 </head>
 <body class="nav-open test-flow-open">
   <main class="test-screen test-home" id="test-home-screen">
@@ -148,32 +148,30 @@
   <header class="test-pipeline-header" id="test-pipeline-header" data-test-minimal hidden>
     <nav class="test-pipeline-nav" aria-label="Pipeline navigation">
       <button class="test-nav-button" id="test-pipeline-home" type="button" aria-label="Home" title="Home">
-        <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M3 15.3 16 4l13 11.3v13.2h-8.2v-8.8h-9.6v8.8H3z"/><path d="m1.5 15.3 14.5-13 14.5 13" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      </button>
-      <button class="test-nav-button" id="test-pipeline-back" type="button" aria-label="Back" title="Back">
-        <svg viewBox="0 0 34 32" aria-hidden="true"><path d="M13.5 5 2.5 15.5l11 10.5v-6.5c8.5.1 14.2 2.7 18 8-1.2-10.1-7.2-15.2-18-15.3z"/></svg>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z"></path></svg>
       </button>
     </nav>
     <div class="test-project-bar">
-      <strong class="test-pipeline-title" id="test-pipeline-title">New project</strong>
-      <button class="test-header-action delete" id="test-pipeline-delete" type="button"
-              aria-label="Delete project" title="Delete project" disabled>
-        <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M7.5 9.5h17M12 9.5V6.8h8v2.7M10 12.5l1 13h10l1-13M14 14.5v8M18 14.5v8"></path></svg>
-      </button>
-      <button class="test-header-action" id="test-pipeline-rename" type="button"
-              aria-label="Rename project" title="Rename project" disabled>
-        <svg viewBox="0 0 32 32" aria-hidden="true"><path d="m8 23 1.7-6.1L22.8 3.8l5.4 5.4-13.1 13.1L8 23zM18.9 7.7l5.4 5.4M7 27h19"></path></svg>
-      </button>
+      <div class="test-project-title-editor">
+        <button class="test-pipeline-title" id="test-pipeline-title" type="button"
+                aria-label="Rename project" title="Click to rename" disabled>New project</button>
+        <input class="test-pipeline-title-input" id="test-pipeline-title-input" type="text"
+               maxlength="120" autocomplete="off" spellcheck="false" aria-label="Project name" hidden>
+      </div>
     </div>
+    <section class="test-start-panel" id="test-start-panel" hidden>
+      <button class="button primary test-start-button" id="test-pipeline-start" type="button">Start</button>
+    </section>
+    <button class="test-header-action delete" id="test-pipeline-delete" type="button"
+            aria-label="Delete project" title="Delete project" disabled>
+      <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M7.5 9.5h17M12 9.5V6.8h8v2.7M10 12.5l1 13h10l1-13M14 14.5v8M18 14.5v8"></path></svg>
+    </button>
     <div class="test-pipeline-progress" id="test-pipeline-progress"
          role="progressbar" aria-label="Pipeline progress" aria-valuemin="0" aria-valuemax="9" aria-valuenow="0"></div>
     <section class="test-thinking" id="test-thinking" aria-live="polite" hidden>
       <span class="test-thinking-spinner" aria-hidden="true"></span>
       <span class="test-review-alert" aria-hidden="true"><span>!</span></span>
       <strong id="test-thinking-message"></strong>
-    </section>
-    <section class="test-start-panel" id="test-start-panel" hidden>
-      <button class="button primary test-start-button" id="test-pipeline-start" type="button">Start</button>
       <p id="test-start-status" role="status" aria-live="polite"></p>
     </section>
   </header>
@@ -225,10 +223,10 @@
       <div class="visual-content test-stable-preview" id="test-stable-preview" inert hidden></div>
     </section>
 
-    <div class="test-review-resizer" id="test-review-resizer" role="separator"
-         aria-label="Resize review panel" aria-orientation="horizontal" tabindex="0">
-      <span aria-hidden="true"></span>
-    </div>
+    <div class="test-review-resizer" id="test-review-resizer" role="separator" tabindex="0"
+         aria-label="Resize review panel" aria-controls="control-pane" aria-orientation="vertical"
+         aria-valuemin="320" aria-valuemax="1200" aria-valuenow="400"></div>
+
     <aside class="control-pane" id="control-pane" aria-label="Map controls">
       <div id="control-content" hidden></div>
     </aside>
@@ -237,6 +235,6 @@
   <input class="visually-hidden" id="upload-input" type="file" accept=".png,.jpg,.jpeg" data-test-minimal>
   <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true" data-test-minimal></div>
 
-  <script type="module" src="/test/main.js?v=test-17"></script>
+  <script type="module" src="/test/main.js?v=test-28"></script>
 </body>
 </html>

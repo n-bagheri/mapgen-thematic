@@ -25,7 +25,6 @@ from __future__ import annotations
 import json
 import re
 import mimetypes
-import time
 from pathlib import Path
 
 import cv2
@@ -39,6 +38,7 @@ from .semantics import (
     LegendEncodingKind,
     MapSemantics,
     _ensure_api_key,
+    generate_json,
     require_pipeline_eligible,
     semantics_artifact_is_current,
 )
@@ -135,7 +135,6 @@ def _parse_layout_response(response: object) -> MapLayout:
 
 
 def detect_layout(image_path: Path, model: str | None = None) -> MapLayout:
-    from google import genai
     from google.genai import types
 
     _ensure_api_key()
@@ -148,6 +147,17 @@ def detect_layout(image_path: Path, model: str | None = None) -> MapLayout:
     # Gemma default; never consult GEMINI_MODEL here and silently switch to a
     # Gemini model that the user did not select.
     resolved = model or DEFAULT_MODEL
+    image_part = types.Part.from_bytes(data=data, mime_type=mime)
+    if resolved.startswith("gemma-"):
+        # Gemma has no server-enforced structured-output support. Its JSON is
+        # instead validated locally by generate_json, which also supplies the
+        # same retry/failover protection used for Step 1.
+        return generate_json(
+            [image_part, LAYOUT_PROMPT], MapLayout, model=resolved,
+            temperature=0.0, retries=LAYOUT_RETRIES)
+
+    from google import genai
+
     client = genai.Client(http_options=types.HttpOptions(timeout=API_TIMEOUT_MS))
     last: Exception | None = None
     try:
@@ -155,7 +165,7 @@ def detect_layout(image_path: Path, model: str | None = None) -> MapLayout:
             try:
                 response = client.models.generate_content(
                     model=resolved,
-                    contents=[types.Part.from_bytes(data=data, mime_type=mime), LAYOUT_PROMPT],
+                    contents=[image_part, LAYOUT_PROMPT],
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
                         response_schema=MapLayout,

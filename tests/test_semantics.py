@@ -262,8 +262,45 @@ class GenerateJsonSalvageTests(unittest.TestCase):
 
     def test_persistent_thought_only_response_raises_the_typed_error(self):
         from mapgen.semantics import EmptyModelResponse
-        with self.assertRaises(EmptyModelResponse):
-            self._run([self._response(None), self._response(None)], retries=1)
+        from unittest.mock import patch
+        from mapgen import semantics
+
+        with patch.object(semantics, "FALLBACK_MODELS", ()):
+            with self.assertRaises(EmptyModelResponse):
+                self._run([self._response(None), self._response(None)], retries=1)
+
+    def test_retryable_primary_failure_uses_a_fallback_model(self):
+        from unittest.mock import MagicMock, patch
+        from mapgen import semantics
+        from mapgen.textdetect import TextDetections
+
+        class ServerFailure(RuntimeError):
+            code = 500
+
+        good = self._response(
+            '{"items": [{"text": "A", "kind": "city", "box_2d": [1, 2, 3, 4]}]}')
+        client = MagicMock()
+        client.models.generate_content.side_effect = [ServerFailure("INTERNAL"),
+                                                       ServerFailure("INTERNAL"), good]
+        messages = []
+
+        with patch.object(semantics, "_ensure_api_key"), \
+                patch.object(semantics, "FALLBACK_MODELS", ("gemini-fallback",)), \
+                patch("google.genai.Client", return_value=client):
+            result = semantics.generate_json(
+                ["prompt"], TextDetections, model="gemma-test", temperature=0.0,
+                retries=1, status=messages.append)
+
+        self.assertEqual(result.items[0].text, "A")
+        self.assertEqual(
+            [call.kwargs["model"] for call in client.models.generate_content.call_args_list],
+            ["gemma-test", "gemma-test", "gemini-fallback"],
+        )
+        fallback_config = client.models.generate_content.call_args_list[-1].kwargs["config"]
+        self.assertIs(fallback_config.response_schema, TextDetections)
+        self.assertTrue(any("trying fallback model gemini-fallback" in message
+                            for message in messages))
+
 
     def test_missing_required_sections_are_named_on_retry(self):
         from unittest.mock import MagicMock, patch
@@ -315,6 +352,24 @@ class GenerateJsonSalvageTests(unittest.TestCase):
                ' "box_2d": [1, 2, 3, 4]}, {"text": "C')
         result, _ = self._run([self._response(cut)])
         self.assertEqual([it.text for it in result.items], ["a } ] b"])
+
+
+class ModelImageEncodingTests(unittest.TestCase):
+    def test_png_with_alpha_is_flattened_and_downscaled_to_jpeg(self):
+        from PIL import Image
+        from mapgen.semantics import MODEL_IMAGE_MAX_SIDE, encode_for_model
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "map.png"
+            Image.new("RGBA", (2000, 1000), (240, 60, 30, 120)).save(source)
+            data, mime = encode_for_model(source)
+
+        self.assertEqual(mime, "image/jpeg")
+        self.assertLess(len(data), 2_000_000)
+        import io
+        with Image.open(io.BytesIO(data)) as normalized:
+            self.assertEqual(normalized.mode, "RGB")
+            self.assertEqual(normalized.size, (MODEL_IMAGE_MAX_SIDE, 800))
 
 
 if __name__ == "__main__":
