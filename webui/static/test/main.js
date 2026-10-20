@@ -40,7 +40,6 @@ const TEMPLATE_MAPS = [
   { file: "netherlands_landuse.png", label: "Netherlands land use" },
   { file: "norway_landuse.png", label: "Norway land use" },
   { file: "poland_vegetation.png", label: "Poland vegetation" },
-  { file: "Russia_districts.jpg", label: "Russia districts" },
   { file: "senegral_rainfall.png", label: "Senegal rainfall" },
   { file: "southafrica_agriculture.png", label: "South Africa agriculture" },
   { file: "spain_landuse.png", label: "Spain land use" },
@@ -781,15 +780,56 @@ async function toggleTestHybridMode(button) {
   }
 }
 
+function bindTestViewerFit(toolbar) {
+  const frame = toolbar.closest(".map-stage")?.querySelector(".map-frame");
+  const readout = toolbar.querySelector(".page-zoom-readout");
+  if (!frame || !readout) return;
+  // Cached images can be fitted while the home screen still hides the
+  // workspace. Refit as its visible size settles, unless the user zooms.
+  const refit = () => {
+    if (!toolbar.isConnected) {
+      observer.disconnect();
+      return;
+    }
+    if (frame.clientWidth > 0 && frame.clientHeight > 0
+        && readout.textContent === "Fit") {
+      toolbar.querySelector(".page-zoom-fit")?.click();
+    }
+  };
+  const observer = new ResizeObserver(refit);
+  observer.observe(frame, { box: "border-box" });
+  refit();
+}
+
 function enhanceTestViewers() {
   let maskComparison = null;
   let legendComparison = null;
   document.querySelectorAll("#visual-content .page-view-toolbar").forEach((toolbar) => {
+    const originalEnabled = Number(state.activeStep) >= 2;
+    const originalInput = toolbar.querySelector("[data-test-original-view]");
+    if (originalInput) {
+      originalInput.disabled = !originalEnabled;
+      originalInput.checked = originalEnabled && state.showOriginalMap;
+      originalInput.closest("label")?.classList.toggle("is-disabled", !originalEnabled);
+    }
     if (toolbar.dataset.testEnhanced === "true") {
       syncTestColourControl(toolbar);
       return;
     }
     toolbar.dataset.testEnhanced = "true";
+
+    const pan = toolbar.querySelector(".page-pan-toggle");
+    if (pan) {
+      pan.title = "Pan";
+      pan.setAttribute("aria-label", "Pan");
+      pan.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24"
+        fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"
+        stroke-linejoin="round" aria-hidden="true" style="vertical-align: middle">
+        <path d="M8 13V5.5a1.5 1.5 0 0 1 3 0V11m0-5.5V3.5a1.5 1.5 0 0 1 3 0V11
+          m0-5.5a1.5 1.5 0 0 1 3 0V12m0-3.5a1.5 1.5 0 0 1 3 0V15
+          a7 7 0 0 1-7 7h-1a7 7 0 0 1-5.6-2.8L3 14.7a1.5 1.5 0 0 1 2.4-1.8L8 16V13"/>
+      </svg>`;
+    }
 
     toolbar.querySelector("[data-original-view]")?.remove();
     toolbar.querySelector("[data-final-map-view]")?.remove();
@@ -811,9 +851,10 @@ function enhanceTestViewers() {
     syncTestColourControl(toolbar);
 
     const original = document.createElement("label");
-    original.className = "page-grid-toggle";
+    original.className = `page-grid-toggle${originalEnabled ? "" : " is-disabled"}`;
     original.innerHTML = `<input type="checkbox" data-test-original-view
-      ${state.showOriginalMap ? "checked" : ""}><span aria-hidden="true"></span> Display original map`;
+      ${originalEnabled && state.showOriginalMap ? "checked" : ""}
+      ${originalEnabled ? "" : "disabled"}><span aria-hidden="true"></span> Display original map`;
     original.querySelector("input").addEventListener("change", (event) => {
       state.showOriginalMap = event.currentTarget.checked;
       // The extracted map/legend comparison is already a two-result view.
@@ -856,6 +897,7 @@ function enhanceTestViewers() {
     [guides, snap, colours, original]
       .filter(Boolean).forEach((control) => displayGroup.appendChild(control));
     toolbar.replaceChildren(navigationGroup, displayGroup);
+    bindTestViewerFit(toolbar);
   });
 
   document.querySelectorAll("#visual-content .step7-comparison-canvas").forEach((comparison) => {
@@ -1596,6 +1638,14 @@ function prepareTestReviewContent(root, definition) {
   if (definition === TEST_REVIEW_PANELS.aggregation) {
     const intro = root.querySelector(":scope > .section-intro");
     if (intro) emphasizeAggregationInstructions(intro);
+    const unused = state.data.aggregation?.proposal?.unused_legend_classes || [];
+    if (unused.length && !root.querySelector("[data-unused-legend-classes]")) {
+      const note = document.createElement("p");
+      note.className = "status-copy";
+      note.dataset.unusedLegendClasses = "true";
+      note.textContent = `Legend entries with no detected map pixels: ${unused.map((item) => item.label).join(", ")}.`;
+      root.appendChild(note);
+    }
     const usage = root.querySelector(".category-toolbar p");
     usage?.childNodes.forEach((node) => {
       if (node.nodeType === Node.TEXT_NODE) {
@@ -1856,6 +1906,12 @@ function copyStablePreview() {
   // IDs that their stage-specific CSS needs while the live pane redraws.
   enhanceTestViewers();
   stable.replaceChildren(...Array.from(visual.childNodes));
+  // Keep the scroll container interactive while the parked map and its
+  // controls remain read-only during processing.
+  stable.querySelectorAll(".page-view-toolbar, .map-canvas").forEach((node) => {
+    node.inert = true;
+  });
+  stable.inert = false;
   stable.hidden = false;
 }
 
@@ -1951,6 +2007,16 @@ async function bindExtractedStep2Viewer() {
   grid.style.gridTemplateColumns = `${widths[0]}fr ${widths[1]}fr`;
   enhanceTestViewers();
   bindViewer(EXTRACTED_PREVIEW_VIEW, async () => true);
+  // The image-sized canvas is fitted and zoomed as a whole. Compensate only
+  // its captions so high-resolution maps cannot shrink their UI text.
+  const syncCaptionScale = () => {
+    const scale = sheet.getBoundingClientRect().width / sheet.offsetWidth;
+    if (scale > 0) grid.style.setProperty("--test-caption-scale", String(1 / scale));
+  };
+  new MutationObserver(syncCaptionScale).observe(sheet, {
+    attributes: true, attributeFilter: ["style"],
+  });
+  syncCaptionScale();
 }
 
 /* Park the last valid visual over the live pane while the backend is polling.
@@ -2135,7 +2201,12 @@ function reconcileFinishedJobSnapshot(map, job) {
     (highest, step) => Math.max(highest, Number(step) || 0), 0,
   );
   const snapshotMissing = requested.some((step) => !map?.steps?.[step]);
-  const presentationBehind = highestRequested > Number(stagePresentation.step || 0);
+  // A reopened run can pause at an earlier review than its last completed
+  // job. That deliberate pause must not redraw the viewer on every poll.
+  const reviewStep = pipelineReviewStep(map);
+  const presentationTarget = reviewStep
+    ? Math.min(highestRequested, Number(reviewStep)) : highestRequested;
+  const presentationBehind = presentationTarget > Number(stagePresentation.step || 0);
   const needsOrderedRefresh = requested.length && job?.status !== "failed"
     && (job?.status === "running"
       || job?.status === "done" && (snapshotMissing || presentationBehind));

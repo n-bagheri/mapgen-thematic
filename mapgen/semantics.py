@@ -36,9 +36,13 @@ AVAILABLE_MODELS = (
 DEFAULT_MODEL = "gemma-4-26b-a4b-it"
 # A model request can fail even while the model is shown as healthy: a single
 # serving worker can reject a particular image/structured-output combination.
-# Keep the selected model first, then use broadly available vision-capable
-# Gemini models only after its retry budget is exhausted.
-FALLBACK_MODELS = ("gemini-3.5-flash", "gemini-2.5-flash")
+# Keep the selected model first; fail over only after its retry budget.
+FALLBACK_MODELS = (
+    "gemma-4-31b-it",
+    "gemini-3.8-flash",
+    "gemini-3.6-flash",
+    "gemini-2.5-flash",
+)
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # Both names are accepted so an existing checkout keeps working; the first one
 # that exists wins.  Every candidate is gitignored.
@@ -476,6 +480,7 @@ def generate_json(contents, schema, model: str | None = None, temperature: float
     import re as _re
     import time as _time
 
+    import httpx
     from google import genai
     from google.genai import types
 
@@ -520,8 +525,11 @@ def generate_json(contents, schema, model: str | None = None, temperature: float
                     retry_temperature = 0.6 if (empty_retry or temperature == 0.0) else 0.0
                     config_args = {
                         "response_mime_type": "application/json",
-                        "temperature": retry_temperature if attempt else temperature,
                     }
+                    # These fallback models deprecate sampling parameters.
+                    # Keep existing Gemma/2.5 request settings unchanged.
+                    if resolved not in {"gemini-3.8-flash", "gemini-3.6-flash"}:
+                        config_args["temperature"] = retry_temperature if attempt else temperature
                     if is_gemma:
                         # Enough for several hundred minified detection items, but
                         # bounded so a wedged thinking loop cannot burn unlimited
@@ -582,7 +590,8 @@ def generate_json(contents, schema, model: str | None = None, temperature: float
                         or "JSON_INVALID" in upper
                         or "INVALID JSON" in upper
                     )
-                    retryable_failure = rate_limited or timed_out or server_error or malformed
+                    transport_error = isinstance(exc, httpx.TransportError)
+                    retryable_failure = rate_limited or timed_out or server_error or malformed or transport_error
                     if not retryable_failure:
                         raise
                     if status:

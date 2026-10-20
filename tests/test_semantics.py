@@ -354,6 +354,61 @@ class GenerateJsonSalvageTests(unittest.TestCase):
         self.assertEqual([it.text for it in result.items], ["a } ] b"])
 
 
+class ModelFailoverOrderTests(unittest.TestCase):
+    def test_default_and_exact_fallback_order_with_per_model_retries(self):
+        from unittest.mock import MagicMock, patch
+        from mapgen import semantics
+        from mapgen.textdetect import TextDetections
+
+        class Unavailable(RuntimeError):
+            code = 503
+
+        expected = ["gemma-4-26b-a4b-it", "gemma-4-31b-it", "gemini-3.8-flash",
+                    "gemini-3.6-flash", "gemini-2.5-flash"]
+        self.assertEqual(semantics.DEFAULT_MODEL, expected[0])
+        self.assertEqual(list(semantics.FALLBACK_MODELS), expected[1:])
+        client = MagicMock()
+        good = GenerateJsonSalvageTests._response('{"items": []}')
+        client.models.generate_content.side_effect = [Unavailable("unavailable")] * 8 + [good]
+        with patch.object(semantics, "_ensure_api_key"), patch("time.sleep"), \
+                patch("google.genai.Client", return_value=client):
+            result = semantics.generate_json(["prompt"], TextDetections,
+                                             model=semantics.DEFAULT_MODEL)
+        self.assertEqual(result.items, [])
+        calls = client.models.generate_content.call_args_list
+        self.assertEqual([call.kwargs["model"] for call in calls],
+                         [model for model in expected[:-1] for _ in range(2)] + [expected[-1]])
+        for call in calls:
+            config = call.kwargs["config"]
+            if call.kwargs["model"] in {"gemini-3.8-flash", "gemini-3.6-flash"}:
+                self.assertIsNone(config.temperature)
+                self.assertIs(config.response_schema, TextDetections)
+
+    def test_connection_failure_fails_over_but_authentication_failure_stops(self):
+        from unittest.mock import MagicMock, patch
+        import httpx
+        from mapgen import semantics
+        from mapgen.textdetect import TextDetections
+
+        client = MagicMock()
+        client.models.generate_content.side_effect = [httpx.ConnectError("connection refused"),
+                                                       GenerateJsonSalvageTests._response('{"items": []}')]
+        with patch.object(semantics, "_ensure_api_key"), patch("google.genai.Client", return_value=client):
+            semantics.generate_json(["prompt"], TextDetections, model=semantics.DEFAULT_MODEL, retries=0)
+        self.assertEqual([call.kwargs["model"] for call in client.models.generate_content.call_args_list],
+                         [semantics.DEFAULT_MODEL, "gemma-4-31b-it"])
+
+        class AuthenticationFailure(RuntimeError):
+            code = 403
+
+        client.reset_mock()
+        client.models.generate_content.side_effect = AuthenticationFailure("permission denied")
+        with patch.object(semantics, "_ensure_api_key"), patch("google.genai.Client", return_value=client):
+            with self.assertRaises(AuthenticationFailure):
+                semantics.generate_json(["prompt"], TextDetections, model=semantics.DEFAULT_MODEL)
+        self.assertEqual(client.models.generate_content.call_count, 1)
+
+
 class ModelImageEncodingTests(unittest.TestCase):
     def test_png_with_alpha_is_flattened_and_downscaled_to_jpeg(self):
         from PIL import Image

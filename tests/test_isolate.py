@@ -85,9 +85,8 @@ class MapMaskRefinementTests(unittest.TestCase):
         self.assertFalse(any("edge ruler/tick" in warning for warning in warnings))
 
 
-    def test_a_tight_vlm_box_stays_the_connected_component_seed_boundary(self):
-        """The baseline refines components inside the padded model box and
-        reports substantial content outside it instead of growing the mask."""
+    def test_excessive_connected_growth_remains_for_review(self):
+        """A box missing most of a panel is ambiguous and still needs review."""
         page = np.full((400, 600, 3), 255, np.uint8)
         # One printed panel with varied content (sea and land bands).
         for x in range(60, 560, 20):
@@ -104,6 +103,73 @@ class MapMaskRefinementTests(unittest.TestCase):
         self.assertTrue((mask[370:395, 10:40] == 0).all(),
                         "detached decorations must not be pulled in")
         self.assertTrue(any("outside the VLM map boxes" in w for w in warnings), warnings)
+
+    def test_recovers_clipped_peninsula_without_filling_white_holes(self):
+        page = np.full((300, 350, 3), 255, np.uint8)
+        cv2.rectangle(page, (80, 50), (240, 240), (40, 160, 80), -1)
+        cv2.rectangle(page, (130, 100), (155, 125), (255, 255, 255), -1)
+        # Nearby unseeded content is not part of the clipped component.
+        cv2.rectangle(page, (30, 260), (60, 280), (40, 160, 80), -1)
+
+        mask, tight, warnings = refine_map_mask(page, [(100, 40, 250, 250)], [])
+
+        self.assertEqual(mask[150, 85], 255)
+        self.assertEqual(mask[110, 140], 0, "genuine white holes must remain white")
+        self.assertEqual(mask[270, 45], 0, "detached decorations must remain excluded")
+        self.assertEqual(mask[45, 85], 0, "paper must remain excluded")
+        self.assertEqual(tight, (72, 42, 249, 249))
+        self.assertTrue(any("connected map pixels clipped" in w for w in warnings))
+
+    def test_recovery_respects_furniture_even_when_it_touches_the_map(self):
+        page = np.full((300, 350, 3), 255, np.uint8)
+        cv2.rectangle(page, (80, 50), (240, 240), (40, 160, 80), -1)
+        # An excluded legend touches the recovered western edge.
+        cv2.rectangle(page, (55, 150), (95, 190), (40, 160, 80), -1)
+        exclusions = [(55, 150, 96, 191)]
+
+        mask, _, _ = refine_map_mask(page, [(100, 40, 250, 250)], exclusions)
+
+        self.assertEqual(mask[120, 85], 255)
+        self.assertFalse(mask[150:191, 55:96].any())
+
+    def test_recovery_does_not_lower_the_background_threshold(self):
+        page = np.full((300, 350, 3), 255, np.uint8)
+        cv2.rectangle(page, (80, 50), (240, 240), (40, 160, 80), -1)
+        cv2.rectangle(page, (100, 180), (130, 210), (245, 245, 245), -1)
+
+        mask, _, _ = refine_map_mask(page, [(100, 40, 250, 250)], [])
+
+        self.assertEqual(mask[120, 85], 255)
+        self.assertEqual(mask[195, 115], 0)
+
+    def test_connected_page_edge_content_is_not_automatically_recovered(self):
+        page = np.full((300, 350, 3), 255, np.uint8)
+        cv2.rectangle(page, (0, 120), (20, 180), (40, 160, 80), -1)
+        cv2.rectangle(page, (20, 50), (240, 240), (40, 160, 80), -1)
+
+        mask, _, warnings = refine_map_mask(page, [(30, 40, 250, 250)], [])
+
+        self.assertEqual(mask[150, 5], 0)
+        self.assertFalse(any("connected map pixels clipped" in w for w in warnings))
+
+    def test_thin_printed_line_beyond_box_stays_excluded(self):
+        page = np.full((300, 350, 3), 255, np.uint8)
+        cv2.rectangle(page, (100, 50), (240, 240), (40, 160, 80), -1)
+        cv2.rectangle(page, (40, 145), (110, 147), (0, 0, 0), -1)
+
+        mask, _, warnings = refine_map_mask(page, [(100, 40, 250, 250)], [])
+
+        self.assertEqual(mask[146, 60], 0)
+        self.assertFalse(any("connected map pixels clipped" in w for w in warnings))
+
+    def test_small_clipped_island_is_recovered(self):
+        page = np.full((300, 350, 3), 255, np.uint8)
+        cv2.rectangle(page, (150, 50), (240, 200), (40, 160, 80), -1)
+        cv2.rectangle(page, (60, 220), (72, 248), (40, 160, 80), -1)
+
+        mask, _, _ = refine_map_mask(page, [(140, 40, 250, 210), (55, 215, 80, 230)], [])
+
+        self.assertEqual(mask[245, 65], 255)
 
 
 class TextInputPreparationTests(unittest.TestCase):

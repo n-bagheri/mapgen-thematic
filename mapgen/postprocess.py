@@ -272,6 +272,10 @@ def run_step5(image_path: Path, model: str | None = None,
         "plain_thematic": [],
         "source_classes": [{"index": int(cl["index"]), "label": cl["label"]}
                            for cl in thematic],
+        "unused_legend_classes": [{"index": int(cl["index"]), "label": cl["label"],
+                                   "rgb": cl["rgb"], "reason": "no detected map pixels"}
+                                  for cl in classes if cl.get("source") == "legend"
+                                  and cl.get("is_thematic") and not cl.get("area_px", 0)],
         "non_thematic_extra": [{
             "index": int(cl["index"]), "label": cl["label"],
             "priority": cl.get("priority"),

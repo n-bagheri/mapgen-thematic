@@ -391,6 +391,60 @@ def prepare_text_input(
 MIN_COMPONENT_PX = 100
 
 
+def _recover_clipped_map_content(
+    content: np.ndarray,
+    mask: np.ndarray,
+    map_boxes: list[tuple[int, int, int, int]],
+    exclude_boxes: list[tuple[int, int, int, int]],
+) -> int:
+    """Restore bounded continuations across box edges, without filling holes.
+
+    Seed from the already-filtered geographic mask. Only existing foreground
+    outside the boxes may be added; rejected interior components, paper and
+    explicitly excluded furniture remain unchanged. Conservative growth
+    limits leave large/ambiguous omissions for the existing human review.
+    """
+    zone = np.zeros_like(content)
+    for x0, y0, x1, y1 in map_boxes:
+        zone[y0:y1, x0:x1] = 1
+    reachable = content.copy()
+    for x0, y0, x1, y1 in exclude_boxes:
+        reachable[y0:y1, x0:x1] = 0
+    outside = (reachable > 0) & (zone == 0)
+    contact = outside & (cv2.dilate((mask > 0).astype(np.uint8),
+                                  np.ones((3, 3), np.uint8)) > 0)
+    if not np.any(contact):
+        return 0
+
+    _, labels, stats, _ = cv2.connectedComponentsWithStats(reachable, connectivity=8)
+    recovered = 0
+    h, w = mask.shape
+    for label in np.unique(labels[contact]):
+        if label == 0:
+            continue
+        x, y, cw, ch, _ = stats[label]
+        region = np.s_[y:y + ch, x:x + cw]
+        component = labels[region] == label
+        seed_area = int(np.count_nonzero(component & (mask[region] > 0)))
+        extra = component & outside[region]
+        added = int(np.count_nonzero(extra))
+        # Tiny fringes do not establish clipping. A component that would grow
+        # substantially may instead be connected to sea, a frame or another
+        # panel. Small clipped islands get a modest absolute allowance.
+        if not max(MIN_COMPONENT_PX, int(0.001 * seed_area)) <= added <= max(
+            256, int(0.20 * seed_area),
+        ):
+            continue
+        ex, ey, ew, eh = cv2.boundingRect(extra.astype(np.uint8))
+        # Never grow into the page edge, or follow only a thin printed line.
+        if (x + ex == 0 or y + ey == 0 or x + ex + ew == w or y + ey + eh == h
+                or min(ew, eh) < max(5, int(0.002 * max(w, h)))):
+            continue
+        mask[region][extra] = 255
+        recovered += added
+    return recovered
+
+
 def refine_map_mask(
     img: np.ndarray,
     map_boxes: list[tuple[int, int, int, int]],
@@ -519,12 +573,25 @@ def refine_map_mask(
     pad = 8
     tight = (max(0, xs0 - pad), max(0, ys0 - pad), min(w, xs1 + pad), min(h, ys1 + pad))
 
+    # The broad-map branch already has its own recovery policy. Keep that
+    # policy intact and repair only clipped edges in ordinary map boxes.
+    recovered = 0 if broad_map_band else _recover_clipped_map_content(
+        content, mask, map_boxes, exclude_boxes,
+    )
+    if recovered:
+        ys, xs = np.nonzero(mask)
+        tight = (max(0, int(xs.min()) - pad), max(0, int(ys.min()) - pad),
+                 min(w, int(xs.max()) + 1 + pad), min(h, int(ys.max()) + 1 + pad))
+        warnings.append(f"recovered {recovered} connected map pixels clipped by the VLM boxes")
+
     # content the VLM box (or exclusions) cut off -> human should check the overlay
     outside = content.copy()
     for x0, y0, x1, y1 in search_boxes:
         outside[y0:y1, x0:x1] = 0
     for ex0, ey0, ex1, ey1 in exclude_boxes:
         outside[ey0:ey1, ex0:ex1] = 0
+    if recovered:
+        outside[mask > 0] = 0
     kept_area = int(np.count_nonzero(mask))
     if np.count_nonzero(outside) > 0.05 * kept_area:
         warnings.append("significant non-background content outside the VLM map boxes "
@@ -727,7 +794,8 @@ def detect_horizontal_colorbar(
 
 def _leading_number(label: str) -> float | None:
     """First number in a legend label, e.g. '100-200 m a.s.l.' -> 100.0."""
-    match = re.search(r"-?\d+(?:[.,]\d+)?", label.replace(",", ""))
+    text = re.sub(r"(?<=\d)\s+(?=\d)", "", label.replace(",", ""))
+    match = re.search(r"-?\d+(?:[.,]\d+)?", text)
     return float(match.group()) if match else None
 
 
@@ -1014,6 +1082,132 @@ def _detect_vertically_joined_swatches(
     return max(choices, key=lambda item: item[0])[1]
 
 
+def _printed_colour_bands(profile: np.ndarray, count: int, labels=None) -> list[int] | None:
+    """Locate actual plateaus in a printed bar; do not impose equal bins."""
+    length = len(profile)
+    if count < 2 or length < 3 * count or length > 1000:
+        return None
+    values = cv2.medianBlur(profile[:, None].astype(np.float32), 3)[:, 0]
+    # Numeric ticks can describe unequal intervals on a linear printed axis.
+    # Fit their positions to observed colour transitions, never to invented
+    # equal-height cells. Require almost every tick to have pixel evidence.
+    numbers = [_leading_number(label) for label in labels] if labels else []
+    if (len(numbers) == count and count >= 4 and all(n is not None for n in numbers)
+            and all(a > b for a, b in zip(numbers, numbers[1:]))):
+        delta = np.linalg.norm(np.diff(values, axis=0), axis=1)
+        peaks = np.array([i+1 for i in range(1, len(delta)-1)
+                          if delta[i] >= delta[i-1] and delta[i] > delta[i+1] and delta[i] > 3])
+        ticks = np.array(numbers[:-1])
+        best = None
+        for i, first in enumerate(peaks):
+            for last in peaks[i+1:]:
+                for a in range(len(ticks)-1):
+                    for b in range(a+1, len(ticks)):
+                        scale = (last-first) / (ticks[a]-ticks[b])
+                        offset = first + scale * ticks[a]
+                        predicted = offset - scale*ticks
+                        if predicted[0] < 2 or predicted[-1] >= length-2:
+                            continue
+                        distances = np.abs(predicted[:, None]-peaks)
+                        error = distances.min(axis=1)
+                        score = (int((error <= 2).sum()), -float(error.sum()))
+                        if best is None or score > best[0]:
+                            best = (score, peaks[distances.argmin(axis=1)], offset-scale*numbers[-1])
+        if best is not None and best[0][0] >= .9 * len(ticks):
+            bounds = [0, *best[1].tolist(), min(length, int(round(best[2])))]
+            if min(np.diff(bounds)) >= 3:
+                return bounds
+    sums = np.vstack([np.zeros(3), values.cumsum(axis=0)])
+    squares = np.r_[0., (values ** 2).sum(axis=1).cumsum()]
+    costs = np.full((count + 1, length + 1), np.inf)
+    previous = np.zeros((count + 1, length + 1), np.int32)
+    costs[0, 0] = 0
+    for parts in range(1, count + 1):
+        for end in range(3 * parts, length + 1):
+            starts = np.arange(3 * (parts - 1), end - 2)
+            variance = squares[end] - squares[starts] - (
+                (sums[end] - sums[starts]) ** 2).sum(axis=1) / (end - starts)
+            options = costs[parts - 1, starts] + variance
+            best = int(np.argmin(options))
+            costs[parts, end] = options[best]
+            previous[parts, end] = starts[best]
+    bounds = [length]
+    for parts in range(count, 0, -1):
+        bounds.append(int(previous[parts, bounds[-1]]))
+    bounds.reverse()
+    medians = [np.median(values[a:b], axis=0) for a, b in zip(bounds, bounds[1:])]
+    if min(np.linalg.norm(a - b) for a, b in zip(medians, medians[1:])) < 3:
+        return None  # forced subdivisions of a flat fill are not printed bins
+    noise = float(np.median(np.linalg.norm(np.diff(values, axis=0), axis=1)))
+    for boundary in bounds[1:-1]:
+        jump = np.linalg.norm(np.median(values[boundary:boundary + 2], axis=0)
+                              - np.median(values[boundary - 2:boundary], axis=0))
+        if jump < max(3., 2 * noise):
+            return None  # a smooth ramp needs the existing numeric-bar policy
+    return bounds
+
+
+def _printed_swatch_group(image: np.ndarray, expected: int, labels, ordered: bool):
+    """Recognise coloured rectangles independently of black text and symbols."""
+    if expected < 2:
+        return None
+    lab = to_lab(image)
+    coloured = (np.hypot(lab[..., 1], lab[..., 2]) > 18).astype(np.uint8)
+    _, _, stats, _ = cv2.connectedComponentsWithStats(coloured, connectivity=8)
+    candidates = [tuple(int(v) for v in s[:4]) for s in stats[1:]
+                  if s[4] >= 20 and s[2] >= 4 and s[3] >= 3]
+    # A filled connected bar has no intervening paper rows. Its physical
+    # transitions, rather than its height/width divided by count, define bins.
+    bars = candidates if ordered and not any(
+        term in label.lower() for label in (labels or []) for term in ("no data", "nodata", "n/a")) else []
+    for x, y, w, h in sorted(bars, key=lambda r: r[2] * r[3], reverse=True):
+        horizontal = w > h
+        if max(w, h) < 4 * min(w, h) or coloured[y:y+h, x:x+w].mean() < .85:
+            continue
+        pad = max(1, int(.18 * min(w, h)))
+        strip = lab[y+pad:y+h-pad, x:x+w] if horizontal else lab[y:y+h, x+pad:x+w-pad]
+        profile = np.median(strip, axis=0 if horizontal else 1)
+        physical_labels = labels
+        if not horizontal and ordered and labels and _ramp_runs_upward(labels):
+            physical_labels = list(reversed(labels))
+        bounds = _printed_colour_bands(profile, expected, physical_labels if not horizontal else None)
+        if bounds is None:
+            continue
+        rects = ([(x+a, y+pad, b-a, h-2*pad) for a, b in zip(bounds, bounds[1:])]
+                 if horizontal else
+                 [(x+pad, y+a, w-2*pad, b-a) for a, b in zip(bounds, bounds[1:])])
+        if not horizontal and ordered and labels and _ramp_runs_upward(labels):
+            rects.reverse()
+        return rects, ["detected printed colour-bar boundaries"]
+    # Symbols away from the swatch column cannot change its candidate count.
+    for anchor in candidates:
+        ax, _, aw, _ = anchor
+        cohort = [r for r in candidates if .6 * aw <= r[2] <= 1.7 * aw
+                  and abs(r[0] + r[2]/2 - (ax + aw/2)) < .45 * aw]
+        if len(cohort) < min(3, expected):
+            continue
+        left = int(round(np.median([r[0] for r in cohort])))
+        width = int(round(np.median([r[2] for r in cohort])))
+        rows = coloured[:, left:left+width].mean(axis=1) > .45
+        rows[:min(r[1] for r in cohort)] = False
+        rows[max(r[1]+r[3] for r in cohort):] = False
+        # Bridge only one missing scan row, never the real inter-swatch gaps.
+        rows[1:-1] |= rows[:-2] & rows[2:]
+        changes = np.diff(np.r_[False, rows, False].astype(np.int8))
+        runs = [(int(a), int(b)) for a, b in zip(np.where(changes == 1)[0],
+                                               np.where(changes == -1)[0]) if b-a >= 3]
+        if len(runs) != expected:
+            continue
+        heights = np.array([b-a for a, b in runs])
+        pitches = np.diff([(a+b)/2 for a, b in runs])
+        if (heights.min() < .45 * np.median(heights)
+                or heights.max() > 1.8 * np.median(heights)
+                or (len(pitches) > 1 and np.ptp(pitches) > .35 * np.median(pitches))):
+            continue
+        return [(left, a, width, b-a) for a, b in runs], ["selected the aligned printed swatch column"]
+    return None
+
+
 def detect_swatches(
     legend_bgr: np.ndarray,
     expected: int,
@@ -1030,6 +1224,20 @@ def detect_swatches(
     every legend that already worked is unchanged.
     """
     rects, warnings = _detect_swatches_at_scale(legend_bgr, expected, labels, ordered)
+    printed = _printed_swatch_group(legend_bgr, expected, labels, ordered)
+    if printed is not None:
+        def same_region(a, b):
+            x, y = max(a[0], b[0]), max(a[1], b[1])
+            right, bottom = min(a[0]+a[2], b[0]+b[2]), min(a[1]+a[3], b[1]+b[3])
+            intersection = max(0, right-x) * max(0, bottom-y)
+            return intersection >= .4 * min(a[2]*a[3], b[2]*b[3])
+        matches = len(rects) == expected and all(same_region(a, b) for a, b in zip(rects, printed[0]))
+        if matches:
+            matches = all(np.linalg.norm(np.array(sample_swatch(legend_bgr, a)[1])
+                                         - sample_swatch(legend_bgr, b)[1]) < 6
+                          for a, b in zip(rects, printed[0]))
+        if not matches:
+            return printed
     if len(rects) == expected:
         return rects, warnings
     lh, lw = legend_bgr.shape[:2]
@@ -1046,6 +1254,9 @@ def detect_swatches(
                 back = [(x // scale, y // scale,
                          max(1, w // scale), max(1, h // scale))
                         for x, y, w, h in up_rects]
+                minimum_area = max(12, .25 * float(np.median([w*h for _, _, w, h in rects]))) if rects else 12
+                if any(w*h < minimum_area for _, _, w, h in back):
+                    continue  # enlargement must not replace swatches with glyph fragments
                 return back, warnings + up_warn + [
                     f"detected swatches on a {scale}x upscaled legend crop"]
     # Structure as the last arbiter: real swatches form one column on a regular

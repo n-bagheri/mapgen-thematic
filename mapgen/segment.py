@@ -127,6 +127,63 @@ def _lab_to_rgb(lab: np.ndarray) -> list[int]:
     return [int(round(float(v) * 255)) for v in bgr[::-1]]
 
 
+def restore_lost_legend_pixels(source: np.ndarray, label_map: np.ndarray,
+                               valid: np.ndarray, seeds: list[dict], lost: list[int]) -> list[str]:
+    """Keep source-supported tiny classes that smoothing completely erased."""
+    if not lost:
+        return []
+    palette = [i for i, seed in enumerate(seeds)
+               if seed["source"] == "legend" and seed["is_thematic"]]
+    if len(palette) < 2:
+        return []
+    raw = to_lab(source)
+    best = np.full(valid.shape, np.inf, np.float32)
+    second = best.copy()
+    nearest = np.full(valid.shape, -1, np.int16)
+    for index in palette:
+        distance = np.linalg.norm(raw - seeds[index]["lab"], axis=2)
+        better = distance < best
+        second = np.where(better, best, np.minimum(second, distance))
+        best = np.minimum(best, distance)
+        nearest[better] = index
+    notes = []
+    for index in lost:
+        if index not in palette or np.any(label_map == index):
+            continue
+        supported = valid & (nearest == index) & (best < 12) & (second-best > 8)
+        if np.any(supported):
+            label_map[supported] = index
+            notes.append(f"preserved {int(supported.sum())} source-supported pixels for '{seeds[index]['label']}' lost to smoothing")
+    if not notes:
+        return []
+    # Raster/scan blends can otherwise become large invented classes after a
+    # real palette class has vanished. Reconcile only large, demonstrable
+    # mixtures of two known legend colours, retaining unrelated/water colours.
+    total = max(1, int(valid.sum()))
+    for index, seed in enumerate(seeds):
+        pixels = label_map == index
+        if seed["source"] != "unseeded" or pixels.sum() < PROMOTE_MIN_SHARE * total:
+            continue
+        centre = seed["lab"]
+        explained = False
+        for pos, first in enumerate(palette):
+            a = seeds[first]["lab"]
+            for last in palette[pos+1:]:
+                b = seeds[last]["lab"]
+                difference = b-a
+                ratio = float(np.dot(centre-a, difference) / max(1e-6, np.dot(difference, difference)))
+                if .15 < ratio < .85 and np.linalg.norm(centre-(a+ratio*difference)) < MERGE_DELTA:
+                    explained = True
+                    break
+            if explained:
+                break
+        if explained:
+            distances = np.stack([np.linalg.norm(raw[pixels]-seeds[i]["lab"], axis=1) for i in palette])
+            label_map[pixels] = np.array(palette, np.int16)[distances.argmin(axis=0)]
+            notes.append(f"reconciled palette-blend region '{seed['label']}' with its printed legend")
+    return notes
+
+
 def cluster_unassigned(lab_img: np.ndarray, label_map: np.ndarray, valid: np.ndarray,
                        seeds: list[dict]) -> list[str]:
     """K-means the unexplained pixels into new candidate classes."""
@@ -972,9 +1029,27 @@ def run_step4(image_path: Path, model: str | None = None, runs_dir: Path = Path(
         if lx1 > lx0 and ly1 > ly0:
             furniture_hole[ly0:ly1, lx0:lx1] = mask[ly0:ly1, lx0:lx1]
 
+    # Haloed region labels must be replaced by thematic pixels BEFORE colour
+    # smoothing/assignment; excluding only black strokes leaves white lettering.
+    from .textremoval import fill_region_label_halos
+    review_path = out_dir / "label_review.json"
+    text_review = (json.loads(review_path.read_text(encoding="utf-8"))
+                   if review_path.exists() else None)
+    detected_labels = json.loads((out_dir / "labels.json").read_text(encoding="utf-8"))
+    colour_input, mask, prefilled_text, halo_labels = fill_region_label_halos(
+        img, mask, detected_labels, classes_json, sem, text_review)
+    if halo_labels:
+        removal_mask = cv2.bitwise_or(removal_mask, prefilled_text)
+        raw_text_mask = cv2.bitwise_or(raw_text_mask, prefilled_text)
+        removal_metadata["region_halo_labels"] = halo_labels
+        removal_metadata["removed_pixels"] = int(np.count_nonzero(removal_mask))
+        imwrite(out_dir / "text_removal_mask.png", removal_mask)
+        (out_dir / "text_removal_mask.json").write_text(
+            json.dumps(removal_metadata, indent=2), encoding="utf-8")
+
     # flatten scan noise before any color work: median kills salt-and-pepper,
     # mean-shift posterizes JPEG gradients and anti-aliasing into flat regions
-    smoothed = cv2.pyrMeanShiftFiltering(cv2.medianBlur(img, 3), sp=6, sr=14)
+    smoothed = cv2.pyrMeanShiftFiltering(cv2.medianBlur(colour_input, 3), sp=6, sr=14)
     lab_img = to_lab(smoothed)
     if _boundary_line_kind(sem):
         coastline_cleanup, coastline_diagnostic = extract_coastline_cleanup_mask(img, mask)
@@ -986,10 +1061,10 @@ def run_step4(image_path: Path, model: str | None = None, runs_dir: Path = Path(
             "pixels": 0,
         }
     imwrite(out_dir / "coastline_cleanup_mask.png", coastline_cleanup)
-    removed = ((removal_mask > 0) | (furniture_hole > 0) |
+    removed = (((removal_mask > 0) & (prefilled_text == 0)) | (furniture_hole > 0) |
                (coastline_cleanup > 0))
     valid = (mask > 0) & ~removed
-    excluded_preview = img.copy()
+    excluded_preview = colour_input.copy()
     excluded_preview[mask == 0] = 255
     excluded_preview[removed] = 255
     imwrite(out_dir / "step4_text_removed_input.png", excluded_preview)
@@ -1003,7 +1078,12 @@ def run_step4(image_path: Path, model: str | None = None, runs_dir: Path = Path(
         f"coastline ink cleanup: {coastline_diagnostic['pixels']} pixels in a "
         f"{coastline_diagnostic['band_width_px']} px inward band",
     ]
+    if halo_labels:
+        notes.append(f"prefilled lettering and halos for {halo_labels} confirmed region labels before segmentation")
     label_map = assign_pixels(lab_img, seeds, valid)
+    lost_legend_classes = [i for i, seed in enumerate(seeds)
+                           if seed["source"] == "legend" and seed["is_thematic"]
+                           and not np.any(label_map == i)]
     notes += cluster_unassigned(lab_img, label_map, valid, seeds)
 
     # Colour-component analysis is retained only for anti-aliasing halos. Its
@@ -1078,6 +1158,11 @@ def run_step4(image_path: Path, model: str | None = None, runs_dir: Path = Path(
     uncovered = int(np.count_nonzero((mask > 0) & (label_map < 0)))
     if uncovered:
         notes.append(f"{uncovered} content pixels left unassigned after fill")
+    notes += restore_lost_legend_pixels(
+        colour_input, label_map,
+        valid & (raw_text_mask == 0) & (river_cleanup == 0) & (boundary_ink == 0) & (halo_mask == 0),
+        seeds, lost_legend_classes,
+    )
     notes += promote_large_unseeded(seeds, label_map, mask, sem)
 
     # ---- artifacts ----

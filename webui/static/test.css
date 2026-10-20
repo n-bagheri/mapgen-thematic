@@ -730,12 +730,13 @@ body.test-pipeline-open .test-extracted-preview-card {
   box-shadow: 0 3px 16px rgba(28, 43, 65, .12);
 }
 body.test-pipeline-open .test-extracted-preview-card figcaption {
-  padding: 9px 12px;
+  padding: calc(9px * var(--test-caption-scale, 1)) calc(12px * var(--test-caption-scale, 1));
   border-bottom: 1px solid #dce5ef;
   color: #263b56;
   background: #f8fbfe;
-  font-size: .82rem;
+  font-size: calc(1rem * var(--test-caption-scale, 1));
   font-weight: 700;
+  line-height: 1.4;
 }
 body.test-pipeline-open .test-extracted-preview-card > div {
   display: grid;
