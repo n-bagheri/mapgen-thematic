@@ -4,9 +4,9 @@ Hybrid approach: the selected vision-language model supplies coarse layout
 bounding boxes (map components
 including islands, legend, furniture); classic CV refines them to pixel
 precision, builds the map content mask, detects legend swatches, and samples
-their colors. Legend labels are NOT re-OCR'd here: Step 1 already transcribed
-the legend entries in reading order, so detected swatches (ordered
-column-major) are zipped with those labels.
+their colors. Step 1 supplies the legend transcription. Multi-row,
+multi-column palettes additionally validate its ordering against local
+printed-text positions before pairing labels with sampled swatches.
 
 Artifacts per map, under runs/<name>/:
     step2_layout.json   raw VLM boxes (cached; delete to force a fresh call)
@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import re
 import mimetypes
+from functools import lru_cache
 from pathlib import Path
 
 import cv2
@@ -445,6 +446,96 @@ def _recover_clipped_map_content(
     return recovered
 
 
+def _supported_detached_geography(lab, cc, stats, main, candidates, map_box, exclude_boxes):
+    """Reconsider envelope rejects only, using independent shape/colour evidence.
+
+    Unmarked furniture can resemble geography, so proximity or one matching
+    colour alone is insufficient. Ambiguous and single-fill shapes retain the
+    existing exclusion and remain available for manual mask review.
+    """
+    mx, my, mw, mh, main_area = map(int, stats[main])
+    extent = max(mw, mh)
+    margin = max(3, int(0.005 * extent))
+    bx0, by0, bx1, by1 = map_box
+    plausible = []
+    for i in candidates:
+        x, y, cw, ch, area = map(int, stats[i])
+        if (min(cw, ch) < max(8, int(0.008 * extent))
+                or max(cw, ch) > 4 * min(cw, ch)
+                or not 0.25 <= area / (cw * ch) <= 0.90
+                or area > 0.15 * main_area):
+            continue
+        # Clipped marks, panels and furniture neighbours are not island evidence.
+        if (x < bx0 + margin or y < by0 + margin
+                or x + cw > bx1 - margin or y + ch > by1 - margin):
+            continue
+        if any(x < ex1 + margin and x + cw > ex0 - margin
+               and y < ey1 + margin and y + ch > ey0 - margin
+               for ex0, ey0, ex1, ey1 in exclude_boxes):
+            continue
+        gap_x = max(mx - x - cw, x - mx - mw, 0)
+        gap_y = max(my - y - ch, y - my - mh, 0)
+        if np.hypot(gap_x, gap_y) > 0.12 * extent:
+            continue
+        plausible.append(i)
+    if not plausible:
+        return []
+
+    main_mask = (cc[my:my + mh, mx:mx + mw] == main).astype(np.uint8)
+    contour = max(cv2.findContours(main_mask, cv2.RETR_EXTERNAL,
+                                  cv2.CHAIN_APPROX_SIMPLE)[0], key=cv2.contourArea)
+    contour = contour + np.array([[[mx, my]]], np.int32)
+    core = cv2.erode(main_mask, np.ones((3, 3), np.uint8)) > 0
+    pixels = lab[my:my + mh, mx:mx + mw][core]
+    pixels = pixels[(np.linalg.norm(pixels[:, 1:], axis=1) > 12)
+                    & (pixels[:, 0] > 15) & (pixels[:, 0] < 95)]
+    if not len(pixels):
+        return []
+    # A coarse Lab histogram supplies substantial mainland fills, without OCR,
+    # model calls, or changing the background threshold or legend palette.
+    bins, counts = np.unique(np.rint(pixels / 8).astype(np.int16), axis=0, return_counts=True)
+    palette = bins[counts >= max(12, 0.0002 * len(pixels))] * 8.0
+    if len(palette) < 2:
+        return []
+    restored = []
+    for i in plausible:
+        x, y, cw, ch, area = map(int, stats[i])
+        component = (cc[y:y + ch, x:x + cw] == i).astype(np.uint8)
+        edge = max(cv2.findContours(component, cv2.RETR_EXTERNAL,
+                                   cv2.CHAIN_APPROX_SIMPLE)[0], key=cv2.contourArea)
+        solidity = cv2.contourArea(edge) / max(1, cv2.contourArea(cv2.convexHull(edge)))
+        # Simple geometric badges and highly fragmented marks need review.
+        if not 0.40 <= solidity <= 0.95:
+            continue
+        gap = min(abs(cv2.pointPolygonTest(contour, (float(px + x), float(py + y)), True))
+                  for px, py in edge[:, 0])
+        if gap > 0.12 * extent:
+            continue
+        interior = cv2.erode(component, np.ones((3, 3), np.uint8)) > 0
+        if np.count_nonzero(interior) < 0.5 * area:
+            continue
+        pixels = lab[y:y + ch, x:x + cw][interior]
+        bins, counts = np.unique(np.rint(pixels / 8).astype(np.int16), axis=0, return_counts=True)
+        colours = bins * 8.0
+        matched = np.linalg.norm(colours[:, None] - palette[None], axis=2).min(axis=1) <= 12
+        if counts[matched].sum() < 0.70 * len(pixels):
+            continue
+        # Require two distinct, substantial fills; ink and scan noise alone
+        # must not turn a detached label or frame fragment into geography.
+        supported = np.flatnonzero(matched)
+        supported = supported[np.argsort(counts[supported])[::-1]]
+        families = []
+        for k in supported:
+            if any(np.linalg.norm(colours[k] - colour) < 20 for colour in families):
+                continue
+            share = counts[matched & (np.linalg.norm(colours - colours[k], axis=1) <= 12)].sum()
+            if share >= max(12, 0.05 * len(pixels)):
+                families.append(colours[k])
+        if len(families) >= 2:
+            restored.append(i)
+    return restored
+
+
 def refine_map_mask(
     img: np.ndarray,
     map_boxes: list[tuple[int, int, int, int]],
@@ -534,6 +625,14 @@ def refine_map_mask(
             )
             if i == main or intersects:
                 spatial_keep.append(i)
+        rejected = [i for i in keep if i not in spatial_keep]
+        restored = _supported_detached_geography(
+            lab, cc, stats, main, rejected, map_boxes[0], exclude_boxes,
+        ) if rejected else []
+        spatial_keep.extend(restored)
+        if restored:
+            warnings.append(f"retained {len(restored)} detached geographic component(s) "
+                            "with matching thematic fills outside the mainland envelope")
         rejected_strays = len(keep) - len(spatial_keep)
         keep = spatial_keep
         if rejected_strays:
@@ -600,6 +699,71 @@ def refine_map_mask(
 
 
 # --------------------------------------------------------------------------- legend swatches
+
+def protect_legend_overlap(
+    img: np.ndarray, mask: np.ndarray,
+    furniture: list[tuple[str, tuple[int, int, int, int]]],
+    legend_box: tuple[int, int, int, int] | None, sem: MapSemantics,
+) -> tuple[list[tuple[str, tuple[int, int, int, int]]], list[str]]:
+    """Separate a proven map continuation from the legend's masking footprint.
+
+    The reading/sampling crop stays intact. Only a bounded continuation of
+    existing geography, separated from legend ink and every detected swatch,
+    can carve out a corner/edge of the exclusion. Other furniture is untouched.
+    """
+    if legend_box is None or ("legend", legend_box) not in furniture:
+        return furniture, []
+    x0, y0, x1, y1 = legend_box
+    h, w = mask.shape
+    anchor = (mask > 0).astype(np.uint8)
+    anchor[y0:y1, x0:x1] = 0
+    if not np.any(cv2.dilate(anchor, np.ones((3, 3), np.uint8))[y0:y1, x0:x1]):
+        return furniture, []
+    # Use exactly the existing mask's background definition and opening.
+    lab = to_lab(img)
+    content = (np.linalg.norm(lab - border_median_lab(lab), axis=2) > 12.0).astype(np.uint8)
+    content = cv2.morphologyEx(content, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    for name, (a, b, c, d) in furniture:
+        if name != "legend":
+            content[b:d, a:c] = 0
+    _, labels, _, _ = cv2.connectedComponentsWithStats(content, connectivity=8)
+    seeded = np.unique(labels[anchor > 0])
+    seeded = seeded[seeded > 0]
+    region = labels[y0:y1, x0:x1]
+    continuation = np.isin(region, seeded)
+    count = int(np.count_nonzero(continuation))
+    area = (x1-x0) * (y1-y0)
+    if count < MIN_COMPONENT_PX or count > min(.20 * np.count_nonzero(mask), .25 * area):
+        return furniture, []
+    ys, xs = np.nonzero(continuation)
+    a, b, c, d = int(xs.min()), int(ys.min()), int(xs.max()+1), int(ys.max()+1)
+    if (min(c-a, d-b) < 5 or (c-a)*(d-b) > .30 * area
+            or x0+a == 0 or y0+b == 0 or x0+c == w or y0+d == h):
+        return furniture, []
+    # Three pixels also keep the existing Step 4 furniture padding off land.
+    a, b = max(0, a-3), max(0, b-3)
+    c, d = min(x1-x0, c+3), min(y1-y0, d+3)
+    ambiguous = ["possible legend/map overlap is ambiguous; adjust the legend box in the Step 2 review"]
+    patch = region[b:d, a:c]
+    if np.any((patch > 0) & ~np.isin(patch, seeded)):
+        return furniture, ambiguous
+    classes, expected, detected, _ = _sample_legend_classes(img[y0:y1, x0:x1], sem)
+    if not classes or detected != expected:
+        return furniture, ambiguous
+    for row in classes:
+        sx, sy, sw, sh = row["swatch_bbox_orig"]
+        if sx < c+2 and sx+sw > a-2 and sy < d+2 and sy+sh > b-2:
+            return furniture, ambiguous
+    # Partition the original rectangle around the clear geographic corner.
+    # Keeping rectangles preserves every downstream furniture consumer.
+    pieces = [(x0, y0, x1, y0+b), (x0, y0+d, x1, y1),
+              (x0, y0+b, x0+a, y0+d), (x0+c, y0+b, x1, y0+d)]
+    pieces = [("legend", box) for box in pieces if box[2] > box[0] and box[3] > box[1]]
+    checked = []
+    for item in furniture:
+        checked.extend(pieces if item == ("legend", legend_box) else [item])
+    return checked, [f"protected {count} connected map pixels overlapping the legend box; legend crop unchanged"]
+
 
 def _uniform(lab_patch: np.ndarray, tol: float = 7.0) -> bool:
     return lab_patch.size > 0 and float(lab_patch.reshape(-1, 3).std(axis=0).mean()) < tol
@@ -1672,6 +1836,63 @@ def drop_frame_label_boxes(
         f"dropped {len(dropped)} frame-label box(es) that sat on map content"]
 
 
+def drop_place_name_boxes(
+    img: np.ndarray, furniture: list[tuple[str, tuple[int, int, int, int]]],
+    sem: MapSemantics,
+) -> tuple[list[tuple[str, tuple[int, int, int, int]]], list[str]]:
+    """Keep corroborated overlay names for Step 3, without excluding rectangles.
+
+    Step 1's existing text expectations provide evidence independent of the
+    Step 2 boxes. A name alone is insufficient: retain genuine furniture and
+    require text-sized geometry. Uncertain exclusions keep their existing
+    treatment and are flagged for the normal Step 2 mask review.
+    """
+    def normalise(text: str) -> str:
+        return re.sub(r"[\W_]+", " ", text.casefold()).strip()
+
+    overlay = sem.overlay_text
+    notes = f" {normalise(overlay.notes)} "
+    capital = normalise(overlay.capital_city or "")
+    expects_names = overlay.has_city_labels or overlay.has_region_labels
+    legend_labels = {normalise(entry.label) for entry in sem.legend_entries}
+    furniture_kind = re.compile(
+        r"\b(?:legend|inset|locator|logo|notes?|source|copyright|coordinates?|"
+        r"graticule|grid|ticks?|frame|projection|epsg|figure|panel|title|table|"
+        r"chart|diagram|scale|north arrow|map key)\b"
+    )
+    generic = {"other", "unknown", "unlabeled", "unlabelled", "text", "label",
+               "labels", "city", "country", "region"}
+    h, w = img.shape[:2]
+    kept, warnings = [], []
+    for item in furniture:
+        name, (x0, y0, x1, y1) = item
+        if not name.startswith("other:"):
+            kept.append(item)
+            continue
+        label = normalise(name[6:])
+        if furniture_kind.search(label):
+            kept.append(item)
+            continue
+        place = re.sub(
+            r"^(?:city|town|capital|country|region|province|district) (?:name |label )?",
+            "", label,
+        )
+        bw, bh = max(0, x1-x0), max(0, y1-y0)
+        text_sized = (min(bw, bh) > 0 and max(bw, bh) >= 2 * min(bw, bh)
+                      and min(bw, bh) <= .05 * min(w, h)
+                      and max(bw, bh) <= .45 * max(w, h)
+                      and bw * bh <= .01 * w * h)
+        corroborated = (place == capital and bool(capital)) or (
+            expects_names and bool(place) and f" {place} " in notes)
+        if (text_sized and corroborated and place not in generic
+                and place not in legend_labels and sum(c.isalpha() for c in place) >= 2):
+            warnings.append(f"kept overlay place name '{name[6:]}' for Step 3 instead of excluding its box")
+        else:
+            kept.append(item)
+            warnings.append(f"uncertain other exclusion '{name[6:]}' retained; check its box in the Step 2 mask review")
+    return kept, warnings
+
+
 def derive_palette_from_map(
     map_bgr: np.ndarray, mask: np.ndarray, max_classes: int = 6,
     min_share: float = 0.015,
@@ -1836,6 +2057,135 @@ class LegendSwatchDetectionError(ValueError):
     """Raised instead of emitting a partial or misaligned legend palette."""
 
 
+def _multicolumn_swatch_columns(rects):
+    """Recognise a genuine two-dimensional layout, leaving strips untouched."""
+    columns = []
+    for i in sorted(range(len(rects)), key=lambda i: rects[i][0]):
+        x, _, w, _ = rects[i]
+        match = next((col for col in columns if abs(
+            x + w/2 - np.median([rects[j][0] + rects[j][2]/2 for j in col])
+        ) <= .65 * min(w, np.median([rects[j][2] for j in col]))), None)
+        if match is None:
+            columns.append([i])
+        else:
+            match.append(i)
+    if len(columns) < 2 or max(map(len, columns), default=0) < 2:
+        return None
+    # An offset fragment within a single swatch/text column is not a second
+    # legend column. There must be a real horizontal gutter between them.
+    width = float(np.median([r[2] for r in rects]))
+    for left, right in zip(columns, columns[1:]):
+        if min(rects[i][0] for i in right) - max(rects[i][0]+rects[i][2] for i in left) < max(4, .6*width):
+            return None
+    for col in columns:
+        col.sort(key=lambda i: rects[i][1])
+        if any(rects[a][1]+.7*rects[a][3] > rects[b][1] for a, b in zip(col, col[1:])):
+            return None
+    return columns
+
+
+@lru_cache(maxsize=1)
+def _legend_alignment_reader():
+    """Use installed CPU OCR weights only; this check never downloads models."""
+    try:
+        import easyocr
+        return easyocr.Reader(["en", "fr"], gpu=False, verbose=False, download_enabled=False)
+    except (ImportError, OSError, RuntimeError, ValueError):
+        return None
+
+
+@lru_cache(maxsize=8)
+def _legend_alignment_text(height, width, pixels):
+    # Bounded memory-only cache avoids repeating OCR on legend confirmation.
+    reader = _legend_alignment_reader()
+    if reader is None:
+        return ()
+    image = np.frombuffer(pixels, np.uint8).reshape(height, width, 3)
+    try:
+        return tuple(reader.readtext(image, paragraph=False, canvas_size=4000,
+                                     mag_ratio=2.0, batch_size=1, workers=0))
+    except (OSError, RuntimeError, ValueError, cv2.error):
+        return ()
+
+
+def _align_multicolumn_swatches(image, entries, rects):
+    """Verify reading order with confident, unique printed-label anchors.
+
+    Colour names are approximate semantic hints, so they cannot establish a
+    label's physical position. Local OCR supplies evidence only: it never
+    changes the Step 1 transcription or any sampled colour. Missing,
+    contradictory or non-discriminating evidence goes to the existing review.
+    """
+    columns = _multicolumn_swatch_columns(rects)
+    if columns is None:
+        return rects, []
+    review = ["multi-column legend label-to-swatch alignment is uncertain; "
+              "include the printed labels and review the legend before continuing"]
+    normalize = lambda text: tuple(re.findall(r"\w+", text.casefold()))
+    labels = [normalize(entry.label) for entry in entries]
+    if len(set(labels)) != len(labels) or any(not label for label in labels):
+        return None, review
+    anchors = {}
+    entry_cells = {}
+    row_of = {i: row for col in columns for row, i in enumerate(col)}
+    col_of = {i: col for col, indices in enumerate(columns) for i in indices}
+    h, w = image.shape[:2]
+    for quad, text, confidence in _legend_alignment_text(h, w, image.tobytes()):
+        if confidence < .65:
+            continue
+        words = normalize(text)
+        exact = [i for i, label in enumerate(labels) if label == words]
+        # Multiline labels often have one OCR box per line. A sufficiently
+        # long, unique first line can anchor the complete transcription.
+        matches = exact or [i for i, label in enumerate(labels)
+                            if words and sum(map(len, words)) >= 6
+                            and label[:len(words)] == words]
+        if len(matches) != 1:
+            continue
+        points = np.asarray(quad, dtype=float)
+        x0, y0 = points.min(axis=0)
+        x1, y1 = points.max(axis=0)
+        cy = (y0+y1)/2
+        cells = []
+        for ci, col in enumerate(columns):
+            right_edge = min(rects[i][0] for i in columns[ci+1]) if ci+1 < len(columns) else w
+            for i in col:
+                x, y, sw, sh = rects[i]
+                distance = abs(cy-(y+sh/2))
+                if x0 >= x+.85*sw and x1 <= right_edge+2 and distance <= .75*sh:
+                    cells.append((distance/max(1, sh), i))
+        cells.sort()
+        if not cells or (len(cells) > 1 and cells[1][0]-cells[0][0] < .2):
+            continue
+        cell, entry = cells[0][1], matches[0]
+        if ((cell in anchors and anchors[cell] != entry)
+                or (entry in entry_cells and entry_cells[entry] != cell)):
+            return None, review
+        anchors[cell] = entry
+        entry_cells[entry] = cell
+    if (len(anchors) < max(2, (len(rects)+1)//2)
+            or len({col_of[i] for i in anchors}) < 2
+            or len({row_of[i] for i in anchors}) < 2):
+        return None, review
+    current = tuple(range(len(rects)))
+    if len(anchors) == len(rects):
+        selected = tuple(entry_cells[i] for i in range(len(entries)))
+    else:
+        column_order = tuple(i for col in columns for i in col)
+        row_order = tuple(col[row] for row in range(max(map(len, columns)))
+                          for col in columns if row < len(col))
+        candidates = {current, column_order, row_order}
+        supported = [order for order in candidates
+                     if all(order[entry] == cell for cell, entry in anchors.items())]
+        if len(supported) != 1:
+            return None, review
+        selected = supported[0]
+    if selected == current:
+        return rects, []
+    return [rects[i] for i in selected], [
+        "aligned multi-column legend swatches to corroborated printed-label positions"]
+
+
 def _sample_legend_classes(legend_img: np.ndarray, sem: MapSemantics) -> tuple[list[dict], int, int, list[str]]:
     """Sample one user-confirmed legend crop without inventing a map palette.
 
@@ -1859,6 +2209,11 @@ def _sample_legend_classes(legend_img: np.ndarray, sem: MapSemantics) -> tuple[l
             warnings.append(
                 f"legend could not be aligned (detected {detected} swatches for "
                 f"{expected} transcribed entries)")
+        return [], expected, detected, warnings
+
+    rects, alignment_warn = _align_multicolumn_swatches(legend_img, thematic_entries, rects)
+    warnings += alignment_warn
+    if rects is None:
         return [], expected, detected, warnings
 
     prio = ({entry.label: index + 1 for index, entry in enumerate(thematic_entries)}
@@ -1939,13 +2294,25 @@ def apply_legend_review_box(image_path: Path, out_dir: Path,
                  if isinstance(item, dict) and item.get("name") != "legend"]
     furniture.append({"name": "legend", "box": list(box)})
     geometry["furniture"] = furniture
-    geometry_path.write_text(json.dumps(geometry, indent=2), encoding="utf-8")
     crop = [int(value) for value in geometry.get("map_crop", [])]
     if len(crop) == 4:
         map_area = imread(out_dir / "map_area.png")
         mask = imread(out_dir / "map_mask.png")[..., 0]
+        full_mask = np.zeros((h, w), np.uint8)
+        cx0, cy0, cx1, cy1 = crop
+        full_mask[cy0:cy1, cx0:cx1] = mask
+        checked, overlap_warnings = protect_legend_overlap(
+            img, full_mask, [(item["name"], tuple(item["box"])) for item in furniture], box, sem)
+        furniture = [{"name": name, "box": list(rect)} for name, rect in checked]
+        geometry["furniture"] = furniture
+        warnings += overlap_warnings
+        if overlap_warnings:
+            palette = json.loads((out_dir / "classes.json").read_text(encoding="utf-8"))
+            palette["warnings"] = warnings
+            (out_dir / "classes.json").write_text(json.dumps(palette, indent=2), encoding="utf-8")
         imwrite(out_dir / "map_text_input.png", prepare_text_input(
             map_area, tuple(crop), [(item["name"], tuple(item["box"])) for item in furniture], mask))
+    geometry_path.write_text(json.dumps(geometry, indent=2), encoding="utf-8")
     _write_legend_review(out_dir, status=status, box=box,
                          expected=expected, detected=detected)
     return {"status": status, "box": list(box), "expected": expected,
@@ -2044,10 +2411,17 @@ def run_step2(image_path: Path, model: str | None = None, runs_dir: Path = Path(
     furniture = _layout_furniture(layout, w, h, recovered_legend_box)
     furniture, frame_warn = drop_frame_label_boxes(img, furniture)
     warnings += frame_warn
+    furniture, name_warn = drop_place_name_boxes(img, furniture, sem)
+    warnings += name_warn
 
     map_boxes = [box_to_px(box, w, h, pad_frac=0.02) for box in layout.map_areas]
     mask, tight, mask_warn = refine_map_mask(img, map_boxes, [f[1] for f in furniture])
+    checked, overlap_warn = protect_legend_overlap(img, mask, furniture, legend_box, sem)
+    if checked != furniture:
+        furniture = checked
+        mask, tight, mask_warn = refine_map_mask(img, map_boxes, [f[1] for f in furniture])
     warnings += mask_warn
+    warnings += overlap_warn
     tx0, ty0, tx1, ty1 = tight
     map_area = img[ty0:ty1, tx0:tx1]
     imwrite(out_dir / "map_area.png", map_area)

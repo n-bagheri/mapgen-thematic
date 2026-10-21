@@ -1,11 +1,11 @@
 "use strict";
 
 import {
-  $, approveMask, artifactJson, artifactUrl, assignPattern, deleteMap, esc, getJob, mapUrl,
+  $, approveLegendReview, approveMask, artifactJson, artifactUrl, assignPattern, deleteMap, esc, getJob, mapUrl,
   patternPreviewUrl, renameMap, resetMask, saveBrailleLayout, saveMaskStrokes,
   savePatternTransform, saveStep7Review, uploadFile,
 } from "../minimal/api.js";
-import { isRunning, selectedMap, setNav, state, toast } from "../minimal/state.js";
+import { isRunning, selectedMap, setNav, state, toast, withBusy } from "../minimal/state.js";
 import { completedCount, STEP_DEFS, STEP_VIEWS } from "../minimal/steps.js";
 import { refreshStepImages, renderVisual } from "../minimal/visual.js";
 import { continuePipeline, renderControls } from "../minimal/controls.js";
@@ -1212,7 +1212,25 @@ async function finishTestLegendReview(button) {
       }, 20000, "The legend box could not be applied. Adjust it and try again.");
     }
     if (state.selected !== stem) return;
-    $("approve-legend-box").click();
+    await withBusy(button, "Approving...", async () => {
+      beginAnalysisPresentation();
+      freezeCurrentPreview();
+      await approveLegendReview(stem);
+      if (state.selected !== stem) return;
+      state.legendBox = null;
+      if (!state.individualRun) {
+        // Continuation refreshes the map list and reviews before starting Step 3.
+        // Avoid the shared approval handler's additional pre-continuation refresh.
+        state.autorun = true;
+        await continuePipeline();
+      } else {
+        state.autorun = false;
+        state.viewStep = null;
+        await loadMaps();
+        await refreshSelectedData();
+        if (state.selected === stem) renderWorkspace(true);
+      }
+    });
   } catch (error) {
     toast(error.message, "error");
     if (button.isConnected) button.disabled = false;
