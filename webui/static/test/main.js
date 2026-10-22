@@ -7,7 +7,7 @@ import {
 } from "../minimal/api.js";
 import { isRunning, selectedMap, setNav, state, toast, withBusy } from "../minimal/state.js";
 import { completedCount, STEP_DEFS, STEP_VIEWS } from "../minimal/steps.js";
-import { refreshStepImages, renderVisual } from "../minimal/visual.js";
+import { activeStep, refreshStepImages, renderVisual } from "../minimal/visual.js";
 import { continuePipeline, renderControls } from "../minimal/controls.js";
 import { bindMaskCanvas, commitMaskStrokes, resetMaskSurface, undoMaskStroke } from "./mask.js";
 import { bindLegendReviewOverlay } from "../minimal/editors/legendreview.js";
@@ -164,6 +164,7 @@ let finishedJobRefreshAt = 0;
 let titleEditSaving = false;
 let pipelineStartPending = false;
 let pipelineStartTimer = null;
+let reopenedProjectReview = null;
 let reviewResize = null;
 let reviewPanelObserver = null;
 let reviewPanelStabilizeQueued = false;
@@ -182,6 +183,7 @@ const DELETE_ICON = `<svg viewBox="0 0 32 32" aria-hidden="true">
 /* ---------------------------------------------------------- navigation */
 
 function leavePipelineShell() {
+  reopenedProjectReview = null;
   clearPipelineStartStatus();
   finishPipelineTitleEdit(false);
   clearStablePreview();
@@ -218,6 +220,7 @@ async function enterPipeline(stem) {
   if (stem && state.selected !== stem) await selectMap(stem);
   state.individualRun = false;
   resetStagePresentation();
+  restoreProjectReview(selectedMap());
   applyTestVisualPreferences();
   renderWorkspace();
   FLOW_SCREENS.forEach((screenId) => { $(screenId).hidden = true; });
@@ -509,6 +512,51 @@ async function confirmRename(event) {
 
 /* ------------------------------------------------------ pipeline shell */
 
+function latestCompletedStep(map) {
+  return STEP_DEFS.filter((step) => map?.steps?.[step.key]).at(-1)?.key || null;
+}
+
+function restoreProjectReview(map) {
+  const step = latestCompletedStep(map);
+  reopenedProjectReview = map && !isRunning(map) && state.job?.status !== "failed"
+    && !map.pipeline_error && !map.step1_error && map.in_scope !== false && REVIEW_MESSAGES[step]
+    ? { stem: map.stem, step } : null;
+  if (reopenedProjectReview) {
+    state.viewStep = null;
+    state.activeStep = Number(pipelineReviewStep(map));
+  }
+}
+
+function reopenedReviewStep(map) {
+  if (!reopenedProjectReview || reopenedProjectReview.stem !== map?.stem) return null;
+  if (isRunning(map) || latestCompletedStep(map) !== reopenedProjectReview.step) {
+    reopenedProjectReview = null;
+    return null;
+  }
+  return reopenedProjectReview.step;
+}
+
+function watchReopenedLegendApproval() {
+  const review = reopenedProjectReview;
+  if (!review || review.step !== "9" || state.busy) return;
+  const previous = state.data.step9Review;
+  const check = () => {
+    if (reopenedProjectReview !== review || state.selected !== review.stem) return;
+    if (state.busy) {
+      window.setTimeout(check, 80);
+      return;
+    }
+    // The existing editor replaces this response only after saving approval.
+    // Keep the restored panel available if approval failed.
+    if (state.data.step9Review !== previous && state.data.step9Review?.approved) {
+      reopenedProjectReview = null;
+      renderWorkspace(true);
+      syncPipelineChrome();
+    }
+  };
+  window.setTimeout(check, 0);
+}
+
 function pipelineReviewStep(map) {
   if (!map) return null;
   if (map.steps?.["2"] && !map.steps?.["3"]
@@ -521,7 +569,7 @@ function pipelineReviewStep(map) {
   if (map.steps?.["7"] && !map.steps?.["8"] && !map.step7_review_ready) return "7";
   if (map.steps?.["8"] && !map.steps?.["9"] && !map.step8_review_ready) return "8";
   if (map.steps?.["9"] && !map.step9_review_ready) return "9";
-  return null;
+  return reopenedReviewStep(map);
 }
 
 function resetStagePresentation() {
@@ -805,7 +853,7 @@ function enhanceTestViewers() {
   let maskComparison = null;
   let legendComparison = null;
   document.querySelectorAll("#visual-content .page-view-toolbar").forEach((toolbar) => {
-    const originalEnabled = Number(state.activeStep) >= 2;
+    const originalEnabled = activeStep(selectedMap()) >= 2;
     const originalInput = toolbar.querySelector("[data-test-original-view]");
     if (originalInput) {
       originalInput.disabled = !originalEnabled;
@@ -860,7 +908,7 @@ function enhanceTestViewers() {
       // The extracted map/legend comparison is already a two-result view.
       // Keep its standard toolbar stable without replacing that composite.
       if (toolbar.closest(".test-extracted-stage")) return;
-      if (Number(state.activeStep) === 9) {
+      if (activeStep(selectedMap()) === 9) {
         // Step 9 normally shows the tactile map beside its legend. The source
         // toggle is an exclusive view: it must never create a three-sheet
         // original + tactile + legend comparison.
@@ -906,7 +954,7 @@ function enhanceTestViewers() {
     const outputSheet = comparison.querySelector(".step7-output-sheet");
     if (originalSheet) originalSheet.setAttribute("aria-label", "Original map");
     if (outputSheet) outputSheet.setAttribute("aria-label", "Current output");
-    if (Number(state.activeStep) === 2 && outputSheet) {
+    if (activeStep(selectedMap()) === 2 && outputSheet) {
       // The shared comparison renderer is also used by later stages. In Step 2
       // its output sheet must become the mask target so the editable mask is
       // drawn over the second image rather than showing two source images.
@@ -1693,6 +1741,7 @@ function prepareTestReviewContent(root, definition) {
     syncTestBrailleTextControls(root);
   }
   if (definition === TEST_REVIEW_PANELS.finalLegend) {
+    root.querySelector("#approve-legend")?.addEventListener("click", watchReopenedLegendApproval, { capture: true });
     buildTestLegendCompare(root);
     root.querySelectorAll(".pattern-chip").forEach((node) => node.remove());
     root.querySelectorAll(".section-intro").forEach((node) => {
@@ -1800,7 +1849,7 @@ function scheduleTestReviewStabilization() {
     if (!map || isRunning(map)) return;
     const job = state.job || map.job || { status: "idle" };
     const reviewStep = pipelineReviewStep(map);
-    const exportReady = Boolean(map.steps?.["9"] && map.step9_review_ready);
+    const exportReady = Boolean(!reviewStep && map.steps?.["9"] && map.step9_review_ready);
     const failed = job.status === "failed";
     const blocked = Boolean(map.pipeline_error || map.step1_error || map.in_scope === false);
     const definition = testReviewPanelDefinition(reviewStep, exportReady, failed, blocked);
@@ -1845,7 +1894,7 @@ function renderTestFinalOriginalVisual(map) {
 
 function renderTestVisual() {
   const map = selectedMap();
-  if (map && Number(state.activeStep) === 9 && state.showOriginalMap) {
+  if (map && activeStep(map) === 9 && state.showOriginalMap) {
     renderTestFinalOriginalVisual(map);
     return;
   }
@@ -2278,7 +2327,7 @@ function syncPipelineChrome() {
   const runningStep = presentationBusy && presentation.step ? String(presentation.step) : null;
   const reviewStep = presentation.catchingUp ? null : actualReviewStep;
   const completed = completedCount(map);
-  const exportReady = Boolean(map?.steps?.["9"] && map.step9_review_ready);
+  const exportReady = Boolean(!actualReviewStep && map?.steps?.["9"] && map.step9_review_ready);
   const failedStep = failed
     ? (job.steps || []).map(String).find((step) => !map?.steps?.[step])
       || String(presentation.step || targetStep || "")

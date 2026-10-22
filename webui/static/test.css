@@ -923,10 +923,14 @@ body.test-pipeline-open #control-content .mask-decision-modes .mask-mode-erase:h
 body.test-pipeline-open #control-content .mask-decision-modes input:checked ~ strong { color: #164da6; }
 body.test-pipeline-open #control-content .mask-decision-brush { margin: 0; font-size: .82rem; }
 body.test-pipeline-open #control-content .mask-decision-status { min-height: 0; margin: 0; }
+body.test-pipeline-open.test-mask-tool-unselected #visual-content .map-canvas.is-masking {
+  cursor: default;
+}
 body.test-pipeline-open.test-mask-tool-unselected #visual-content .mask-canvas {
   pointer-events: none;
 }
-body.test-pipeline-open.test-mask-tool-unselected #visual-content .mask-brush-cursor {
+body.test-pipeline-open.test-mask-tool-unselected #visual-content .mask-brush-cursor,
+body.test-pipeline-open #visual-content .map-frame.is-pan-enabled .mask-brush-cursor {
   display: none !important;
 }
 body.test-pipeline-open #control-content .test-mask-action-column {
