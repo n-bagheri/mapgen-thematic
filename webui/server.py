@@ -48,6 +48,7 @@ app = Flask(__name__, static_folder=str(Path(__file__).parent / "static"), stati
 
 _lock = threading.Lock()
 _jobs: dict[str, dict] = {}  # stem -> job record
+_test_step7_editing: set[str] = set()
 _label_crop_cache_lock = threading.Lock()
 
 
@@ -863,6 +864,8 @@ def api_run():
         job = _jobs.get(stem)
         if job and job["status"] == "running":
             abort(409, "a job is already running for this map")
+        if stem in _test_step7_editing:
+            abort(409, "wait for the Step 7 preview to finish rendering")
         run_dir = RUNS_DIR / stem
         invalidate_from = (6 if 5 in steps else 7 if 6 in steps else 8 if 7 in steps
                            else 9 if 8 in steps else None)
@@ -1759,6 +1762,8 @@ def api_step7_review(stem: str):
     for key in allowed & set(data):
         if not isinstance(data[key], bool):
             abort(400, f"{key} must be true or false")
+    if data.get("approve") and stem in _test_step7_editing:
+        abort(409, "wait for the Step 7 preview to finish rendering")
     if "preserve_haptic_distances" in data:
         current["preserve_haptic_distances"] = data["preserve_haptic_distances"]
         current["approved"] = False
@@ -1791,6 +1796,163 @@ def api_step7_review(stem: str):
 def api_pattern_transforms_get(stem: str):
     _, symbols = _step7_symbols(stem)
     return jsonify(_pattern_editor_payload(symbols))
+
+
+@app.post("/api/test/review-session/<stem>")
+def api_test_review_session(stem):
+    from webui.test_review_sessions import Checkpoints, open_session
+    if stem in {".", ".."} or Path(stem).name != stem:
+        abort(400, "invalid review project name")
+    if find_map(stem) is None:
+        abort(404, "unknown map")
+    with _lock:
+        if (_jobs.get(stem) or {}).get("status") == "running" or stem in _test_step7_editing:
+            abort(409, "wait for the current map operation to finish")
+        if not (RUNS_DIR / stem / "step9_legend.png").exists():
+            abort(409, "finish the pipeline before reviewing individual steps")
+        key, session = open_session(stem, RUNS_DIR, MAPS_DIR, ROOT / "config" / "output_spec.json")
+    stored = Checkpoints(session.directory, stem).state
+    drafts = [int(step) for step in stored["drafts"]]
+    if stored.get("working_dirty") and stored.get("step"):
+        drafts.append(stored["step"])
+    return jsonify({"ok": True, "session": key, "stale": stored.get("stale", []), "drafts": drafts})
+
+
+@app.get("/api/test/review-status/<stem>")
+def api_test_review_status(stem):
+    if find_map(stem) is None:
+        abort(404, "unknown map")
+    key = hashlib.sha256(f"{RUNS_DIR.resolve()}:{stem}".encode()).hexdigest()[:24]
+    directory = RUNS_DIR / ".test-reviews" / key
+    available = ((directory / "checkpoints" / "initial.json").exists()
+                 and (RUNS_DIR / stem / "step9_legend.png").exists())
+    if available:
+        from webui.test_review_sessions import source_stamp
+        try:
+            available = json.loads((directory / "source-stamp.json").read_text()) == source_stamp(RUNS_DIR / stem, MAPS_DIR, stem)
+        except (OSError, ValueError):
+            available = False
+    return jsonify({"available": available})
+
+
+@app.post("/api/test/review-session/<key>/checkpoint")
+def api_test_review_checkpoint(key):
+    from webui.test_review_sessions import get_session
+    try:
+        session = get_session(key)
+        data = request.get_json(force=True)
+        operation, step = data.get("operation"), data.get("step")
+        if operation not in {"checkout", "checkpoint"} or type(step) is not int or not 1 <= step <= 9:
+            abort(400, "select a review step and checkpoint action")
+        result = session.call({"operation": operation, "step": step, "keep": data.get("keep") is True,
+                               "invalidate": data.get("invalidate") is True})
+        if operation == "checkpoint":
+            # Only explicitly approved/generated stage outputs enter the live
+            # project. Other completed results remain in their checkpoints.
+            with _lock:
+                if ((_jobs.get(session.stem) or {}).get("status") == "running"
+                        or session.stem in _test_step7_editing):
+                    abort(409, "wait for the live project operation to finish")
+                source = session.directory / "runs" / session.stem
+                target = RUNS_DIR / session.stem
+                target.mkdir(parents=True, exist_ok=True)
+                names = set(STEP_ARTIFACTS[step] + STEP_EXTRA[step])
+                if step == 7:
+                    names.add("category_colors.json")
+                if step == 8:
+                    names.add("page_layout.json")
+                if step == 6:
+                    names.update(path.name for path in source.glob("step6_preset_*") if path.is_file())
+                for name in names:
+                    path = source / name
+                    if path.is_file():
+                        shutil.copy2(path, target / name)
+                session.update_stamp(target, MAPS_DIR)
+        return jsonify(result)
+    except (ValueError, RuntimeError) as error:
+        return jsonify({"error": str(error)}), 409
+
+
+@app.route("/api/test/review-session/<key>/api/<path:endpoint>", methods=["GET", "POST"])
+def api_test_review_proxy(key, endpoint):
+    import base64
+    from webui.test_review_sessions import allowed_api, get_session
+    try:
+        session = get_session(key)
+        path = "/api/" + endpoint
+        if not allowed_api(path, session.stem, request.method):
+            abort(400, "this action is outside the selected review project")
+        if request.query_string:
+            path += "?" + request.query_string.decode("ascii")
+        result = session.call({"path": path, "method": request.method,
+                               "body": base64.b64encode(request.get_data()).decode(),
+                               "content_type": request.content_type})
+        return app.response_class(base64.b64decode(result["body"]),
+                                  status=result["status"], headers=result["headers"])
+    except (ValueError, RuntimeError) as error:
+        return jsonify({"error": str(error)}), 409
+
+
+@app.get("/api/test/review-session/<key>/result/<int:step>/<path:filename>")
+def api_test_review_result(key, step, filename):
+    import mimetypes
+    from webui.test_review_sessions import Checkpoints, get_session
+    try:
+        session = get_session(key)
+        store = Checkpoints(session.directory, session.stem)
+        name = store.state["results"].get(str(step))
+        if name is None or ".." in Path(filename).parts:
+            abort(404)
+        manifest = json.loads((store.manifests / f"{name}.json").read_text())
+        record = manifest.get(filename)
+        if record is None:
+            abort(404)
+        return send_file(store.blobs / record["blob"],
+                         mimetype=mimetypes.guess_type(filename)[0] or "application/octet-stream")
+    except (ValueError, FileNotFoundError):
+        abort(404)
+
+
+@app.post("/api/test/step7-edit/<stem>")
+def api_test_step7_edit(stem: str):
+    """Apply one /test edit or a complete default reset with one final render."""
+    from mapgen.interactive_step7 import apply_edit, render_edit
+
+    image = find_map(stem)
+    if image is None:
+        abort(404, "unknown map")
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        abort(400, "select a Step 7 edit")
+    with _lock:
+        if stem in _test_step7_editing or (_jobs.get(stem) or {}).get("status") == "running":
+            abort(409, "wait for the current map operation to finish")
+        _test_step7_editing.add(stem)
+    try:
+        run_dir, symbols = _step7_symbols(stem)
+        review = _step7_review_payload(stem)
+        if data.get("action") == "transform" and review["preserve_haptic_distances"]:
+            abort(409, "turn off Use suggested patterns before editing a tactile pattern")
+        try:
+            changed = apply_edit(run_dir, symbols, data)
+        except (TypeError, ValueError, KeyError) as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        # A failed renderer may already have saved the selected pattern. Retrying
+        # that same edit must complete its artifacts rather than accept stale ones.
+        needs_render = changed or not step_done(stem, 7)
+        stats = render_edit(image, run_dir, symbols, include_legend=data["action"] != "transform") if needs_render else {}
+        if data["action"] == "assign":
+            review["preserve_haptic_distances"] = data["preserve_haptic_distances"]
+        elif data["action"] == "reset":
+            review["preserve_haptic_distances"] = True
+        review["approved"] = False
+        saved = _save_step7_review(stem, review)
+        return jsonify({"ok": True, "pattern_data": _pattern_editor_payload(symbols),
+                        "review": saved, "rendered": needs_render, "render_timing": stats,
+                        "final_artifact": "step8a_cleanup.png"})
+    finally:
+        with _lock:
+            _test_step7_editing.discard(stem)
 
 
 @lru_cache(maxsize=256)

@@ -426,6 +426,24 @@ def _render_step8_base(out_dir: Path, symbols: dict) -> np.ndarray:
     """Build a boundary-free base without reading or modifying Step 7's raster."""
     from .output_spec import OutputSpec
     from .symbols import render_tactile
+    from .render_cache import active_render_reuse
+
+    reuse = active_render_reuse.get()
+    # Reuse the boundary-free base only within this edit transaction. Include
+    # all file versions and the output spec; subsequent edits get a fresh base.
+    base_key = None
+    spec = OutputSpec.load_or_create() if reuse is not None else None
+    if reuse is not None:
+        from dataclasses import asdict
+        inputs = ("label_map_gen.png", "lines_gen.geojson", "step6_summary.json", "step5_summary.json")
+        versions = tuple((name, (out_dir / name).stat().st_mtime_ns,
+                          (out_dir / name).stat().st_size)
+                         for name in inputs if (out_dir / name).exists())
+        base_key = (str(out_dir.resolve()), json.dumps(symbols, sort_keys=True), versions,
+                    json.dumps(asdict(spec), sort_keys=True))
+        if base_key in reuse.bases:
+            reuse.base_hits += 1
+            return reuse.bases[base_key].copy()
 
     assignments = symbols["area_assignments"]
     idx_to_group = {
@@ -451,12 +469,15 @@ def _render_step8_base(out_dir: Path, symbols: dict) -> np.ndarray:
         feature["properties"] | {"points": feature["geometry"]["coordinates"]}
         for feature in line_data.get("features", [])
     ]
-    return render_tactile(
+    base = render_tactile(
         label_map, idx_to_group, group_patterns, lines,
-        float(summary["scale_mm_per_px"]), OutputSpec.load_or_create(),
+        float(summary["scale_mm_per_px"]), spec if spec is not None else OutputSpec.load_or_create(),
         include_region_boundaries=False,
         group_transforms=group_transforms,
     )
+    if reuse is not None:
+        reuse.bases[base_key] = base.copy()
+    return base
 
 
 def run_step8(image_path: Path, model: str | None = None,

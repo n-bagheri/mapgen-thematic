@@ -13,6 +13,7 @@ pattern geometry; the embedding is solely the pattern-choice metric.
 from __future__ import annotations
 
 import csv
+import hashlib
 from functools import lru_cache
 from itertools import permutations, product
 from pathlib import Path
@@ -273,6 +274,18 @@ def render_pattern(
 
     asset = svg_pattern_library().get(canonical_id)
     svg = _pattern_svg(asset, shape, px_per_mm, transform)
+    from .render_cache import active_render_reuse
+    reuse = active_render_reuse.get()
+    # Hash the complete SVG, including the asset, physical scale, dimensions,
+    # and normalized transform. Changed inputs cannot reuse an older texture.
+    cache_key = None
+    if reuse is not None:
+        cache_key = (tuple(shape), float(px_per_mm), hashlib.sha256(svg.encode("utf-8")).digest())
+        cached = reuse.patterns.get(cache_key)
+        if cached is not None:
+            reuse.pattern_hits += 1
+            return cached
+        reuse.pattern_misses += 1
     png_bytes = resvg_py.svg_to_bytes(
         svg_string=svg,
         width=int(shape[1]),
@@ -289,6 +302,8 @@ def render_pattern(
         gray = cv2.cvtColor(decoded, cv2.COLOR_BGR2GRAY)
     if gray.shape != shape:
         gray = cv2.resize(gray, (shape[1], shape[0]), interpolation=cv2.INTER_AREA)
+    if reuse is not None:
+        reuse.patterns.put(cache_key, gray)
     return gray
 
 

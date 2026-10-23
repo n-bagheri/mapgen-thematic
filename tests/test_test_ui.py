@@ -149,7 +149,7 @@ class TestUiRouteTests(unittest.TestCase):
             "This map has more than five legend categories, so some need to be grouped into broader categories, with a maximum of five in total.",
             "Use the slider to choose how much the map should be simplified.",
             "Review the assigned tactile patterns and adjust them if needed.",
-            "Review the Braille labels and add, edit, or remove them as needed.",
+            "Review the Braille labels and add or edit them as needed.",
             "Review the tactile legend, its labels, title, and page layout, and adjust them if needed.",
         ):
             self.assertIn(copy, source)
@@ -388,7 +388,7 @@ class TestUiRouteTests(unittest.TestCase):
         self.assertIn("previewPresentation.locked", source)
         self.assertIn("function toggleTestSuggestedPatterns", source)
         self.assertIn("function chooseTestOptimizedPattern", source)
-        self.assertIn("assignPattern(stem, groupId, pattern, true)", source)
+        self.assertIn('action: "assign", group_id: groupId, pattern, preserve_haptic_distances: suggested', source)
         self.assertIn("enableTestSuggestedPatternChanges(root)", source)
         self.assertIn("function queueTestPatternTransform", source)
         self.assertIn("window.setTimeout(flushTestPatternTransform, 450)", source)
@@ -467,11 +467,11 @@ class TestUiRouteTests(unittest.TestCase):
         self.assertIn("Test UI legend orientation refresh will retry", source)
         self.assertIn(".legend-decision .pattern-chip", stylesheet)
 
-    def test_final_stage_defaults_to_tactile_and_switches_to_original_only(self):
+    def test_final_stage_adds_original_beside_the_current_preview(self):
         source = (STATIC / "test" / "main.js").read_text(encoding="utf-8")
-        self.assertIn("const FINAL_ORIGINAL_VIEW = 98", source)
-        self.assertIn("function renderTestFinalOriginalVisual", source)
-        self.assertIn("state.showFinalMap = !state.showOriginalMap", source)
+        self.assertIn("function addTestLegendOriginalComparison", source)
+        self.assertNotIn("renderTestFinalOriginalVisual", source)
+        self.assertNotIn("state.showFinalMap = !state.showOriginalMap", source)
         self.assertIn("state.showOriginalMap = false", source)
         self.assertIn("state.showFinalMap = true", source)
         self.assertIn("finalStageDefaultsApplied", source)

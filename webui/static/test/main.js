@@ -1,9 +1,9 @@
 "use strict";
 
 import {
-  $, approveLegendReview, approveMask, artifactJson, artifactUrl, assignPattern, deleteMap, esc, getJob, mapUrl,
-  patternPreviewUrl, renameMap, resetMask, saveBrailleLayout, saveMaskStrokes,
-  savePatternTransform, saveStep7Review, uploadFile,
+  $, approveLegendReview, approveMask, artifactJson, artifactUrl, deleteMap, esc, getJob, mapUrl,
+  patternLibraryPreviewUrl, patternPreviewUrl, renameMap, resetMask, saveBrailleLayout, saveCategoryColors, saveMaskStrokes,
+  saveLegendBox, saveStep7Review, uploadFile,
 } from "../minimal/api.js";
 import { isRunning, selectedMap, setNav, state, toast, withBusy } from "../minimal/state.js";
 import { completedCount, STEP_DEFS, STEP_VIEWS } from "../minimal/steps.js";
@@ -12,8 +12,11 @@ import { continuePipeline, renderControls } from "../minimal/controls.js";
 import { bindMaskCanvas, commitMaskStrokes, resetMaskSurface, undoMaskStroke } from "./mask.js";
 import { bindLegendReviewOverlay } from "../minimal/editors/legendreview.js";
 import { bindBrailleOverlay } from "../minimal/editors/braille.js";
+import { enhanceTestBrailleOverlay, prepareTestBrailleControls } from "./braille.js";
 import { bindViewer, viewerToolbarHtml } from "../minimal/viewer.js";
 import { clearPreviewCache, preloadPreviews } from "../minimal/preview-cache.js";
+import { patternChoiceBlock, patternChoiceWarnings } from "./pattern-policy.js";
+import { bindCompletedReviewNavigation, completedReview } from "./review-navigation.js";
 import {
   loadMaps, loadModels, loadSpec, refreshSelectedData, renderWorkspace, selectMap, uploadMap,
 } from "../minimal/workspace.js";
@@ -77,6 +80,18 @@ const REVIEW_MESSAGES = {
   "9": "Give everything one final check.",
 };
 const TEST_REVIEW_PANELS = {
+  reading: {
+    selector: '[data-editor="reading"]',
+    title: "Review the map interpretation", action: "[data-test-review-next]",
+  },
+  text: {
+    selector: '[data-editor="text"]',
+    title: "Review the detected text", action: "[data-test-review-next]",
+  },
+  segmentation: {
+    selector: ".test-segmentation-review", title: "Review the segmented map",
+    action: "[data-test-review-next]",
+  },
   mask: {
     selector: ".mask-decision",
     title: "Review the detected mask",
@@ -88,6 +103,11 @@ const TEST_REVIEW_PANELS = {
     title: "Review the detected legend",
     intro: "Move or resize the highlighted box until it encloses the complete legend.",
     action: ".legend-review-actions",
+  },
+  savedLegend: {
+    selector: ".legend-review", title: "Review the saved legend",
+    intro: "This completed result uses its saved category reading. Continue to review the detected text.",
+    action: null,
   },
   aggregation: {
     selector: '.step-section[data-step="5"] .review-gate',
@@ -114,7 +134,7 @@ const TEST_REVIEW_PANELS = {
   braille: {
     selector: ".braille-decision",
     title: "Review the Braille labels",
-    intro: "Review the Braille labels and add, edit, or remove them as needed.",
+    intro: "Review the Braille labels and add or edit them as needed.",
     action: "#approve-braille",
     primary: "#approve-braille",
     primaryText: "Approve labels & continue",
@@ -151,7 +171,6 @@ const STAGE_DWELL_MS = 2500;
 const ANALYSIS_SEQUENCE = [3, 4, 5];
 const TEST_PREVIEW_PIN = "__test_stable_preview__";
 const EXTRACTED_PREVIEW_VIEW = 99;
-const FINAL_ORIGINAL_VIEW = 98;
 const stagePresentation = { stem: null, step: 0, holdUntil: 0 };
 const previewPresentation = { stem: null, step: 0, pendingUntil: 0, locked: false };
 const forcedAnalysisPresentation = { active: false, index: 0, holdUntil: 0 };
@@ -174,8 +193,16 @@ let testMaskReviewStem = null;
 let testMaskBrushMode = null;
 let testPatternTransformTimer = null;
 let pendingTestPatternTransform = null;
-let testPatternTransformInFlight = false;
 let hybridVisualTransition = null;
+let testPatternTaskQueue = Promise.resolve();
+const testPatternPendingByProject = new Map();
+const testSuggestedIntentByProject = new Map();
+const testPatternSwatchUrls = new Map();
+const testPatternStatusByProject = new Map();
+const testPatternErrorsByProject = new Map();
+let pendingTestPatternColours = null;
+let testPatternColourTimer = null;
+let testPatternChoicePending = false;
 
 const DELETE_ICON = `<svg viewBox="0 0 32 32" aria-hidden="true">
   <path d="M7.5 9.5h17M12 9.5V6.8h8v2.7M10 12.5l1 13h10l1-13M14 14.5v8M18 14.5v8"></path></svg>`;
@@ -183,6 +210,7 @@ const DELETE_ICON = `<svg viewBox="0 0 32 32" aria-hidden="true">
 /* ---------------------------------------------------------- navigation */
 
 function leavePipelineShell() {
+  completedReview.leave();
   reopenedProjectReview = null;
   clearPipelineStartStatus();
   finishPipelineTitleEdit(false);
@@ -218,6 +246,7 @@ function showAbout() {
 
 async function enterPipeline(stem) {
   if (stem && state.selected !== stem) await selectMap(stem);
+  await completedReview.restoreAvailability(selectedMap());
   state.individualRun = false;
   resetStagePresentation();
   restoreProjectReview(selectedMap());
@@ -559,6 +588,7 @@ function watchReopenedLegendApproval() {
 
 function pipelineReviewStep(map) {
   if (!map) return null;
+  if (completedReview.active) return String(completedReview.step);
   if (map.steps?.["2"] && !map.steps?.["3"]
       && (!state.data.mask?.approved || !state.data.legendReview?.approved)) return "2";
   // /test always asks the user to review Step 5. The shared backend can mark
@@ -713,7 +743,7 @@ async function prepareTestHybridVisual(stem, step, enabled) {
 
 async function refreshTestHybridVisual(enabled, prepared = false) {
   const stem = state.selected;
-  const step = Number(state.activeStep);
+  const step = activeStep(selectedMap());
   if (!stem) return false;
   if (!prepared && !await prepareTestHybridVisual(stem, step, enabled)) return false;
 
@@ -752,7 +782,7 @@ async function setTestHybridView(checkbox) {
   hybridVisualTransition = transition;
   checkbox.disabled = true;
   try {
-    const prepared = await prepareTestHybridVisual(state.selected, Number(state.activeStep), desired);
+    const prepared = await prepareTestHybridVisual(state.selected, activeStep(selectedMap()), desired);
     if (!prepared) throw new Error("The selected hybrid preview could not be loaded.");
     state.colourView = desired;
     hybridVisualTransition = null;
@@ -770,7 +800,7 @@ async function setTestHybridView(checkbox) {
 }
 
 async function toggleTestHybridMode(button) {
-  if (state.busy || !state.selected) return;
+  if (!state.selected) return;
   const stem = state.selected;
   const enabled = button.getAttribute("aria-pressed") !== "true";
   const oldText = button.querySelector("strong")?.textContent || "Create hybrid map";
@@ -778,54 +808,62 @@ async function toggleTestHybridMode(button) {
   const previousColourView = state.colourView;
   const transition = { stem, previousEnabled, previousColourView };
   let review = null;
-  hybridVisualTransition = transition;
-  state.busy = true;
   button.disabled = true;
   button.setAttribute("aria-busy", "true");
-  try {
-    review = await saveStep7Review(stem, { create_hybrid_map: enabled });
-    // Keep the current tactile image mounted while its alternate is fetched
-    // and decoded. Only then expose the new mode to the polling renderer.
-    const prepared = await prepareTestHybridVisual(stem, Number(state.activeStep), enabled);
-    if (!prepared) throw new Error("The hybrid preview could not be loaded.");
-    if (state.selected !== stem) return;
-    state.data.step7Review = review;
-    state.colourView = enabled;
-    hybridStateByProject.set(stem, enabled);
-    hybridVisualTransition = null;
-    document.body.classList.toggle("test-hybrid-enabled", enabled);
-    button.setAttribute("aria-pressed", String(enabled));
-    const changed = await refreshTestHybridVisual(enabled, true);
-    if (!changed) throw new Error("The hybrid preview could not be displayed.");
-    document.querySelectorAll("[data-pattern-colour]").forEach((picker) => {
-      picker.disabled = !enabled;
-    });
-  } catch (error) {
-    if (review && state.selected === stem) {
-      try {
-        state.data.step7Review = await saveStep7Review(
-          stem, { create_hybrid_map: previousEnabled },
-        );
-      } catch { /* Keep the original preview-loading error. */ }
+  return runTestPatternTask(stem, async () => {
+    hybridVisualTransition = transition;
+    try {
+      review = await saveStep7Review(stem, { create_hybrid_map: enabled });
+      if (enabled) {
+        // Saving the mode alone does not create a colour artifact. The existing
+        // colour endpoint composites the unchanged tactile raster without a run.
+        const colours = await saveCategoryColors(stem, testPatternColours());
+        if (state.selected !== stem) return;
+        state.data.colors = colours;
+      }
+      clearPreviewCache(stem);
+      // Keep the current tactile image mounted while its alternate is fetched
+      // and decoded. Only then expose the new mode to the polling renderer.
+      const prepared = await prepareTestHybridVisual(stem, activeStep(selectedMap()), enabled);
+      if (!prepared) throw new Error("The hybrid preview could not be loaded.");
+      if (state.selected !== stem) return;
+      state.data.step7Review = review;
+      state.colourView = enabled;
+      hybridStateByProject.set(stem, enabled);
+      hybridVisualTransition = null;
+      document.body.classList.toggle("test-hybrid-enabled", enabled);
+      button.setAttribute("aria-pressed", String(enabled));
+      const changed = await refreshTestHybridVisual(enabled, true);
+      if (!changed) throw new Error("The hybrid preview could not be displayed.");
+      document.querySelectorAll("[data-pattern-colour]").forEach((picker) => {
+        picker.disabled = !enabled;
+      });
+    } catch (error) {
+      if (review && state.selected === stem) {
+        try {
+          state.data.step7Review = await saveStep7Review(
+            stem, { create_hybrid_map: previousEnabled },
+          );
+        } catch { /* Keep the original preview-loading error. */ }
+      }
+      state.colourView = previousColourView;
+      hybridStateByProject.set(stem, previousEnabled);
+      document.body.classList.toggle("test-hybrid-enabled", previousEnabled);
+      document.body.classList.toggle(
+        "test-hybrid-view-visible", previousEnabled && previousColourView,
+      );
+      button.setAttribute("aria-pressed", String(previousEnabled));
+      toast(error.message, "error");
+      const label = button.querySelector("strong");
+      if (label) label.textContent = oldText;
+    } finally {
+      if (hybridVisualTransition === transition) hybridVisualTransition = null;
+      if (button.isConnected) {
+        button.disabled = false;
+        button.removeAttribute("aria-busy");
+      }
     }
-    state.colourView = previousColourView;
-    hybridStateByProject.set(stem, previousEnabled);
-    document.body.classList.toggle("test-hybrid-enabled", previousEnabled);
-    document.body.classList.toggle(
-      "test-hybrid-view-visible", previousEnabled && previousColourView,
-    );
-    button.setAttribute("aria-pressed", String(previousEnabled));
-    toast(error.message, "error");
-    const label = button.querySelector("strong");
-    if (label) label.textContent = oldText;
-  } finally {
-    if (hybridVisualTransition === transition) hybridVisualTransition = null;
-    state.busy = false;
-    if (button.isConnected) {
-      button.disabled = false;
-      button.removeAttribute("aria-busy");
-    }
-  }
+  });
 }
 
 function bindTestViewerFit(toolbar) {
@@ -849,7 +887,42 @@ function bindTestViewerFit(toolbar) {
   refit();
 }
 
+function addTestLegendOriginalComparison() {
+  const map = selectedMap();
+  if (!map || activeStep(map) !== 9 || !state.showOriginalMap) return;
+  // The shared renderer already handles original + tactile map + legend.
+  // Extend its legend-only view here so /test can also show original + legend.
+  const canvas = document.querySelector("#visual-content .step9-page-canvas");
+  if (!canvas) return;
+  const [legendW, legendH] = (state.data.legend?.page?.canvas_px || []).map(Number);
+  const [mapW, mapH] = state.data.braille?.page?.canvas_px || [legendW, legendH];
+  if (![legendW, legendH, Number(mapW), Number(mapH)].every((size) => Number.isFinite(size) && size > 0)) return;
+  const height = Math.max(mapH, legendH);
+  const originalWidth = mapW * height / mapH;
+  const legendWidth = legendW * height / legendH;
+  const gap = Math.max(30, Math.round(height * .04));
+  const grid = canvas.querySelector(":scope > .page-grid");
+  const legend = document.createElement("div");
+  legend.className = "step9-legend-sheet";
+  legend.style.aspectRatio = `${legendW} / ${legendH}`;
+  [...canvas.children].filter((node) => node !== grid).forEach((node) => legend.appendChild(node));
+  const original = document.createElement("div");
+  original.className = "step9-input-sheet";
+  original.style.aspectRatio = `${mapW} / ${mapH}`;
+  original.innerHTML = `<img src="${mapUrl(map.name)}" alt="Original map for ${esc(map.name)}">`;
+  canvas.prepend(original, legend);
+  canvas.classList.remove("step9-page-canvas");
+  canvas.classList.add("step7-comparison-canvas", "step9-comparison-canvas");
+  canvas.dataset.naturalWidth = String(originalWidth + legendWidth + gap);
+  canvas.dataset.naturalHeight = String(height);
+  canvas.style.aspectRatio = `${canvas.dataset.naturalWidth} / ${height}`;
+  canvas.style.setProperty("--compare-gap", `${gap}px`);
+  canvas.style.gridTemplateColumns = `${originalWidth}fr ${legendWidth}fr`;
+  canvas.closest(".map-stage")?.querySelector(".page-zoom-fit")?.click();
+}
+
 function enhanceTestViewers() {
+  addTestLegendOriginalComparison();
   let maskComparison = null;
   let legendComparison = null;
   document.querySelectorAll("#visual-content .page-view-toolbar").forEach((toolbar) => {
@@ -908,12 +981,6 @@ function enhanceTestViewers() {
       // The extracted map/legend comparison is already a two-result view.
       // Keep its standard toolbar stable without replacing that composite.
       if (toolbar.closest(".test-extracted-stage")) return;
-      if (activeStep(selectedMap()) === 9) {
-        // Step 9 normally shows the tactile map beside its legend. The source
-        // toggle is an exclusive view: it must never create a three-sheet
-        // original + tactile + legend comparison.
-        state.showFinalMap = !state.showOriginalMap;
-      }
       renderTestVisual();
     });
 
@@ -974,6 +1041,8 @@ function enhanceTestViewers() {
   // Also replace the shared editor in the ordinary (non-comparison) Step 2
   // view. Rebinding reuses the /test surface rather than fetching its mask.
   bindMaskCanvas();
+  enhanceTestBrailleOverlay();
+  completedReview.showSavedImages();
 }
 
 function scheduleTestViewerStabilization() {
@@ -1020,8 +1089,16 @@ function emphasizeAggregationInstructions(intro) {
 
 function testReviewPanelDefinition(reviewStep, exportReady, failed, blocked) {
   if (exportReady) return TEST_REVIEW_PANELS.export;
+  if (completedReview.active) {
+    if (reviewStep === "1") return TEST_REVIEW_PANELS.reading;
+    if (reviewStep === "3") return TEST_REVIEW_PANELS.text;
+    if (reviewStep === "4") return TEST_REVIEW_PANELS.segmentation;
+  }
   if (reviewStep === "2") {
-    return state.data.mask?.approved ? TEST_REVIEW_PANELS.legend : TEST_REVIEW_PANELS.mask;
+    if (completedReview.active && completedReview.maskPhase === "legend"
+        && ["legacy", "derived"].includes(state.data.legendReview?.status)) return TEST_REVIEW_PANELS.savedLegend;
+    return (completedReview.active ? completedReview.maskPhase === "legend" : state.data.mask?.approved)
+      ? TEST_REVIEW_PANELS.legend : TEST_REVIEW_PANELS.mask;
   }
   if (reviewStep === "5") {
     TEST_REVIEW_PANELS.aggregation.intro = aggregationReviewIntro();
@@ -1157,6 +1234,7 @@ function waitForTestCondition(predicate, timeout = 20000,
 
 async function finishTestMaskReview(button) {
   if (button.disabled || state.busy || !state.selected) return;
+  if (completedReview.active) return finishCompletedStep2Review(button);
   const stem = state.selected;
   const originalLabel = button.textContent;
   state.busy = true;
@@ -1226,6 +1304,7 @@ function buildTestMaskFooter(root, body, footer) {
 
 async function finishTestLegendReview(button) {
   if (button.disabled || state.busy) return;
+  if (completedReview.active) return finishCompletedStep2Review(button);
   const apply = $("apply-legend-box");
   if (!apply) return;
   const stem = state.selected;
@@ -1289,7 +1368,18 @@ function buildTestLegendFooter(root, footer) {
   const actions = footer.querySelector(".legend-review-actions");
   const apply = actions?.querySelector("#apply-legend-box");
   const approve = actions?.querySelector("#approve-legend-box");
-  if (!apply || !approve) return;
+  if (!apply || !approve) {
+    if (completedReview.active && ["legacy", "derived"].includes(state.data.legendReview?.status)) {
+      const finish = document.createElement("button");
+      finish.id = "test-legend-continue";
+      finish.type = "button";
+      finish.className = "button primary test-review-primary";
+      finish.textContent = "Approve legend & continue";
+      finish.addEventListener("click", () => void finishCompletedStep2Review(finish));
+      footer.appendChild(finish);
+    }
+    return;
+  }
 
   const nativeActions = document.createElement("div");
   nativeActions.className = "test-review-native-actions";
@@ -1307,6 +1397,40 @@ function buildTestLegendFooter(root, footer) {
   footer.appendChild(finish);
 }
 
+async function finishCompletedStep2Review(button) {
+  if (button.disabled || state.busy) return;
+  const stem = state.selected;
+  await withBusy(button, "Approving…", async () => {
+    if (state.maskBrush.strokes.length) {
+      completedReview.markDirty();
+      await saveMaskStrokes(stem, state.maskBrush.strokes);
+      commitMaskStrokes();
+      state.maskBrush.strokes = [];
+      if (state.data.mask) state.data.mask.approved = false;
+    }
+    if (!state.data.mask?.approved) {
+      await approveMask(stem);
+      if (state.data.mask) state.data.mask.approved = true;
+    }
+    const review = state.data.legendReview;
+    if (state.legendBox) {
+      completedReview.markDirty();
+      state.data.legendReview = await saveLegendBox(stem, state.legendBox);
+      state.legendBox = null;
+    }
+    const current = state.data.legendReview || review;
+    if (!current || !["ready", "derived", "legacy"].includes(current.status)) {
+      completedReview.setMaskPhase("legend");
+      throw new Error("Review the legend box before continuing.");
+    }
+    if (current.status !== "legacy" && !current.approved) {
+      await approveLegendReview(stem);
+      current.approved = true;
+    }
+    if (state.selected === stem) await completedReview.advance();
+  });
+}
+
 function buildTestLegendCompare(root) {
   const native = root.querySelector("#legend-compare");
   if (!native || root.querySelector(".test-legend-compare")) return;
@@ -1318,7 +1442,6 @@ function buildTestLegendCompare(root) {
   checkbox.checked = state.showFinalMap;
   checkbox.addEventListener("change", () => {
     state.showFinalMap = checkbox.checked;
-    if (checkbox.checked) state.showOriginalMap = false;
     native.setAttribute("aria-pressed", String(state.showFinalMap));
     renderTestVisual();
   });
@@ -1360,113 +1483,280 @@ function relocateTestPatternDialog() {
   document.body.appendChild(nestedDialog);
 }
 
+function testPatternUpdating(stem = state.selected) {
+  return Boolean(testPatternPendingByProject.get(stem)
+    || pendingTestPatternTransform?.stem === stem || pendingTestPatternColours?.stem === stem
+    || stem === state.selected && testPatternChoicePending);
+}
+
+function runTestPatternTask(stem, action, label = "Rendering pattern changes…") {
+  if (completedReview.active && state.selected === stem) completedReview.markDirty();
+  const hadStep7 = state.selected === stem && selectedMap()?.steps?.["7"];
+  if (state.selected === stem) state.generation += 1; // Discard any older review-data fetch.
+  testPatternPendingByProject.set(stem, (testPatternPendingByProject.get(stem) || 0) + 1);
+  testPatternStatusByProject.set(stem, label);
+  if (state.selected === stem) syncTestPatternControls();
+  // A pattern save rewrites symbols before cleanup. During that interval the
+  // server can report Step 7 as incomplete; that must never launch another run.
+  if (state.selected === stem) state.autorun = false;
+  const task = testPatternTaskQueue.then(async () => {
+    if (state.selected !== stem) return;
+    state.busy = true;
+    try {
+      await action();
+      if (state.selected === stem) {
+        const map = selectedMap();
+        if (map) {
+          map.step7_review_ready = false;
+          if (hadStep7) map.steps["7"] = true;
+        }
+      }
+    } catch (error) {
+      testPatternErrorsByProject.set(stem, error.message);
+      if (state.selected === stem) toast(error.message, "error");
+    } finally {
+      state.busy = false;
+    }
+  }).finally(() => {
+    const remaining = (testPatternPendingByProject.get(stem) || 1) - 1;
+    if (remaining) testPatternPendingByProject.set(stem, remaining);
+    else testPatternPendingByProject.delete(stem);
+    if (!remaining) testPatternStatusByProject.delete(stem);
+    if (state.selected === stem) syncTestPatternControls();
+  });
+  testPatternTaskQueue = task.catch(() => {});
+  return task;
+}
+
+function syncTestPatternControls() {
+  const suggested = testSuggestedIntentByProject.get(state.selected)?.enabled
+    ?? state.data.step7Review?.preserve_haptic_distances ?? true;
+  const hybrid = hybridMapEnabled();
+  const busy = testPatternUpdating();
+  const mode = $("preserve-haptic-distances");
+  mode?.setAttribute("aria-pressed", String(suggested));
+  if (mode) mode.disabled = false; // A newer toggle intent is queued, never discarded.
+  $("create-hybrid-map")?.setAttribute("aria-pressed", String(hybrid));
+  document.querySelectorAll("[data-edit-pattern]").forEach((button) => {
+    const group = state.data.patterns?.groups?.find((item) => Number(item.group_id) === Number(button.dataset.editPattern));
+    button.disabled = suggested || busy || !group?.editable;
+  });
+  document.querySelectorAll("[data-change-pattern]").forEach((button) => {
+    button.disabled = busy;
+    button.title = suggested ? "Choose one pattern; the remaining categories will be re-optimized around it" : "Choose a pattern for this category";
+  });
+  document.querySelectorAll("[data-pattern-colour]").forEach((picker) => {
+    picker.disabled = !hybrid;
+  });
+  const approval = $("approve-patterns");
+  if (approval) {
+    const failed = testPatternErrorsByProject.has(state.selected);
+    approval.disabled = busy || failed;
+    approval.textContent = busy ? "Updating preview…" : "Approve textures & continue";
+    const root = $("pattern-decision");
+    if (root) {
+      root.setAttribute("aria-busy", String(busy));
+      let status = root.querySelector("#test-pattern-render-status");
+      if (!status) {
+        status = document.createElement("p");
+        status.id = "test-pattern-render-status";
+        status.setAttribute("role", "status");
+        status.setAttribute("aria-live", "polite");
+        (root.querySelector(".test-review-shell-footer") || approval.parentElement).prepend(status);
+      }
+      status.hidden = !busy && !failed;
+      status.classList.toggle("is-error", failed && !busy);
+      status.textContent = busy ? testPatternStatusByProject.get(state.selected) || "Preparing preview…"
+        : `Preview could not be updated: ${testPatternErrorsByProject.get(state.selected)} Retry the change before approving.`;
+    }
+  }
+  document.querySelectorAll('input[name="pattern-transform"]').forEach((slider) => {
+    slider.disabled = suggested;
+  });
+  document.querySelectorAll(".page-view-toolbar").forEach(syncTestColourControl);
+}
+
+function syncTestPatternChoices() {
+  const data = state.data.patterns || {};
+  const group = data.groups?.find((item) => Number(item.group_id) === Number(state.patternDialog?.groupId));
+  document.querySelectorAll("[data-choose-pattern]").forEach((button) => {
+    const reason = patternChoiceBlock(group, button.dataset.choosePattern, data.groups || [],
+      data.library || [], state.data.step7Review?.preserve_haptic_distances !== false);
+    button.disabled = Boolean(reason);
+    if (reason) button.title = reason;
+  });
+}
+
+function confirmTestPatternChoice(message) {
+  return new Promise((resolve) => {
+    const dialog = document.createElement("dialog");
+    dialog.className = "test-pattern-warning";
+    dialog.setAttribute("aria-label", message);
+    dialog.innerHTML = `<form method="dialog"><p></p><div class="test-pattern-warning-actions">
+      <button class="button secondary" value="cancel" autofocus>Cancel</button>
+      <button class="button primary" value="yes">Yes</button></div></form>`;
+    dialog.querySelector("p").textContent = message;
+    let finished = false;
+    const finish = (accepted) => {
+      if (finished) return;
+      finished = true;
+      dialog.remove();
+      resolve(accepted);
+    };
+    dialog.querySelector("form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      finish(event.submitter?.value === "yes");
+    });
+    dialog.addEventListener("cancel", (event) => { event.preventDefault(); finish(false); });
+    dialog.addEventListener("close", () => finish(dialog.returnValue === "yes"), { once: true });
+    document.body.appendChild(dialog);
+    dialog.showModal();
+  });
+}
+
 function rememberSuggestedPatternDefaults() {
   const stem = state.selected;
-  const review = state.data.step7Review;
   const groups = state.data.patterns?.groups || [];
-  if (!stem || !review?.preserve_haptic_distances || !groups.length
-      || suggestedPatternDefaultsByProject.has(stem)) return;
-  suggestedPatternDefaultsByProject.set(stem, groups.map((group) => ({
+  if (!stem || !groups.length || suggestedPatternDefaultsByProject.has(stem)) return;
+  const key = `mapgen:test:initial-patterns:${stem}`;
+  const signature = JSON.stringify([state.previewLevel,
+    groups.map((group) => [group.group_id, group.label])]);
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(key) || "null");
+    if (saved?.signature === signature) {
+      suggestedPatternDefaultsByProject.set(stem, saved.groups);
+      return;
+    }
+  } catch { /* Session storage can be unavailable. Keep the in-memory baseline. */ }
+  const defaults = groups.map((group) => ({
     group_id: Number(group.group_id),
     pattern: group.pattern,
     transform: JSON.parse(JSON.stringify(group.transform || {})),
-  })));
+  }));
+  suggestedPatternDefaultsByProject.set(stem, defaults);
+  try { sessionStorage.setItem(key, JSON.stringify({ signature, groups: defaults })); } catch { /* optional cache */ }
 }
 
 function enableTestSuggestedPatternChanges(root) {
   rememberSuggestedPatternDefaults();
-  root.querySelectorAll("[data-change-pattern]").forEach((button) => {
-    button.disabled = false;
-    button.title = "Choose one pattern; the remaining categories will be re-optimized around it";
-  });
+  syncTestPatternControls();
 }
 
 function samePatternTransform(left, right) {
-  return JSON.stringify(left || {}) === JSON.stringify(right || {});
+  const defaults = state.data.patterns?.defaults || {};
+  return [...new Set([...Object.keys(left || {}), ...Object.keys(right || {})])]
+    .every((key) => Number(left?.[key] ?? defaults[key]) === Number(right?.[key] ?? defaults[key]));
 }
 
-async function refreshTestPatternArtifacts(stem) {
+async function saveTestPatternEdit(stem, body) {
+  const response = await fetch(`/api/test/step7-edit/${encodeURIComponent(stem)}`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body), cache: "no-store",
+  });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || "The pattern preview could not be rendered.");
+  return payload;
+}
+
+async function refreshTestPatternArtifacts(stem, groups = []) {
+  testPatternStatusByProject.set(stem, "Loading updated preview…");
+  syncTestPatternControls();
   clearPreviewCache(stem);
-  const names = ["step8a_cleanup.png"];
-  if (hybridMapEnabled()) names.push("step8a_hybrid.png");
-  await Promise.all([loadMaps(), preloadPreviews(stem, names)]);
+  const names = testHybridPreviewNames(7, state.colourView && hybridMapEnabled());
+  const [urls] = await Promise.all([preloadPreviews(stem, names), ...groups.map(updateTestPatternPreview)]);
   if (state.selected !== stem) return;
-  await refreshStepImages();
-  renderControls();
+  if (urls.some((url) => !url) || !(await Promise.all(urls.map(waitForTestImage))).every(Boolean)) {
+    throw new Error("The updated map image could not be loaded.");
+  }
+  if (!await refreshStepImages()) throw new Error("The updated map preview is not available.");
+  const image = $("step-image-0");
+  if (image?.decode) await image.decode();
+  testPatternErrorsByProject.delete(stem);
+  syncTestPatternControls();
 }
 
 async function toggleTestSuggestedPatterns(button) {
-  if (state.busy || !state.selected) return;
+  if (!state.selected) return;
+  if (pendingTestPatternTransform) void flushTestPatternTransform();
+  if (pendingTestPatternColours) void flushTestPatternColours();
   const stem = state.selected;
-  const enable = button.getAttribute("aria-pressed") !== "true";
-  if (!enable) rememberSuggestedPatternDefaults();
-  state.busy = true;
-  button.disabled = true;
-  button.setAttribute("aria-busy", "true");
-  try {
-    if (enable) {
-      const defaults = suggestedPatternDefaultsByProject.get(stem) || [];
-      state.data.step7Review = await saveStep7Review(
-        stem, { preserve_haptic_distances: false },
-      );
-      for (const saved of defaults) {
-        const current = (state.data.patterns?.groups || []).find(
-          (group) => Number(group.group_id) === saved.group_id,
-        );
-        if (!current) continue;
-        if (current.pattern !== saved.pattern) {
-          const result = await assignPattern(stem, saved.group_id, saved.pattern, false);
-          if (result.pattern_data) state.data.patterns = result.pattern_data;
-          if (result.review) state.data.step7Review = result.review;
-        }
-        const refreshed = (state.data.patterns?.groups || []).find(
-          (group) => Number(group.group_id) === saved.group_id,
-        );
-        if (refreshed && !samePatternTransform(refreshed.transform, saved.transform)) {
-          const result = await savePatternTransform(stem, saved.group_id, saved.transform);
-          refreshed.transform = result.transform;
-        }
-      }
-      state.data.step7Review = await saveStep7Review(
-        stem, { preserve_haptic_distances: true },
-      );
-    } else {
-      state.data.step7Review = await saveStep7Review(
-        stem, { preserve_haptic_distances: false },
-      );
-    }
-    if (state.selected !== stem) return;
-    await refreshTestPatternArtifacts(stem);
-  } catch (error) {
-    toast(error.message, "error");
-  } finally {
-    state.busy = false;
-    if (button.isConnected) {
-      button.disabled = false;
-      button.removeAttribute("aria-busy");
-    }
+  const enable = !(testSuggestedIntentByProject.get(stem)?.enabled
+    ?? state.data.step7Review?.preserve_haptic_distances ?? true);
+  rememberSuggestedPatternDefaults();
+  const intent = { enabled: enable };
+  testSuggestedIntentByProject.set(stem, intent);
+  if (enable) {
+    state.patternDialog = null;
+    document.querySelectorAll(".pattern-dialog, .pattern-dialog-backdrop").forEach((node) => node.remove());
   }
+  syncTestPatternControls();
+  return runTestPatternTask(stem, async () => {
+    try {
+      if (!enable) {
+        const review = await saveStep7Review(stem, { preserve_haptic_distances: false });
+        if (state.selected === stem) state.data.step7Review = review;
+        return;
+      }
+      const defaults = suggestedPatternDefaultsByProject.get(stem) || [];
+      const result = await saveTestPatternEdit(stem, { action: "reset", groups: defaults });
+      if (state.selected !== stem) return;
+      state.data.patterns = result.pattern_data;
+      state.data.step7Review = result.review;
+      await refreshTestPatternArtifacts(stem, defaults.map((group) => group.group_id));
+    } finally {
+      if (testSuggestedIntentByProject.get(stem) === intent) testSuggestedIntentByProject.delete(stem);
+    }
+  }, enable ? "Restoring suggested patterns…" : "Saving pattern settings…");
 }
 
-function allowTestOptimizedPatternDialog(button) {
-  if (!state.data.step7Review?.preserve_haptic_distances) return;
-  const stem = state.selected;
-  state.data.step7Review = {
-    ...state.data.step7Review,
-    preserve_haptic_distances: false,
-  };
-  queueMicrotask(() => {
-    if (state.selected !== stem || !state.data.step7Review) return;
-    state.data.step7Review = {
-      ...state.data.step7Review,
-      preserve_haptic_distances: true,
-    };
-    button.disabled = false;
-  });
+function openTestPatternChange(button) {
+  if (button.disabled || testPatternUpdating() || state.busy) return;
+  const data = state.data.patterns;
+  const groupId = Number(button.dataset.changePattern);
+  const group = data?.groups?.find((item) => Number(item.group_id) === groupId);
+  if (!group) return;
+  // The shared dialog forbids opening while suggestions are enabled. Build
+  // the /test picker directly so event timing never changes the saved mode.
+  state.patternGroup = groupId;
+  state.patternDialog = { kind: "change", groupId };
+  document.querySelectorAll(".pattern-dialog, .pattern-dialog-backdrop").forEach((node) => node.remove());
+  const mounted = document.querySelector(`.pattern-decision-list [data-pattern-preview="${groupId}"]`);
+  const preview = mounted?.currentSrc || mounted?.src || patternPreviewUrl(state.selected, groupId);
+  const used = new Set(data.groups.map((item) => item.pattern));
+  const backdrop = document.createElement("div");
+  backdrop.className = "pattern-dialog-backdrop";
+  backdrop.dataset.closePatternDialog = "";
+  backdrop.dataset.testPatternChange = "true";
+  const dialog = document.createElement("section");
+  dialog.className = "pattern-dialog";
+  dialog.dataset.testPatternChange = "true";
+  dialog.setAttribute("role", "dialog");
+  dialog.setAttribute("aria-modal", "true");
+  dialog.setAttribute("aria-labelledby", "test-pattern-change-title");
+  dialog.innerHTML = `
+    <header><h3 id="test-pattern-change-title">Change pattern — ${esc(group.label)}</h3>
+      <button class="pattern-dialog-close" type="button" data-close-pattern-dialog
+        aria-label="Close pattern library">&times;</button></header>
+    <div class="pattern-dialog-preview">
+      <img src="${esc(preview)}" data-pattern-preview="${groupId}" alt="Current pattern">
+    </div>
+    <div class="pattern-library-grid" role="group" aria-label="Tactile pattern library">
+      ${(data.library || []).map((item) => `
+        <button class="pattern-library-choice${item.pattern === group.pattern ? " is-selected" : ""}${used.has(item.pattern) ? " is-used" : ""}"
+            type="button" data-choose-pattern="${esc(item.pattern)}" title="${esc(item.pattern_desc)}"
+            aria-label="${esc(item.pattern_desc)}" aria-pressed="${item.pattern === group.pattern}">
+          <img src="${patternLibraryPreviewUrl(item.pattern)}" alt="">
+        </button>`).join("")}
+    </div>
+    <div class="action-row end"><button class="button secondary small" type="button"
+      data-close-pattern-dialog>Close</button></div>`;
+  document.body.append(backdrop, dialog);
+  syncTestPatternChoices();
+  dialog.querySelector("[data-close-pattern-dialog]")?.focus();
 }
 
 async function chooseTestOptimizedPattern(button) {
-  if (state.busy || !state.selected) return;
+  if (testPatternChoicePending || testPatternUpdating() || !state.selected) return;
   const stem = state.selected;
   const groupId = Number(state.patternDialog?.groupId);
   const pattern = button.dataset.choosePattern;
@@ -1474,55 +1764,86 @@ async function chooseTestOptimizedPattern(button) {
   const current = (state.data.patterns?.groups || []).find(
     (group) => Number(group.group_id) === groupId,
   );
-  if (current?.pattern === pattern) {
+  if (!current) return;
+  const suggested = state.data.step7Review?.preserve_haptic_distances !== false;
+  const data = state.data.patterns;
+  const reason = patternChoiceBlock(current, pattern, data.groups, data.library, suggested);
+  if (reason) { toast(reason, "warning"); return; }
+  if (current?.pattern === pattern && !testPatternErrorsByProject.has(stem)) {
     state.patternDialog = null;
     document.querySelectorAll(".pattern-dialog, .pattern-dialog-backdrop")
       .forEach((node) => node.remove());
     return;
   }
 
-  state.busy = true;
+  testPatternChoicePending = true;
   button.disabled = true;
+  let applied = false;
+  const swatches = [];
   try {
-    // The existing endpoint already supports constrained optimization but
-    // rejects a request while the saved switch is on. Lower it only for the
-    // request, then ask the assignment endpoint to restore it and optimize all
-    // non-fixed categories around the reader's chosen pattern.
-    state.data.step7Review = await saveStep7Review(
-      stem, { preserve_haptic_distances: false },
-    );
-    const result = await assignPattern(stem, groupId, pattern, true);
-    if (result.pattern_data) state.data.patterns = result.pattern_data;
-    if (result.review) state.data.step7Review = result.review;
-    state.patternDialog = null;
-    document.querySelectorAll(".pattern-dialog, .pattern-dialog-backdrop")
-      .forEach((node) => node.remove());
-    await refreshTestPatternArtifacts(stem);
-    toast("Pattern changed and the remaining categories were re-optimized.");
-  } catch (error) {
-    try {
-      state.data.step7Review = await saveStep7Review(
-        stem, { preserve_haptic_distances: true },
-      );
-    } catch { /* Preserve the original error. */ }
-    toast(error.message, "error");
+    for (const warning of patternChoiceWarnings(current, pattern, data.groups, data.library, suggested)) {
+      if (!await confirmTestPatternChoice(warning)) return;
+    }
+    if (state.selected !== stem) return;
+    // The selected library tile is already cached. Show the choice immediately
+    // while retaining the last valid full map until its replacement is ready.
+    document.querySelectorAll(`[data-pattern-preview="${groupId}"]`).forEach((image) => {
+      swatches.push([image, image.src]);
+      image.src = patternLibraryPreviewUrl(pattern);
+    });
+    await runTestPatternTask(stem, async () => {
+      const result = await saveTestPatternEdit(stem, {
+        action: "assign", group_id: groupId, pattern, preserve_haptic_distances: suggested,
+      });
+      if (state.selected !== stem) return;
+      applied = true;
+      if (result.pattern_data) state.data.patterns = result.pattern_data;
+      if (result.review) state.data.step7Review = result.review;
+      state.patternDialog = null;
+      document.querySelectorAll(".pattern-dialog, .pattern-dialog-backdrop")
+        .forEach((node) => node.remove());
+      await refreshTestPatternArtifacts(stem, suggested
+        ? state.data.patterns.groups.map((item) => item.group_id) : [groupId]);
+      toast(suggested ? "Pattern changed and the remaining categories were re-optimized."
+        : "Pattern changed for this category.");
+    });
   } finally {
-    state.busy = false;
+    if (!applied) swatches.forEach(([image, source]) => { if (image.isConnected) image.src = source; });
+    testPatternChoicePending = false;
     if (button.isConnected) button.disabled = false;
+    syncTestPatternControls();
   }
 }
 
-function updateTestPatternPreview(groupId) {
-  const source = patternPreviewUrl(state.selected, groupId);
-  return waitForTestImage(source).then((loaded) => {
-    if (!loaded) return;
-    document.querySelectorAll(`[data-pattern-preview="${groupId}"]`).forEach((image) => {
-      image.src = source;
-    });
+async function updateTestPatternPreview(groupId) {
+  const stem = state.selected;
+  const group = state.data.patterns?.groups?.find((item) => Number(item.group_id) === Number(groupId));
+  if (!group) return;
+  const defaults = state.data.patterns.defaults || {};
+  const transformed = Object.entries(defaults).some(([key, value]) => Number(group.transform?.[key] ?? value) !== Number(value));
+  let source = patternLibraryPreviewUrl(group.pattern);
+  if (transformed) {
+    const response = await fetch(patternPreviewUrl(stem, groupId), { cache: "no-store" });
+    if (!response.ok) return;
+    source = URL.createObjectURL(await response.blob());
+  }
+  const loaded = await waitForTestImage(source);
+  if (!loaded || state.selected !== stem) {
+    if (source.startsWith("blob:")) URL.revokeObjectURL(source);
+    return;
+  }
+  const key = `${stem}:${groupId}`;
+  const previous = testPatternSwatchUrls.get(key);
+  testPatternSwatchUrls.set(key, source);
+  document.querySelectorAll(`[data-pattern-preview="${groupId}"]`).forEach((image) => {
+    image.src = source;
   });
+  if (previous?.startsWith("blob:")) URL.revokeObjectURL(previous);
 }
 
 function queueTestPatternTransform(slider) {
+  if ((testSuggestedIntentByProject.get(state.selected)?.enabled
+      ?? state.data.step7Review?.preserve_haptic_distances) !== false) return;
   const dialog = slider.closest(".pattern-dialog");
   const groupId = Number(state.patternDialog?.groupId);
   if (!dialog || !Number.isInteger(groupId) || !state.selected) return;
@@ -1531,54 +1852,110 @@ function queueTestPatternTransform(slider) {
     transform[input.dataset.key] = Number(input.value);
   });
   pendingTestPatternTransform = { stem: state.selected, groupId, transform };
+  syncTestPatternControls();
   const status = dialog.querySelector("#transform-status");
-  if (status) status.textContent = "Updating previewâ€¦";
+  if (status) status.textContent = "Updating preview…";
   window.clearTimeout(testPatternTransformTimer);
   testPatternTransformTimer = window.setTimeout(flushTestPatternTransform, 450);
 }
 
 async function flushTestPatternTransform() {
-  if (testPatternTransformInFlight || !pendingTestPatternTransform) return;
-  const request = pendingTestPatternTransform;
+  if (!pendingTestPatternTransform) return;
+  let request = pendingTestPatternTransform;
   pendingTestPatternTransform = null;
-  testPatternTransformInFlight = true;
-  try {
-    const result = await savePatternTransform(
-      request.stem, request.groupId, request.transform,
-    );
-    if (state.selected !== request.stem) return;
+  return runTestPatternTask(request.stem, async () => {
+    if (pendingTestPatternTransform?.stem === request.stem
+        && pendingTestPatternTransform.groupId === request.groupId) {
+      request = pendingTestPatternTransform;
+      pendingTestPatternTransform = null;
+      window.clearTimeout(testPatternTransformTimer);
+    }
     const group = (state.data.patterns?.groups || []).find(
       (item) => Number(item.group_id) === request.groupId,
     );
-    if (group) group.transform = result.transform;
-    if (state.data.step7Review) state.data.step7Review.approved = false;
-    clearPreviewCache(request.stem);
-    await Promise.all([
-      preloadPreviews(request.stem, [
-        "step8a_cleanup.png",
-        ...(hybridMapEnabled() ? ["step8a_hybrid.png"] : []),
-      ]),
-      updateTestPatternPreview(request.groupId),
-    ]);
-    await refreshStepImages();
+    if (!group || samePatternTransform(group.transform, request.transform)
+        && !testPatternErrorsByProject.has(request.stem)) return;
+    const result = await saveTestPatternEdit(request.stem, {
+      action: "transform", group_id: request.groupId, transform: request.transform,
+    });
+    if (state.selected !== request.stem) return;
+    state.data.patterns = result.pattern_data;
+    state.data.step7Review = result.review;
+    if (!pendingTestPatternTransform) await refreshTestPatternArtifacts(request.stem, [request.groupId]);
     const status = document.querySelector(".pattern-dialog #transform-status");
     if (status) status.textContent = "Updated.";
-  } catch (error) {
-    toast(error.message, "error");
-  } finally {
-    testPatternTransformInFlight = false;
-    if (pendingTestPatternTransform) {
-      window.clearTimeout(testPatternTransformTimer);
-      testPatternTransformTimer = window.setTimeout(flushTestPatternTransform, 0);
+  });
+}
+
+function testPatternColours() {
+  return Object.fromEntries((state.data.patterns?.groups || []).map((group) => {
+    const picker = document.querySelector(`[data-pattern-colour="${group.group_id}"]`);
+    return [group.label, (picker?.value || state.data.colors?.colors?.[group.label] || "#FFFFFF").toUpperCase()];
+  }));
+}
+
+function queueTestPatternColours() {
+  if (!hybridMapEnabled() || !state.selected) return;
+  const colors = testPatternColours();
+  state.data.colors = { colors };
+  pendingTestPatternColours = { stem: state.selected, colors };
+  syncTestPatternControls();
+  window.clearTimeout(testPatternColourTimer);
+  testPatternColourTimer = window.setTimeout(flushTestPatternColours, 180);
+}
+
+function flushTestPatternColours() {
+  if (!pendingTestPatternColours) return Promise.resolve();
+  let request = pendingTestPatternColours;
+  pendingTestPatternColours = null;
+  return runTestPatternTask(request.stem, async () => {
+    if (pendingTestPatternColours?.stem === request.stem) {
+      request = pendingTestPatternColours;
+      pendingTestPatternColours = null;
+      window.clearTimeout(testPatternColourTimer);
     }
-  }
+    const saved = await saveCategoryColors(request.stem, request.colors);
+    if (state.selected !== request.stem) return;
+    if (pendingTestPatternColours) return;
+    state.data.colors = saved;
+    state.colourView = true;
+    if (state.data.step7Review) state.data.step7Review.approved = false;
+    await refreshTestPatternArtifacts(request.stem);
+    document.body.classList.add("test-hybrid-view-visible");
+  });
+}
+
+function resetTestPatternTransform() {
+  const defaults = state.data.patterns?.defaults;
+  const dialog = document.querySelector(".pattern-dialog");
+  if (!defaults || !dialog || state.data.step7Review?.preserve_haptic_distances !== false) return;
+  dialog.querySelectorAll('input[name="pattern-transform"]').forEach((slider) => {
+    slider.value = defaults[slider.dataset.key];
+    slider.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  const slider = dialog.querySelector('input[name="pattern-transform"]');
+  if (slider) queueTestPatternTransform(slider);
+  window.clearTimeout(testPatternTransformTimer);
+  void flushTestPatternTransform();
 }
 
 function handleTestPatternClick(event) {
   if (!document.body.classList.contains("test-pipeline-open")) return;
+  const close = event.target.closest("[data-close-pattern-dialog]");
+  if (close?.closest('[data-test-pattern-change="true"]')) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    const groupId = state.patternDialog?.groupId;
+    state.patternDialog = null;
+    document.querySelectorAll('[data-test-pattern-change="true"]').forEach((node) => node.remove());
+    document.querySelector(`[data-change-pattern="${groupId}"]`)?.focus();
+    return;
+  }
   if (event.target.closest("#transform-reset")) {
-    window.clearTimeout(testPatternTransformTimer);
-    pendingTestPatternTransform = null;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    resetTestPatternTransform();
+    return;
   } else if (event.target.closest("[data-close-pattern-dialog]")
       && pendingTestPatternTransform) {
     window.clearTimeout(testPatternTransformTimer);
@@ -1599,14 +1976,24 @@ function handleTestPatternClick(event) {
     return;
   }
   const choice = event.target.closest("[data-choose-pattern]");
-  if (choice && state.data.step7Review?.preserve_haptic_distances) {
+  if (choice) {
     event.preventDefault();
     event.stopImmediatePropagation();
     void chooseTestOptimizedPattern(choice);
     return;
   }
   const change = event.target.closest("[data-change-pattern]");
-  if (change) allowTestOptimizedPatternDialog(change);
+  if (change) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    openTestPatternChange(change);
+    return;
+  }
+  if (event.target.closest("[data-edit-pattern]")
+      && (state.data.step7Review?.preserve_haptic_distances !== false || testPatternUpdating())) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }
 }
 
 function allBrailleTextEnabled(layout = state.data.braille) {
@@ -1688,6 +2075,22 @@ async function toggleTestBrailleText(event) {
 }
 
 function prepareTestReviewContent(root, definition) {
+  if (completedReview.step === 2 && !root.querySelector("[data-test-step2-parts]")) {
+    const parts = document.createElement("div");
+    parts.className = "action-row";
+    parts.dataset.testStep2Parts = "true";
+    for (const [part, label] of [["mask", "Map area"], ["legend", "Legend"]]) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "button secondary small";
+      button.dataset.testStep2Part = part;
+      button.setAttribute("aria-pressed", String(completedReview.maskPhase === part));
+      button.textContent = label;
+      button.addEventListener("click", () => completedReview.setMaskPhase(part));
+      parts.appendChild(button);
+    }
+    root.querySelector("h3")?.after(parts);
+  }
   if (definition === TEST_REVIEW_PANELS.simplification) {
     root.querySelector(".range-heading .field-label")?.remove();
     root.querySelector(".preset-labels")?.remove();
@@ -1725,6 +2128,7 @@ function prepareTestReviewContent(root, definition) {
     if (reset) reset.textContent = "Reset to suggested";
   }
   if (definition === TEST_REVIEW_PANELS.braille) {
+    prepareTestBrailleControls(root);
     root.querySelector(".braille-review-status")?.remove();
     const allText = root.querySelector("#braille-all-off");
     if (allText) {
@@ -1756,12 +2160,14 @@ function enhanceTestReviewPanel(reviewStep, exportReady, failed, blocked) {
   if (definition !== TEST_REVIEW_PANELS.mask) clearTestMaskToolSelection();
   if (!definition) return;
   const content = $("control-content");
-  const root = content.querySelector(definition.selector);
+  let root = content.querySelector(definition.selector);
   if (!root) return;
+  root = completedReview.bind(root, Number(reviewStep));
 
   if (definition === TEST_REVIEW_PANELS.mask) syncTestMaskToolSelection(root);
 
   if (root.dataset.testReviewShell === "true") {
+    if (definition === TEST_REVIEW_PANELS.patterns) syncTestPatternControls();
     if (definition === TEST_REVIEW_PANELS.mask) updateTestMaskActions(root);
     if (definition === TEST_REVIEW_PANELS.finalLegend) syncTestLegendCompare(root);
     return;
@@ -1825,7 +2231,7 @@ function enhanceTestReviewPanel(reviewStep, exportReady, failed, blocked) {
   });
 
   if (definition === TEST_REVIEW_PANELS.mask) buildTestMaskFooter(root, body, footer);
-  if (definition === TEST_REVIEW_PANELS.legend) buildTestLegendFooter(root, footer);
+  if (definition === TEST_REVIEW_PANELS.legend || definition === TEST_REVIEW_PANELS.savedLegend) buildTestLegendFooter(root, footer);
   root.replaceChildren(header, body, ...Array.from(root.querySelectorAll(":scope > .test-review-native-actions")), footer);
   root.classList.add("test-review-shell");
   root.dataset.testReviewShell = "true";
@@ -1845,6 +2251,7 @@ function scheduleTestReviewStabilization() {
   queueMicrotask(() => {
     reviewPanelStabilizeQueued = false;
     if (!document.body.classList.contains("test-pipeline-open")) return;
+    if (testPatternUpdating()) return;
     const map = selectedMap();
     if (!map || isRunning(map)) return;
     const job = state.job || map.job || { status: "idle" };
@@ -1871,33 +2278,7 @@ function bindTestReviewStabilizer() {
   reviewPanelObserver.observe(content, { childList: true });
 }
 
-function renderTestFinalOriginalVisual(map) {
-  const visual = $("visual-content");
-  visual.hidden = false;
-  visual.innerHTML = `
-    <article class="map-stage test-final-original-stage" data-view="${FINAL_ORIGINAL_VIEW}"
-        aria-label="Original map">
-      ${viewerToolbarHtml({ originalCompare: true, pageRender: true, hybrid: "source" }, FINAL_ORIGINAL_VIEW)}
-      <div class="map-frame">
-        <div class="map-viewport-content"><div class="map-zoom-space">
-          <div class="map-canvas">
-            <img data-viewer-image src="${mapUrl(map.name)}"
-              alt="Original map for ${esc(map.name)}">
-            <div class="page-grid" aria-hidden="true"></div>
-          </div>
-        </div></div>
-      </div>
-    </article>`;
-  enhanceTestViewers();
-  bindViewer(FINAL_ORIGINAL_VIEW, async () => true);
-}
-
 function renderTestVisual() {
-  const map = selectedMap();
-  if (map && activeStep(map) === 9 && state.showOriginalMap) {
-    renderTestFinalOriginalVisual(map);
-    return;
-  }
   renderVisual();
   enhanceTestViewers();
 }
@@ -1914,6 +2295,12 @@ function actualPipelineStage(map, live, job, reviewStep) {
 /* Backend stages can finish between two polling responses. Advance the
    visible stage one at a time so every message and progress segment appears. */
 function presentedPipelineStage(map, targetStep, live, reviewStep) {
+  if (completedReview.active && !live) {
+    stagePresentation.stem = map?.stem;
+    stagePresentation.step = targetStep;
+    stagePresentation.holdUntil = 0;
+    return { step: targetStep, catchingUp: false };
+  }
   if (!map) {
     resetStagePresentation();
     return { step: 0, catchingUp: false };
@@ -2158,6 +2545,21 @@ function ensureTestReviewControls(reviewStep) {
   if (!reviewStep) return;
   const content = $("control-content");
   content.hidden = false;
+  if (completedReview.active) {
+    if (content.querySelector(`[data-test-completed-bound="${reviewStep}"]`)) return;
+    state.viewStep = String(reviewStep);
+    state.activeStep = Number(reviewStep);
+    renderControls();
+    if (reviewStep === "2" && completedReview.maskPhase === "legend" && !content.querySelector(".legend-review")) {
+      const body = content.querySelector('.step-section[data-step="2"] .editor-body');
+      if (body) body.innerHTML = '<section class="review-gate legend-review"><h3>Saved legend</h3></section>';
+    }
+    if (reviewStep === "4") {
+      const body = content.querySelector('.step-section[data-step="4"] .editor-body');
+      if (body) body.innerHTML = '<section class="review-gate test-segmentation-review"></section>';
+    }
+    return;
+  }
   const definition = testReviewPanelDefinition(reviewStep, false, false, false);
   const mounted = content.querySelector(":scope > .test-review-shell");
   if (mounted?.dataset.testReviewPanel === testReviewPanelKey(definition)) return;
@@ -2172,28 +2574,34 @@ function ensureTestReviewControls(reviewStep) {
 
 function renderPipelineProgress(map, reviewStep, runningStep, visibleStep, failedStep) {
   const progress = $("test-pipeline-progress");
+  const selectable = completedReview.available(map);
+  progress.setAttribute("role", selectable ? "group" : "progressbar");
+  progress.setAttribute("aria-label", selectable ? "Review pipeline steps" : "Pipeline progress");
   const visibleCompleted = STEP_DEFS.filter(
-    (step) => Number(step.key) <= visibleStep && map?.steps?.[step.key],
+    (step) => selectable && completedReview.project?.snapshots.has(Number(step.key))
+      || Number(step.key) <= visibleStep && map?.steps?.[step.key],
   ).length;
   progress.setAttribute("aria-valuenow", String(visibleCompleted));
   const segments = STEP_DEFS.map((step) => {
-    const isVisible = Number(step.key) <= visibleStep;
+    const isVisible = selectable || Number(step.key) <= visibleStep;
     const className = step.key === failedStep ? "failed"
       : !isVisible ? ""
         : step.key === reviewStep ? "waiting-review"
           : step.key === runningStep ? "running"
-            : map?.steps?.[step.key] ? "done" : "";
+            : map?.steps?.[step.key] || selectable && completedReview.project?.snapshots.has(Number(step.key)) ? "done" : "";
     return { step, className };
   });
-  const signature = segments.map(({ className }) => className || "idle").join("|");
+  const signature = segments.map(({ className }) => className || "idle").join("|")
+    + `:${selectable}:${completedReview.step}:${completedReview.busy || state.busy}`;
   if (progress.dataset.signature === signature) return;
   progress.dataset.signature = signature;
   progress.innerHTML = segments.map(({ step, className }) =>
-    `<span class="test-progress-step ${className}"
-      title="${esc(THINKING_MESSAGES[step.key])}">
+    `<${selectable ? "button type=\"button\"" : "span"} class="test-progress-step ${className}"
+      ${selectable ? `data-test-review-step="${step.key}" aria-current="${completedReview.step === Number(step.key) ? "step" : "false"}" ${completedReview.busy || state.busy ? "disabled" : ""}` : ""}
+      title="${esc(selectable ? `Review step ${step.number}: ${STEP_LABELS[step.key]}` : THINKING_MESSAGES[step.key])}">
       <span class="test-progress-node" aria-hidden="true">${className === "done" ? "✓" : step.key}</span>
       <span class="test-progress-label">${esc(STEP_LABELS[step.key])}</span>
-    </span>`).join("");
+    </${selectable ? "button" : "span"}>`).join("");
 }
 
 function finishPipelineTitleEdit(restoreFocus = true) {
@@ -2263,6 +2671,8 @@ async function commitPipelineTitleEdit() {
    job first, maps second. Once the job is done, that map read cannot be older
    than the completion it is describing. */
 function reconcileFinishedJobSnapshot(map, job) {
+  if (completedReview.active) return;
+  if (testPatternUpdating(map?.stem)) return;
   const requested = (job?.steps || []).map(String);
   const highestRequested = requested.reduce(
     (highest, step) => Math.max(highest, Number(step) || 0), 0,
@@ -2273,7 +2683,8 @@ function reconcileFinishedJobSnapshot(map, job) {
   const reviewStep = pipelineReviewStep(map);
   const presentationTarget = reviewStep
     ? Math.min(highestRequested, Number(reviewStep)) : highestRequested;
-  const presentationBehind = presentationTarget > Number(stagePresentation.step || 0);
+  const presentationBehind = presentationTarget > Number(stagePresentation.step || 0)
+    && (stagePresentation.stem === map?.stem || activeStep(map) !== 7);
   const needsOrderedRefresh = requested.length && job?.status !== "failed"
     && (job?.status === "running"
       || job?.status === "done" && (snapshotMissing || presentationBehind));
@@ -2285,15 +2696,15 @@ function reconcileFinishedJobSnapshot(map, job) {
   finishedJobRefreshAt = now;
   finishedJobRefresh = (async () => {
     const authoritativeJob = await getJob(stem);
-    if (state.selected !== stem) return;
+    if (state.selected !== stem || testPatternUpdating(stem)) return;
     state.job = authoritativeJob || { status: "idle" };
     // While the job is live, the normal workspace poll remains authoritative.
     // The ordered map refresh is needed only after that job has stopped.
     if (state.job.status === "running") return;
     await loadMaps();
-    if (state.selected !== stem) return;
+    if (state.selected !== stem || testPatternUpdating(stem)) return;
     await refreshSelectedData();
-    if (state.selected !== stem) return;
+    if (state.selected !== stem || testPatternUpdating(stem)) return;
     renderWorkspace(true);
   })().catch((error) => {
     // This is a redundant recovery poll, not the pipeline itself. A brief
@@ -2307,9 +2718,16 @@ function reconcileFinishedJobSnapshot(map, job) {
 
 function syncPipelineChrome() {
   if (!document.body.classList.contains("test-pipeline-open")) return;
+  completedReview.remember();
+  completedReview.normalize();
+  if (testPatternUpdating() && activeStep(selectedMap()) === 7) return;
   const map = selectedMap();
   const live = Boolean(map && isRunning(map));
   const job = state.job || map?.job || { status: "idle" };
+  if (live && Number(job.current) === 7) {
+    suggestedPatternDefaultsByProject.delete(map.stem);
+    try { sessionStorage.removeItem(`mapgen:test:initial-patterns:${map.stem}`); } catch { /* optional cache */ }
+  }
   if (pipelineStartPending && (live || job.status === "failed")) {
     clearPipelineStartStatus();
   }
@@ -2404,6 +2822,9 @@ function syncPipelineChrome() {
   if (failed) {
     thinking.hidden = false;
     thinkingMessage.textContent = job.error || "This step could not finish.";
+  } else if (completedReview.busy) {
+    thinking.hidden = false;
+    thinkingMessage.textContent = live ? THINKING_MESSAGES[String(job.current)] || "Updating the next step…" : "Opening the saved review…";
   } else if (presentationBusy) {
     thinking.hidden = false;
     thinkingMessage.textContent = THINKING_MESSAGES[runningStep] || "Starting the pipeline…";
@@ -2582,9 +3003,39 @@ function startPipeline() {
 /* -------------------------------------------------------------- events */
 
 function bindFlowEvents() {
+  bindCompletedReviewNavigation({
+    updating: () => testPatternUpdating(),
+    sync: () => syncPipelineChrome(),
+    select: (step) => {
+      reopenedProjectReview = null;
+      clearStablePreview();
+      forcedAnalysisPresentation.active = false;
+      state.activeStep = Number(step);
+      state.viewStep = String(step);
+      state.individualRun = true;
+      state.autorun = false;
+      stagePresentation.stem = state.selected;
+      stagePresentation.step = Number(step);
+      stagePresentation.holdUntil = 0;
+      renderWorkspace(true);
+      syncPipelineChrome();
+    },
+    finish: () => {
+      reopenedProjectReview = null;
+      renderWorkspace(true);
+      syncPipelineChrome();
+    },
+  });
   document.addEventListener("click", handleTestPatternClick, true);
   document.addEventListener("scroll", rememberTestReviewScroll, true);
   document.addEventListener("change", (event) => {
+    const colour = event.target.closest?.("[data-pattern-colour]");
+    if (colour && document.body.classList.contains("test-pipeline-open")) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      queueTestPatternColours();
+      return;
+    }
     const transform = event.target.closest?.('input[name="pattern-transform"]');
     if (transform) {
       event.preventDefault();
@@ -2619,7 +3070,9 @@ function bindFlowEvents() {
   $("test-key-form").addEventListener("submit", confirmApiKey);
   $("test-key-dialog").addEventListener("cancel", (event) => event.preventDefault());
 
-  $("test-pipeline-home").addEventListener("click", showHome);
+  $("test-pipeline-home").addEventListener("click", async () => {
+    if (await completedReview.suspend()) showHome();
+  });
   $("test-pipeline-delete").addEventListener("click", () => {
     if (state.selected) askToDelete(state.selected);
   });
@@ -2655,6 +3108,7 @@ function bindFlowEvents() {
       void toggleTestBrailleText(event);
       return;
     }
+    if (completedReview.active) return;
     const analysisAction = event.target.closest("#approve-legend-box, #derive-map-categories");
     if (analysisAction) beginAnalysisPresentation();
     const patternApproval = event.target.closest("#approve-patterns");
